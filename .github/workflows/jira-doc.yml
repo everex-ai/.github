@@ -1,0 +1,13 @@
+name: jira-doc
+on:
+  repository_dispatch:
+    types: [jira-doc-review, jira-doc-manual]
+jobs:
+  echo:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "event_type=${{ github.event.action }}"
+          echo "issueKey=${{ github.event.client_payload.issueKey }}"
+          echo "trigger=${{ github.event.client_payload.trigger }}"
+          echo "initiator=${{ github.event.client_payload.initiator }}"
