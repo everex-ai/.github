@@ -1,0 +1,49 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "jira-doc agent verdict",
+  "description": "Claude 단계가 out/<KEY>/verdict.json으로 쓰는 출력. apply.py가 검증한 뒤에만 Jira에 반영한다.",
+  "type": "object",
+  "required": ["issueKey", "mode", "verdict", "checks", "acStatus", "requests"],
+  "additionalProperties": false,
+  "properties": {
+    "issueKey": { "type": "string", "pattern": "^[A-Z][A-Z0-9]+-[0-9]+$" },
+    "mode": { "enum": ["review", "digest"] },
+    "verdict": {
+      "description": "검수 모드: pass(통과) | fix(보완 요청) | escalate(보류). 정리 모드: null",
+      "enum": ["pass", "fix", "escalate", null]
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "result"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^[TBIRA][0-9]$" },
+          "result": { "enum": ["pass", "fail", "n/a"] },
+          "detail": { "type": "string", "maxLength": 300 }
+        }
+      }
+    },
+    "acStatus": {
+      "description": "Task만 채운다. precheck.json의 ac 목록과 id가 1:1로 같아야 한다(T3).",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "done"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^AC-[0-9]+$" },
+          "done": { "type": "boolean" },
+          "evidence": { "type": "string", "maxLength": 500 },
+          "reason": { "type": "string", "maxLength": 300 }
+        }
+      }
+    },
+    "requests": {
+      "description": "담당자에게 요청할 것. 검수 comment의 번호 목록으로 들어간다.",
+      "type": "array",
+      "items": { "type": "string", "maxLength": 300 }
+    }
+  }
+}
