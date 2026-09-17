@@ -7,8 +7,9 @@
    다음 task로 넘어간다. 처리하지 못한 task는 out/_failed.txt에 "<KEY>\t<이유>" 한 줄로 적는다.
 2. 쓰는 것은 out/<KEY>/tldr.wiki와 out/<KEY>/verdict.json뿐이다. 결과 산출물 구역과 comment는 쓰지 않는다.
    누락 알림 comment는 스크립트가 precheck 결과로 따로 보낸다.
-3. verdict.json의 verdict는 null로 두고, checks에는 precheck.json의 checks를 그대로 옮기며, acStatus는 빈
-   배열로 두고, requests에는 정정 comment를 반영했는지와 사람 구역에 추가를 권장할 링크만 적는다.
+3. verdict.json의 verdict는 null로 두고, checks에는 precheck.json의 checks를 그대로 옮기며, items와 extra는
+   빈 배열로 두고, requests에는 정정 comment를 반영했는지와 사람 구역에 추가를 권장할 링크만 적는다.
+   문서화 리뷰(T4~T7)는 하지 않으며 feedback은 쓰지 않는다.
 4. TL;DR은 "지금까지의 진행 결과"를 쓴다. 완료되지 않은 task이므로 결과 수치가 없으면 무엇을 시도했고 어디까지
    왔는지를 쓰고, 다음 항목이나 막힌 것을 한 줄 넣는다.
 
@@ -28,8 +29,9 @@
   "issueKey": "INNO-17",
   "mode": "digest",
   "verdict": null,
-  "checks": [ { "id": "T1", "result": "pass", "detail": "AC 3개" } ],
-  "acStatus": [],
+  "checks": [ { "id": "T1", "result": "pass", "detail": "예상 산출물 3개" } ],
+  "items": [],
+  "extra": [],
   "requests": [ "정정 comment(2026-09-14) 반영: 평가 데이터 수를 1,200에서 1,180으로 수정" ]
 }
 ```
