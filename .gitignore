@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+# PR 검수 파이프라인 작업 디렉터리 (대상 repo에도 같은 항목을 넣는다)
+.everex-review/
+# jira-doc 파이프라인 작업 디렉터리
+ctx/
+out/
+.DS_Store

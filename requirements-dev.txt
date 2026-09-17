@@ -1,0 +1,6 @@
+# PR 검수 스크립트(scripts/review/)와 이 repo의 테스트에 필요한 도구.
+# CI에서는 대상 repo의 requirements.txt와 함께 설치한다.
+ruff>=0.12
+pytest>=8
+vulture>=2.14
+pyyaml>=6

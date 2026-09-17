@@ -1,0 +1,4 @@
+# 이 repo 자체의 ruff 설정. PR 검수 스크립트가 대상 repo에 적용하는 기본 규칙(scripts/review/ruff-default.toml)을 그대로 따른다.
+extend = "scripts/review/ruff-default.toml"
+# jira-doc 파이프라인 스크립트는 이 규칙 이전에 작성된 것이라 제외한다.
+extend-exclude = ["scripts/collect.py", "scripts/precheck.py", "scripts/apply.py", "scripts/jira_api.py"]

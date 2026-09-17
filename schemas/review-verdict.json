@@ -1,0 +1,79 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "everex-review verdict",
+  "description": "PR 검수의 Claude 단계가 <work>/out/verdict.json 으로 쓰는 출력. apply.py가 검증한 뒤 precheck 결과와 합쳐 PR comment를 만든다. 검사 1, 2, 3-1, 5는 스크립트가 판정하므로 checks에 넣지 않는다 (넣으면 verdict 전체가 무효).",
+  "type": "object",
+  "required": ["verdict", "checks", "symbols", "dead_code", "design", "requests"],
+  "additionalProperties": false,
+  "properties": {
+    "verdict": {
+      "description": "agent의 종합 판정. 최종 판정은 apply.py가 스크립트 규칙(3-3/4-2 실패면 reject)으로 다시 계산한다.",
+      "enum": ["pass", "reject"]
+    },
+    "checks": {
+      "description": "agent가 판정하는 검사 항목. 3-2/4-1 테스트 필요 여부, 3-3/4-2 테스트 존재 여부, 6 미사용 코드, 7 비효율/확장성. 각 id는 한 번만.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "result"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "enum": ["3-2", "3-3", "4-1", "4-2", "6", "7"] },
+          "result": { "enum": ["pass", "fail", "n/a"] },
+          "detail": { "type": "string", "maxLength": 500 }
+        }
+      }
+    },
+    "symbols": {
+      "description": "review-input.json의 symbols 중 테스트 파일이 아닌 추가/수정 심볼마다 하나. name과 file은 review-input의 값과 같아야 comment 표에 대응된다.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "file", "needs_test"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "file": { "type": "string", "minLength": 1 },
+          "needs_test": { "type": "boolean", "description": "별도 테스트가 필요한 변경인가 (3-2, 4-1)" },
+          "reason": { "type": "string", "maxLength": 500, "description": "필요/불필요 판단의 근거" },
+          "test_found": { "type": ["boolean", "null"], "description": "needs_test가 true일 때, 그 심볼을 실제로 검증하는 테스트가 있는가 (3-3, 4-2). 불필요하면 null" },
+          "evidence": { "type": "string", "maxLength": 500, "description": "테스트 위치 (파일:줄 test_name)" }
+        }
+      }
+    },
+    "dead_code": {
+      "description": "review-input.json의 dead_code_candidates를 검토한 결과. 동적 참조 등으로 실제로는 쓰이는 것은 confirmed=false.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "file", "confirmed"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "file": { "type": "string" },
+          "confirmed": { "type": "boolean" },
+          "reason": { "type": "string", "maxLength": 500 }
+        }
+      }
+    },
+    "design": {
+      "description": "7번. 비효율, 확장성에 대한 의견. 판정에 영향을 주지 않는 comment.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["file", "comment"],
+        "additionalProperties": false,
+        "properties": {
+          "file": { "type": "string" },
+          "line": { "type": ["integer", "null"] },
+          "comment": { "type": "string", "maxLength": 1000 }
+        }
+      }
+    },
+    "requests": {
+      "description": "작성자에게 요청할 것. comment의 '요청' 번호 목록으로 들어간다.",
+      "type": "array",
+      "items": { "type": "string", "maxLength": 500 }
+    }
+  }
+}
