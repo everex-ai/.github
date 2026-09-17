@@ -69,15 +69,22 @@ def gh(*args: str) -> list | dict | None:
         return None
 
 
+def key_pattern(key_re: str) -> re.Pattern:
+    """task 키 일치. INNO-1이 INNO-17에 걸리지 않게 앞뒤 경계를 본다.
+    \\b는 한글 앞에서 끊기지 않으므로('INNO-17에서') 영숫자 lookaround를 쓴다."""
+    return re.compile(rf"(?<![A-Za-z0-9]){key_re}(?![0-9])")
+
+
 def fetch_prs(key: str, org: str) -> list[dict]:
     found = gh("search", "prs", key, "--owner", org, "--json", "title,url,state,repository,number", "--limit", "20") or []
+    pat = key_pattern(re.escape(key))
     out = []
     for pr in found:
         detail = gh("pr", "view", pr["url"], "--json", "title,state,headRefName,mergedAt,body,url") or {}
         title = detail.get("title") or pr.get("title", "")
         branch = detail.get("headRefName", "")
         body = detail.get("body") or ""
-        where = [w for w, txt in (("title", title), ("branch", branch), ("body", body)) if key in txt]
+        where = [w for w, txt in (("title", title), ("branch", branch), ("body", body)) if pat.search(txt)]
         if not where:
             continue
         out.append({
@@ -130,6 +137,8 @@ def human_input_hash(itype: str, desc: str, comments: list[dict], subtasks: list
         for c in s.get("comments", []):
             if c["kind"] == "human":
                 h.update(f"{c['id']}|{c['updated']}".encode())
+        for p in s.get("prs", []):
+            h.update(f"{p['url']}|{p['state']}|{p['mergedAt']}".encode())
     for p in prs:
         h.update(f"{p['url']}|{p['state']}|{p['mergedAt']}".encode())
     for ch in changelog:
@@ -158,6 +167,7 @@ def collect_issue(j: Jira, key: str, site: str, org: str, mode: str) -> dict | N
             "key": sk, "summary": sf.get("summary"), "status": (sf.get("status") or {}).get("name"),
             "updated": sf.get("updated"), "description": sf.get("description") or "",
             "comments": norm_comments(j.comments(sk), site, sk),
+            "prs": fetch_prs(sk, org) if org else [],       # sub-task 키로만 연결된 PR
         })
     prs = fetch_prs(key, org) if org else []
     state = j.prop_get(key)
@@ -190,7 +200,8 @@ def collect_issue(j: Jira, key: str, site: str, org: str, mode: str) -> dict | N
     write(d / "prs.json", prs)
     write(d / "state.json", state)
     write(d / "meta.json", {"mode": mode, "inputHash": ihash, "collectedAt": now_iso(), "site": site})
-    print(f"[collect] {key}: 수집 완료 (comment {len(comments)}, sub-task {len(subtasks)}, PR {len(prs)})")
+    sub_prs = sum(len(s["prs"]) for s in subtasks)
+    print(f"[collect] {key}: 수집 완료 (comment {len(comments)}, sub-task {len(subtasks)}, PR {len(prs)}, sub-task PR {sub_prs})")
     return {"key": key, "skipped": False}
 
 
@@ -223,7 +234,7 @@ def collect_unlinked_prs(org: str, project: str) -> None:
     since = (dt.date.today() - dt.timedelta(days=3)).isoformat()
     found = gh("search", "prs", "--owner", org, "--merged", "--merged-at", f">={since}",
                "--json", "title,url,repository,closedAt,author", "--limit", "100") or []
-    pat = re.compile(rf"\b{re.escape(project)}-\d+\b")
+    pat = key_pattern(rf"{re.escape(project)}-\d+")
     unlinked = [{"title": p["title"], "url": p["url"], "repo": (p.get("repository") or {}).get("nameWithOwner", ""),
                  "mergedAt": p.get("closedAt"), "author": (p.get("author") or {}).get("login")}
                 for p in found if not pat.search(p.get("title") or "")]

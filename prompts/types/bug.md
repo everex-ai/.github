@@ -2,7 +2,7 @@
 
 ## 구역
 - 사람 구역: 현황(AS-IS), 개선(To-be), 첨부 자료. 제보자가 쓴다. agent는 채워졌는지만 검사한다(B1, B2는 precheck에 있음)
-- agent 구역: TL;DR (원인, 해결). description은 쓰지 않으므로 deliverables.wiki를 만들지 않는다
+- agent 구역: TL;DR (원인, 해결). description은 쓰지 않는다
 
 ## 완료 판단 기준
 1. 원인이 근거 링크(PR 또는 comment)와 함께 있음 (B3)
@@ -23,8 +23,11 @@ h2. Summary
 원인이나 해결을 아직 모르면 그 항목에 "(미확인)"이라고 쓰고 정리 모드에서는 지금까지 시도한 것을 한 줄 덧붙인다.
 정리 모드에서는 "판정" 부분을 빼고 "상태"와 "갱신"만 쓴다.
 
-## verdict.json의 acStatus
-빈 배열([])로 둔다. checks에 B1, B2(precheck 인용), B3, B4(agent 판단), R2, R4, A2를 넣는다.
+## verdict.json의 items와 extra
+둘 다 빈 배열([])로 둔다. checks에 B1, B2(precheck 인용), B3, B4(agent 판단), R2, R3, R4, A2를 넣는다.
+
+## comment.wiki (검수 모드, 결과 요약 부분만)
+원인과 해결이 무엇이었고 To-be 확인이 있었는지를 개조식 2~4줄로 쓴다.
 
 ## 판정
 - pass: B1, B2, B3, B4, R4, A2가 모두 pass 또는 n/a

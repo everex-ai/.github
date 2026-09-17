@@ -161,11 +161,16 @@ def sections(desc: str) -> list[tuple[str, int, int, int]]:
     return out
 
 
+def norm_title(title: str) -> str:
+    """구역 제목 비교용. 굵게(*), 기울임(_), 밑줄(+), 색 표식과 공백을 뗀다. 'h2. *진행 배경*'도 잡기 위해."""
+    return re.sub(r"\{color[^}]*\}|[*_+\s]", "", title or "").lower()
+
+
 def find_section(desc: str, prefix: str):
     """제목이 prefix로 시작하는 첫 구역. 괄호 설명이 붙은 제목('예상 산출물 (Task 완료 기준)')도 잡는다."""
-    p = prefix.replace(" ", "").lower()
+    p = norm_title(prefix)
     for title, hs, bs, be in sections(desc):
-        if title.replace(" ", "").lower().startswith(p):
+        if norm_title(title).startswith(p):
             return title, hs, bs, be
     return None
 
