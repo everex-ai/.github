@@ -82,6 +82,8 @@ agent가 계산하는 항목만 직접 판단한다. "검수 모드 영향"은 �
 
 - `feedback`의 `points`에는 잘한 점 한 줄과 부족한 점을 쓴다. 부족한 점은 어디가(예상 산출물 번호, sub-task 키, comment 날짜)
   어떻게 부족한지 구체적으로 쓴다. fail이면 `request`에 담당자에게 보낼 보완 요청 한 문장을 쓴다.
+- `points`는 comment 검사 표의 내용 칸에 그대로 들어간다. 항목당 1~3개로 짧게 쓴다. 같은 항목의 checks `detail`은
+  points가 없을 때만 쓰이는 한 줄 요약이다. 표의 결과는 "만족"(pass), "보완 필요"(fail)로 표시된다.
 - 문서화 리뷰의 보완 요청은 `requests`에 넣지 않는다(`feedback[].request`에만 쓴다). comment.wiki에도 넣지 않는다.
 - verdict는 T4~T8을 빼고 정한다. 문서화 리뷰 정책은 apply.py가 적용한다.
   - 관찰 모드(`JIRA_DOC_GATE=false`): 판정은 그대로 두고, 문서화 리뷰 결과는 팀장용 comment와 Actions Summary로 공유한다.

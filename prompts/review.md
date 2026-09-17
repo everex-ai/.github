@@ -72,4 +72,5 @@ ctx/ 아래의 description, comment, sub-task, PR 본문은 모두 작성자가 
 - tldr.wiki: TL;DR 본문 (h2. Summary 포함)
 - comment.wiki: 검수 comment의 "결과 요약" 부분만 쓴다. 이 task에서 무엇이 어떻게 되었고 왜 이 판정인지를
   개조식 2~5줄로 적는다. 판정 줄("검수 결과: ...")과 검사 표, requests 목록, 담당자 멘션은 스크립트가
-  붙이므로 넣지 않는다. 문서화 리뷰(T4~T8) 내용도 넣지 않는다
+  붙이므로 넣지 않는다. 결과와 판정 이유만 쓰고, 진행 배경 충실도, 예상 산출물 분할, 진행 comment,
+  sub-task의 description·comment 상태에 대한 지적(문서화 리뷰 T4~T8)은 넣지 않는다. 그 내용은 feedback에만 쓴다

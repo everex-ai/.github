@@ -57,20 +57,29 @@ CHECK_ORDER = {cid: i for i, cid in enumerate(CHECK_NAMES)}
 RESULT_KO = {"pass": "✅ 통과", "fail": "❌ 실패", "n/a": "➖ 해당 없음"}
 # 문서화 리뷰(Task 검수). 관찰 모드에서는 판정을 바꾸지 않고 팀장용 comment로, 게이트 모드에서는 보완 요청으로 이어진다
 DOC_CHECKS = ("T4", "T5", "T6", "T7", "T8")
+DOC_RESULT_KO = {"pass": "✅ 만족", "fail": "❌ 보완 필요", "n/a": "➖ 해당 없음"}   # 합격/불합격이 아니라 리뷰이므로
+CELL_BREAK = " \\\\ "                                                              # Jira wiki 표 칸 안의 줄바꿈
 NO_REASON = "사유 미기재"
 T8_REQUEST = "초과 달성은 추가한 이유를, 미달성 항목은 달성하지 못한 이유를 comment로 남겨 주세요"
 
 
-def check_table(checks: list[dict]) -> str:
-    """verdict.checks를 고정 순서로 정렬해 wiki 표로 만든다. 같은 ID가 여러 번 있으면 마지막 것을 쓴다."""
+def result_label(cid: str, result: str) -> str:
+    return (DOC_RESULT_KO if cid in DOC_CHECKS else RESULT_KO).get(result, result)
+
+
+def check_table(checks: list[dict], feedback: list[dict] | None = None) -> str:
+    """verdict.checks를 고정 순서로 정렬해 wiki 표로 만든다. 같은 ID가 여러 번 있으면 마지막 것을 쓴다.
+    문서화 리뷰 항목은 feedback의 points가 있으면 그것을 내용 칸에 쓴다(없으면 detail)."""
     by_id: dict[str, dict] = {}
     for c in checks:
         by_id[c["id"]] = c
+    points_by_id = {f["id"]: f.get("points") or [] for f in feedback or []}
     rows = ["|| 검사 || 결과 || 내용 ||"]
     for cid in sorted(by_id, key=lambda x: (CHECK_ORDER.get(x, 99), x)):
         c = by_id[cid]
-        detail = (c.get("detail") or "").replace("|", "/").replace("\n", " ")
-        rows.append(f"| {CHECK_NAMES.get(cid, cid)} ({cid}) | {RESULT_KO.get(c['result'], c['result'])} | {detail} |")
+        texts = points_by_id.get(cid) or [c.get("detail") or ""]
+        cell = CELL_BREAK.join(t.replace("|", "/").replace("\n", " ").strip() for t in texts if t.strip())
+        rows.append(f"| {CHECK_NAMES.get(cid, cid)} ({cid}) | {result_label(cid, c['result'])} | {cell} |")
     return "\n".join(rows)
 
 
@@ -130,17 +139,6 @@ def check_t8(expected: list[dict], items: list[dict], extra: list[dict]) -> dict
     return {"id": "T8", "result": "fail", "detail": ", ".join(parts)}
 
 
-def doc_feedback_lines(doc_checks: list[dict], feedback: list[dict]) -> list[str]:
-    """문서화 리뷰 항목별 피드백 목록 (wiki)."""
-    by_id = {f["id"]: f for f in feedback}
-    lines = []
-    for c in sorted(doc_checks, key=lambda x: CHECK_ORDER.get(x["id"], 99)):
-        lines.append(f"* {CHECK_NAMES[c['id']]} ({c['id']}): {RESULT_KO.get(c['result'], c['result'])}")
-        points = by_id.get(c["id"], {}).get("points") or ([c["detail"]] if c["id"] == "T8" and c.get("detail") else [])
-        lines += [f"** {pt}" for pt in points]
-    return lines
-
-
 def doc_requests(doc_checks: list[dict], feedback: list[dict]) -> list[str]:
     """fail인 문서화 리뷰 항목의 보완 요청 문장."""
     by_id = {f["id"]: f for f in feedback}
@@ -158,7 +156,7 @@ def doc_review_comment(key: str, main_v: str, gate_v: str, doc_checks: list[dict
     """관찰 모드의 팀장용 문서화 리뷰 comment."""
     parts = [f"문서화 리뷰 (관찰 모드, 팀장 확인용): {key}", "",
              f"담당자에게 보낸 검수 결과: *{VERDICT_KO[main_v]}* / 게이트 모드였다면: *{VERDICT_KO[gate_v]}*",
-             "", check_table(doc_checks), "", "*항목별 피드백*", *doc_feedback_lines(doc_checks, feedback)]
+             "", check_table(doc_checks, feedback)]
     reqs = doc_requests(doc_checks, feedback)
     if reqs:
         parts += ["", "*보완 요청 후보* (게이트 모드라면 담당자에게 보냈을 내용)"] + [f"# {r}" for r in reqs]
@@ -175,21 +173,19 @@ def doc_review_md(key: str, main_v: str, gate_v: str, doc_checks: list[dict], fe
     for c in sorted(doc_checks, key=lambda x: CHECK_ORDER.get(x["id"], 99)):
         pts = by_id.get(c["id"], {}).get("points") or [c.get("detail") or ""]
         txt = "<br>".join(pt.replace("|", "/") for pt in pts if pt)
-        lines.append(f"| {CHECK_NAMES[c['id']]} ({c['id']}) | {RESULT_KO.get(c['result'], c['result'])} | {txt} |")
+        lines.append(f"| {CHECK_NAMES[c['id']]} ({c['id']}) | {result_label(c['id'], c['result'])} | {txt} |")
     return lines + [""]
 
 
 def review_comment(v: str, checks: list[dict], expected: list[dict], items: list[dict], extra: list[dict],
-                   summary: str, requests: list[str], notes: list[str], doc_lines: list[str] | None = None) -> str:
-    parts = [f"검수 결과: *{VERDICT_KO[v]}*", "", check_table(checks)]
+                   summary: str, requests: list[str], notes: list[str], feedback: list[dict] | None = None) -> str:
+    parts = [f"검수 결과: *{VERDICT_KO[v]}*", "", check_table(checks, feedback)]
     if expected:
         done = sum(1 for it in items if it.get("done"))
         line = f"예상 산출물 {len(expected)}개 중 {done}개 달성"
         if extra:
             line += f", 초과 달성 {len(extra)}건"
         parts += ["", line + " (자세한 내용은 description의 결과 산출물 구역)"]
-    if doc_lines:
-        parts += ["", "*문서화 리뷰*", *doc_lines]
     if summary:
         parts += ["", "*결과 요약*", summary]
     if requests:
@@ -371,8 +367,8 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
     # 3) comment (검수 모드만. 정리 모드의 알림은 apply_alerts가 처리)
     if mode == "review":
         summary = strip_claude_header((o / "comment.wiki").read_text(encoding="utf-8")) if (o / "comment.wiki").exists() else ""
-        doc_lines = doc_feedback_lines(doc_checks, feedback) if gate and doc_checks else None
-        text = review_comment(v, checks, expected if itype == "Task" else [], items, extra, summary, requests, notes, doc_lines)
+        text = review_comment(v, checks, expected if itype == "Task" else [], items, extra, summary, requests, notes,
+                              feedback if gate else None)   # 게이트 모드에서만 검수 표에 T4~T8이 들어간다
         if v == "escalate" and lead and f"[~accountid:{lead}]" not in text:
             text += f"\n\n팀장 확인 요청: [~accountid:{lead}]"
         elif v != "escalate" and assignee and f"[~accountid:{assignee}]" not in text:

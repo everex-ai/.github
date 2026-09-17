@@ -77,6 +77,7 @@ rules.md의 "문서화 리뷰" 기준으로 T4~T7을 checks에 넣고, 항목마
     "request": "INNO-19 description에 무엇을 왜 했는지 적어 주세요" }
 ]
 ```
+- points는 comment 검사 표의 내용 칸에 들어가므로 항목당 1~3개로 짧게 쓴다.
 - 문서화 리뷰의 보완 요청은 requests가 아니라 feedback[].request에만 쓴다. comment.wiki에도 넣지 않는다.
 
 ## tldr.wiki 형식
