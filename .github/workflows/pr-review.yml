@@ -1,0 +1,145 @@
+name: pr-review
+
+# AI팀 PR 코드 검수 (재사용 워크플로). 대상 repo의 얇은 호출 yml(workflow-templates/pr-review.yml)이 부른다.
+#   1단 스크립트: collect -> classify -> precheck   (반려면 Claude를 부르지 않는다)
+#   2단 Claude  : run_claude.sh (orchestrator + subagent 4개, plugins/everex-review)
+#   3단 스크립트: apply (PR comment, 라벨. gate=true면 반려/오류 시 check 실패)
+# 문서: docs/pr-review-agent.md
+
+on:
+  workflow_call:
+    inputs:
+      gate:
+        description: "true면 반려/오류 시 check를 실패시킨다. false면 comment와 라벨만 남긴다 (관찰 모드)"
+        type: boolean
+        default: false
+      python_version:
+        type: string
+        default: "3.11"
+      install_command:
+        description: "대상 repo 의존성 설치 명령"
+        type: string
+        default: "pip install -r requirements.txt"
+      pytest_args:
+        description: "pytest에 덧붙일 인자 (예: -m 'not gpu')"
+        type: string
+        default: ""
+      test_timeout:
+        description: "pytest 제한 시간(초)"
+        type: number
+        default: 900
+      orchestrator_model:
+        type: string
+        default: "claude-opus-5"
+      claude_version:
+        description: "@anthropic-ai/claude-code npm 버전. 플러그인/권한 동작을 확인한 버전으로 고정한다"
+        type: string
+        default: "2.1.272"
+      tools_ref:
+        description: "everex-ai/.github 에서 스크립트와 플러그인을 가져올 ref"
+        type: string
+        default: "main"
+      skip_draft:
+        type: boolean
+        default: true
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        description: "claude setup-token 으로 만든 구독 토큰. Claude 단계에만 준다"
+        required: true
+
+concurrency:
+  group: pr-review-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # fork PR은 secret을 받을 수 없어 건너뛴다. draft는 skip_draft=true면 건너뛴다.
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && !(inputs.skip_draft && github.event.pull_request.draft)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      pull-requests: write                  # PR comment, 라벨
+      issues: write                         # 라벨 생성
+    env:
+      TZ: Asia/Seoul
+    steps:
+      - name: 대상 repo checkout (PR head)
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0                    # merge-base 계산에 전체 이력이 필요하다
+          persist-credentials: false
+
+      - name: 검수 도구 checkout (everex-ai/.github)
+        uses: actions/checkout@v6
+        with:
+          repository: everex-ai/.github
+          ref: ${{ inputs.tools_ref }}
+          path: .review-tools-checkout
+          persist-credentials: false
+
+      - name: 검수 도구를 대상 repo 밖으로 옮김
+        # 대상 repo 안에 두면 pytest, vulture, 작업 트리 비교에 섞인다. 이후 스텝은 $TOOLS 로 참조한다
+        run: |
+          TOOLS="$RUNNER_TEMP/review-tools"
+          rm -rf "$TOOLS"
+          mv .review-tools-checkout "$TOOLS"
+          echo "TOOLS=$TOOLS" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      - name: 의존성 설치
+        env:
+          INSTALL_COMMAND: ${{ inputs.install_command }}
+        run: |
+          python -m pip install -q --upgrade pip
+          bash -c "$INSTALL_COMMAND"
+          pip install -q -r "$TOOLS/requirements-dev.txt"
+
+      - name: 1. 변경 수집, 분류, 결정론적 검사 (1, 2, 3-1, 5)
+        id: precheck
+        env:
+          PYTEST_ARGS: ${{ inputs.pytest_args }}
+          TEST_TIMEOUT: ${{ inputs.test_timeout }}
+        run: |
+          python "$TOOLS/scripts/review/collect.py"  --repo . --event "$GITHUB_EVENT_PATH"
+          python "$TOOLS/scripts/review/classify.py" --repo .
+          python "$TOOLS/scripts/review/precheck.py" --repo . --pytest-args "$PYTEST_ARGS" --test-timeout "$TEST_TIMEOUT"
+
+      - name: claude CLI 설치
+        if: steps.precheck.outputs.precheck == 'continue'
+        env:
+          CLAUDE_VERSION: ${{ inputs.claude_version }}
+        run: npm install -g --silent "@anthropic-ai/claude-code@$CLAUDE_VERSION" && claude --version
+
+      - name: 2. Claude 검수 (3-2, 3-3, 4-1, 4-2, 6, 7)
+        if: steps.precheck.outputs.precheck == 'continue'
+        continue-on-error: true             # 실패해도 3단이 "오류"로 알린다. check 실패 여부는 gate가 정한다
+        timeout-minutes: 20
+        env:                                # Claude 토큰은 이 스텝에만 준다. GitHub 토큰은 주지 않는다
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          MODEL: ${{ inputs.orchestrator_model }}
+        run: bash "$TOOLS/scripts/review/run_claude.sh" . "$MODEL"
+
+      - name: 3. PR 반영 (comment, 라벨, gate)
+        if: always() && steps.precheck.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE: ${{ inputs.gate }}
+        run: python "$TOOLS/scripts/review/apply.py" --repo . --gate "$GATE" --require-clean --repo-slug "$GITHUB_REPOSITORY"
+
+      - name: 검수 입력/출력 보관 (판정 비교용)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: everex-review-pr${{ github.event.pull_request.number }}
+          path: .everex-review/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 30

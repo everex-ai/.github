@@ -1,0 +1,31 @@
+# 대상 repo에 ruff 설정(ruff.toml, .ruff.toml, pyproject [tool.ruff])이 없을 때 precheck.py가 쓰는 기본 규칙.
+# 대상 repo에 설정이 있으면 그 설정이 이긴다 (이 파일은 쓰지 않는다).
+# 검수 절차 3-1: 형식(format), 타입 힌트(ANN), docstring(D, google 스타일).
+line-length = 120
+target-version = "py310"
+
+[lint]
+select = ["E", "F", "W", "I", "D", "ANN"]
+ignore = [
+  "D100",   # 모듈 docstring
+  "D104",   # 패키지 docstring
+  "D105",   # magic method docstring
+  "D107",   # __init__ docstring
+  "ANN401", # Any 사용은 설계 의견(7번)으로 다룬다
+  "E501",   # 줄 길이는 format이 처리한다
+  "D403",   # 첫 단어 대문자 강제는 한국어/식별자로 시작하는 docstring과 맞지 않는다
+]
+
+[lint.pydocstyle]
+convention = "google"
+
+[lint.flake8-annotations]
+mypy-init-return = true
+
+[lint.per-file-ignores]
+"tests/**" = ["D", "ANN"]
+"test/**" = ["D", "ANN"]
+"test_*.py" = ["D", "ANN"]
+"*_test.py" = ["D", "ANN"]
+"conftest.py" = ["D", "ANN"]
+"__init__.py" = ["F401"]

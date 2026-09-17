@@ -1,0 +1,7 @@
+{
+  "name": "Everex PR review",
+  "description": "AI팀 PR 코드 검수 (ruff, pytest, Claude subagent). everex-ai/.github 의 재사용 워크플로를 호출한다.",
+  "iconName": "octicon-code-review",
+  "categories": ["Python"],
+  "filePatterns": ["requirements.txt$", "pyproject.toml$"]
+}

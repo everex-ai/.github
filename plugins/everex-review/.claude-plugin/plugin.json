@@ -1,0 +1,6 @@
+{
+  "name": "everex-review",
+  "version": "0.1.0",
+  "description": "AI팀 PR 코드 검수. orchestrator가 .everex-review/ctx/review-input.json 을 읽고 subagent 4개(test-necessity, test-coverage, dead-code, design-review)를 불러 .everex-review/out/verdict.json 을 쓴다.",
+  "author": { "name": "everex AI team" }
+}
