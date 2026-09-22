@@ -6,6 +6,7 @@
     (a) 최근 3일 안에 사람의 변경이 있었던 In Progress/Backlog task  -> ctx/<KEY>/   (Claude가 TL;DR 갱신)
     (b) Done/Deleted가 아닌 모든 최상위 task의 요약                  -> ctx/_scan/   (스크립트가 누락 검사)
     (c) 최근 3일 안에 병합됐지만 제목에 task 키가 없는 PR             -> ctx/_org/unlinked_prs.json
+- alerts 모드: 주간 점검용. 개별 task 수집 없이 (b)만 만든다 (Claude 단계를 쓰지 않는다)
 환경 변수: JIRA_*, JIRA_PROJECT_KEY, JIRA_TLDR_FIELD_ID, GH_TOKEN, GH_ORG
 """
 from __future__ import annotations
@@ -220,6 +221,7 @@ def collect_scan(j: Jira, project: str, site: str) -> None:
         changelog = norm_changelog(j.changelog(key))
         write(CTX / "_scan" / f"{key}.json", {
             "key": key, "type": itype, "status": (f.get("status") or {}).get("name"),
+            "summary": f.get("summary"), "url": f"{site}/browse/{key}" if site else "",
             "created": f.get("created"), "updated": f.get("updated"),
             "assignee": {"accountId": (f.get("assignee") or {}).get("accountId"), "displayName": (f.get("assignee") or {}).get("displayName")},
             "attachmentCount": len(f.get("attachment") or []),
@@ -244,7 +246,7 @@ def collect_unlinked_prs(org: str, project: str) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["review", "digest"], required=True)
+    ap.add_argument("--mode", choices=["review", "digest", "alerts"], required=True)
     ap.add_argument("--issue", default="")
     args = ap.parse_args()
 
@@ -256,6 +258,12 @@ def main() -> None:
         shutil.rmtree(CTX)
     CTX.mkdir()
 
+    if args.mode == "alerts":                      # 주간 점검: 누락 검사용 요약만 모은다
+        if not project:
+            sys.exit("alerts 모드에는 JIRA_PROJECT_KEY가 필요하다")
+        collect_scan(j, project, site)
+        print(f"[collect] alerts: 점검 대상 {len(list((CTX / '_scan').glob('*.json')))}건")
+        return
     if args.issue:
         collect_issue(j, args.issue.strip(), site, org, args.mode)
         return

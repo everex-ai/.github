@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """4단계: Claude의 출력(out/<KEY>/)을 검증해 Jira에 반영한다. Jira에 쓰는 유일한 단계.
 
+alerts 모드(주간 점검)는 Jira에 쓰지 않고 ctx/_scan/*.alerts.json을 Slack 한 건으로 보낸다.
+
 반영 순서: 구역 교체(결과 산출물) -> TL;DR -> comment -> property -> 상태 전환(게이트 모드만)
 - verdict.json이 없거나 형식이 틀리면 반영하지 않고 실패로 기록한다 (검수 모드면 팀장 멘션 comment).
 - 결과 산출물 구역과 검수 comment의 검사 표는 Claude의 verdict.json(items, extra, checks)을 받아 이 스크립트가
@@ -19,6 +21,8 @@ import json
 import os
 import re
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -61,6 +65,10 @@ DOC_RESULT_KO = {"pass": "✅ 만족", "fail": "❌ 보완 필요", "n/a": "➖ 
 CELL_BREAK = " \\\\ "                                                              # Jira wiki 표 칸 안의 줄바꿈
 NO_REASON = "사유 미기재"
 T8_REQUEST = "초과 달성은 추가한 이유를, 미달성 항목은 달성하지 못한 이유를 comment로 남겨 주세요"
+# 주간 점검(alerts) Slack 보고
+SLACK_USERS = Path(__file__).parent.parent / "config" / "slack-users.json"   # Jira accountId -> Slack member ID
+ALERT_SECTIONS = [("R4", "stop 사유 미기재"), ("A1", "5영업일 이상 활동 없음")]
+ALERT_LIMIT = 15
 
 
 def result_label(cid: str, result: str) -> str:
@@ -438,11 +446,76 @@ def apply_alerts(j: Jira, ctx: Path, lead: str, summ: Summary) -> None:
     print(f"[apply] 누락 알림 comment {sent}건")
 
 
+def slack_mention(assignee: dict | None, users: dict) -> str:
+    """Slack 멤버 ID가 있으면 멘션으로, 없으면 이름으로. 담당자가 없으면 '담당자 미지정'."""
+    a = assignee or {}
+    uid = users.get(a.get("accountId") or "")
+    if uid:
+        return f"<@{uid}>"
+    return a.get("displayName") or "담당자 미지정"
+
+
+def weekly_lines(scan: Path, users: dict) -> tuple[list[str], list[str]]:
+    """(Slack 본문 줄, 멘션 목록). 알림이 없으면 본문은 빈 목록."""
+    rows: dict[str, list[dict]] = {cid: [] for cid, _ in ALERT_SECTIONS}
+    mentions: list[str] = []
+    for p in sorted(scan.glob("*.alerts.json")) if scan.exists() else []:
+        a = load_json(p, {})
+        for al in a.get("alerts", []):
+            if al.get("check") in rows:
+                rows[al["check"]].append({**a, "detail": al.get("detail") or al.get("message", "")})
+    lines: list[str] = []
+    for cid, title in ALERT_SECTIONS:
+        items = rows[cid]
+        if not items:
+            continue
+        lines += ["", f"*{title}* ({len(items)}건)"]
+        for it in items[:ALERT_LIMIT]:
+            who = slack_mention(it.get("assignee"), users)
+            if who.startswith("<@") and who not in mentions:
+                mentions.append(who)
+            lines.append(f"• {it['key']} {it.get('summary') or ''} — 담당 {who}, {it['detail']}")
+            if it.get("url"):
+                lines.append(f"  {it['url']}")
+        if len(items) > ALERT_LIMIT:
+            lines.append(f"• 외 {len(items) - ALERT_LIMIT}건")
+    return lines, mentions
+
+
+def slack_post(text: str) -> str:
+    """Slack Incoming Webhook 전송. 나중에 봇 토큰으로 바꾸려면 이 함수만 교체한다."""
+    url = os.environ.get("SLACK_WEBHOOK_URL", "")
+    if not url:
+        return "SLACK_WEBHOOK_URL 없음. 전송 건너뜀"
+    body = json.dumps({"text": text}).encode()
+    req = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return "전송 완료" if r.status == 200 else f"전송 응답 {r.status}"
+    except (urllib.error.HTTPError, urllib.error.URLError) as e:
+        return f"전송 실패: {e}"
+
+
+def slack_weekly(ctx: Path, summ: Summary) -> None:
+    """주간 점검 결과를 Slack 한 건으로 보낸다. 첫 줄이 스레드 제목이고 담당자를 멘션한다."""
+    users = load_json(SLACK_USERS, {}) or {}
+    lines, mentions = weekly_lines(ctx / "_scan", users)
+    head = f"[{dt.datetime.now().strftime('%Y-%m-%d')} 전달사항] " + (" ".join(mentions) if mentions else "")
+    if lines:
+        text = "\n".join([head.rstrip(), "아래 항목을 확인하고 해당 task에 기록을 남겨 주세요.", *lines])
+    else:
+        text = "\n".join([f"[{dt.datetime.now().strftime('%Y-%m-%d')} 전달사항]", "점검 결과 이상 없음"])
+    result = slack_post(text)
+    note = f"알림 대상 {len(mentions)}명" if lines else "알림 없음"
+    summ.row("-", "-", "alerts", result, note)
+    summ.extra += [f"### 주간 점검 (Slack {result})", "", "```", text, "```", ""]
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ctx", default="ctx")
     ap.add_argument("--out", default="out")
-    ap.add_argument("--mode", choices=["review", "digest"], required=True)
+    ap.add_argument("--mode", choices=["review", "digest", "alerts"], required=True)
     ap.add_argument("--gate", default="false")
     ap.add_argument("--summary", default=os.environ.get("GITHUB_STEP_SUMMARY", ""))
     args = ap.parse_args()
@@ -450,8 +523,14 @@ def main() -> None:
     ctx, out = Path(args.ctx), Path(args.out)
     gate = str(args.gate).lower() == "true"
     lead = os.environ.get("JIRA_LEAD_ACCOUNT_ID", "")
-    j = Jira()
     summ = Summary(args.summary)
+
+    if args.mode == "alerts":                      # 주간 점검: Jira에 쓰지 않고 Slack으로만 보고
+        slack_weekly(ctx, summ)
+        summ.flush()
+        return
+
+    j = Jira()
 
     for d in sorted(ctx.glob("[A-Z]*-[0-9]*/")):
         if (d / "issue.json").exists():
