@@ -1,17 +1,20 @@
 name: jira-doc
 
 # AI팀 업무 문서화 agent
-# - 정리 모드(digest): 평일 09:00 KST cron, 또는 Jira F3(수동 트리거)
 # - 검수 모드(review): Jira F1(request 전환) 또는 Actions 화면의 수동 실행
+# - 정리 모드(digest): Jira F3(수동 트리거) 또는 Actions 화면의 수동 실행
+# - 점검 모드(alerts): 수요일 09:00 KST cron. Claude를 쓰지 않고 Slack으로 주간 알림만 보낸다
 # 설계 문서: 프로젝트 docs의 task-doc-agent/AI팀_업무문서화_agent_도입계획_v0.1.md
 
 on:
+  schedule:
+    - cron: "0 0 * * 3"                     # 수요일 09:00 KST (UTC 00:00)
   repository_dispatch:
     types: [jira-doc-review, jira-doc-manual]
   workflow_dispatch:
     inputs:
       issueKey:
-        description: "대상 task 키 (예: INNO-17). digest 모드에서 비우면 전체 정리"
+        description: "대상 task 키 (예: INNO-26). digest 모드에서 비우면 전체 정리, alerts 모드에서는 쓰지 않음"
         required: false
         default: ""
       mode:
@@ -19,10 +22,10 @@ on:
         required: true
         default: review
         type: choice
-        options: [review, digest]
+        options: [review, digest, alerts]
 
 concurrency:
-  group: jira-doc-${{ github.event.client_payload.issueKey || inputs.issueKey || 'digest' }}
+  group: jira-doc-${{ github.event.client_payload.issueKey || inputs.issueKey || github.event_name }}
   cancel-in-progress: false
 
 jobs:
@@ -33,8 +36,8 @@ jobs:
       contents: read
       id-token: write                       # Claude Code GitHub App 인증용
     env:
-      # schedule -> digest, F3(jira-doc-manual) -> digest, 그 외(F1, 수동 실행)는 입력값 또는 review
-      MODE: ${{ github.event_name == 'schedule' && 'digest' || github.event.action == 'jira-doc-manual' && 'digest' || inputs.mode || 'review' }}
+      # schedule -> alerts, F3(jira-doc-manual) -> digest, 그 외(F1, 수동 실행)는 입력값 또는 review
+      MODE: ${{ github.event_name == 'schedule' && 'alerts' || github.event.action == 'jira-doc-manual' && 'digest' || inputs.mode || 'review' }}
       ISSUE_KEY: ${{ github.event.client_payload.issueKey || inputs.issueKey }}
       GATE: ${{ vars.JIRA_DOC_GATE || 'false' }}
       JIRA_PROJECT_KEY: ${{ vars.JIRA_PROJECT_KEY }}
@@ -61,7 +64,7 @@ jobs:
         run: python3 scripts/precheck.py ctx/
 
       - name: 3. Claude 문서화 (ctx/ -> out/)
-        if: steps.collect.outputs.count != '0'
+        if: env.MODE != 'alerts' && steps.collect.outputs.count != '0'
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -75,10 +78,11 @@ jobs:
             --max-turns ${{ env.MODE == 'digest' && 200 || 40 }}
             --allowedTools "Read(ctx/**),Read(prompts/**),Read(schemas/**),Edit(out/**)"
 
-      - name: 4. Jira 반영 (out/ -> Jira)
+      - name: 4. 반영 (Jira, 또는 alerts 모드면 Slack)
         if: always() && steps.collect.outcome == 'success'
         env:
           JIRA_CLOUD_ID: ${{ secrets.JIRA_CLOUD_ID }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: python3 scripts/apply.py --ctx ctx/ --out out/ --mode "$MODE" --gate "$GATE" --summary "$GITHUB_STEP_SUMMARY"

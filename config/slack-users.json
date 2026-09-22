@@ -1,0 +1,4 @@
+{
+  "_설명": "Jira accountId -> Slack 멤버 ID. 주간 점검(alerts) Slack 메시지의 멘션에 쓴다. 없는 사람은 Jira 표시 이름으로 나간다.",
+  "712020:7a1ca75e-02bb-4be8-aa40-c85607c29e8b": "U05LM3QJBA8"
+}

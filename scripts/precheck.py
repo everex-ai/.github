@@ -2,7 +2,7 @@
 """2단계: 사람의 판단이 필요 없는 검사를 계산한다.
 
 - ctx/<KEY>/            -> ctx/<KEY>/precheck.json   (Claude가 인용하는 검사 결과와 예상 산출물 목록)
-- ctx/_scan/<KEY>.json  -> ctx/_scan/<KEY>.alerts.json (정리 모드 누락 알림. apply.py가 comment로 보냄)
+- ctx/_scan/<KEY>.json  -> ctx/_scan/<KEY>.alerts.json (주간 점검 알림. apply.py가 Slack으로 보냄)
 검사 항목의 정의는 prompts/rules.md(설계 문서 5.5절)와 같다.
 """
 from __future__ import annotations
@@ -231,42 +231,10 @@ def run_scan(p: Path, now: dt.datetime) -> None:
     changes = s.get("statusChanges", [])
     started = [parse_ts(c["created"]) for c in changes if is_status(c.get("to"), WORK_STATUS)]
     first_start = min(started) if started else None
-    alerts, clear = [], []
+    alerts = []
 
-    # 템플릿 누락: In Progress로 처음 전환된 뒤 1영업일이 지나도 비어 있으면 알림
-    if is_status(status, WORK_STATUS) and first_start and business_days_since(first_start, now) >= 1:
-        day = first_start.date().isoformat()
-        fake_desc = "".join(f"h2. {t}\n{b}\n" for t, b in s["sections"].items() if b)
-        if itype == "Task":
-            t = check_task_template(fake_desc)
-            if t["T1"]["result"] == "fail":
-                alerts.append({"code": f"EXPECTED_MISSING:{day}", "check": "T1", "message": "예상 산출물(Task 완료 기준)이 아직 비어 있습니다. 이 task가 끝났을 때 무엇이 나와야 하는지를 글머리표 또는 번호 목록으로 한 항목씩 적어 주세요."})
-            else:
-                clear.append("EXPECTED_MISSING")
-            if t["T2"]["result"] == "fail":
-                alerts.append({"code": f"BG_MISSING:{day}", "check": "T2", "message": "진행 배경이 아직 비어 있습니다. 왜 이 일을 하는지 두 줄 이상 적어 주세요."})
-            else:
-                clear.append("BG_MISSING")
-        elif itype == "Bug":
-            b = check_bug_template(fake_desc, s.get("attachmentCount", 0))
-            if b["B1"]["result"] == "fail":
-                alerts.append({"code": f"BUG_ASIS_MISSING:{day}", "check": "B1", "message": f"현황(AS-IS)이 불완전합니다 ({b['B1']['detail']}). 다섯 항목과 캡쳐 첨부를 채워 주세요."})
-            else:
-                clear.append("BUG_ASIS_MISSING")
-            if b["B2"]["result"] == "fail":
-                alerts.append({"code": f"BUG_TOBE_MISSING:{day}", "check": "B2", "message": "개선(To-be)에 정상 동작 설명이 없습니다."})
-            else:
-                clear.append("BUG_TOBE_MISSING")
-        elif itype == "Issue":
-            i = check_issue_template(fake_desc)
-            if i["I1"]["result"] == "fail":
-                alerts.append({"code": f"ISSUE_TYPE_MISSING:{day}", "check": "I1", "message": "이슈 유형 체크박스가 선택되지 않았습니다."})
-            elif i["I1"]["result"] == "pass":
-                clear.append("ISSUE_TYPE_MISSING")
-            if i["I2"]["result"] == "fail":
-                alerts.append({"code": f"ISSUE_BODY_MISSING:{day}", "check": "I2", "message": "이슈 내용이 비어 있습니다."})
-            else:
-                clear.append("ISSUE_BODY_MISSING")
+    # 템플릿 누락(T1, T2, B1, B2, I1, I2)은 Jira 전환 검증이 막고 있어 알림에서 다룬다.
+    # 주간 점검은 사람이 보지 않으면 드러나지 않는 두 가지(stop 사유, 무활동)만 본다.
 
     # R4: stop 뒤 24시간이 지나도 사유 comment가 없으면 알림
     stops = stop_events(changes, s.get("humanComments", []), now)
@@ -274,20 +242,21 @@ def run_scan(p: Path, now: dt.datetime) -> None:
         if st["hasReason"]:
             continue
         if is_status(status, STOP_TO) and st["hoursOpen"] >= 24:
-            alerts.append({"code": f"HOLD_REASON_MISSING:{st['at'][:10]}", "check": "R4", "message": f"{st['at'][:10]}에 stop으로 Backlog에 보냈지만 사유 comment가 없습니다. 무엇을 기다리는지, 언제 다시 볼지를 comment로 남겨 주세요."})
-    if stops and all(st["hasReason"] for st in stops):
-        clear.append("HOLD_REASON_MISSING")
+            alerts.append({"code": f"HOLD_REASON_MISSING:{st['at'][:10]}", "check": "R4",
+                           "detail": f"{st['at'][:10]} stop 후 {int(st['hoursOpen'] // 24)}일 경과",
+                           "message": f"{st['at'][:10]}에 stop으로 Backlog에 보냈지만 사유 comment가 없습니다. 무엇을 기다리는지, 언제 다시 볼지를 comment로 남겨 주세요."})
 
     # A1: In Progress에서 5영업일 이상 사람의 활동이 없으면 알림
     if is_status(status, WORK_STATUS):
         last_activity = max([parse_ts(c["created"]) for c in s.get("humanComments", [])] + started + [parse_ts(s["created"])], default=None)
         idle = business_days_since(last_activity, now)
         if idle >= 5:
-            alerts.append({"code": f"STALE:{(last_activity.date() if last_activity else now.date()).isoformat()}", "check": "A1", "message": f"{idle}영업일 동안 comment, sub-task 변경, PR이 없습니다. 진행 상황을 comment로 남기거나, 멈춘 상태라면 stop으로 Backlog에 보내 주세요."})
-        else:
-            clear.append("STALE")
+            alerts.append({"code": f"STALE:{(last_activity.date() if last_activity else now.date()).isoformat()}", "check": "A1",
+                           "detail": f"마지막 활동 {last_activity.date().isoformat() if last_activity else '기록 없음'}({idle}영업일 경과)",
+                           "message": f"{idle}영업일 동안 comment, sub-task 변경, PR이 없습니다. 진행 상황을 comment로 남기거나, 멈춘 상태라면 stop으로 Backlog에 보내 주세요."})
 
-    out = {"key": s["key"], "type": itype, "status": status, "assignee": s.get("assignee"), "alerts": alerts, "clear": clear}
+    out = {"key": s["key"], "type": itype, "status": status, "summary": s.get("summary"), "url": s.get("url"),
+           "assignee": s.get("assignee"), "alerts": alerts, "clear": []}
     p.with_suffix(".alerts.json").write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
     if alerts:
         print(f"[precheck] {s['key']} 알림 {len(alerts)}건: {[a['check'] for a in alerts]}")
