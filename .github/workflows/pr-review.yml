@@ -38,6 +38,10 @@ on:
       skip_draft:
         type: boolean
         default: true
+      reviewers:
+        description: "review/override 라벨로 판정을 뒤집을 수 있는 GitHub 계정 (쉼표 구분). 비우면 override 불가"
+        type: string
+        default: ""
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: "claude setup-token 으로 만든 구독 토큰. Claude 단계에만 준다"
@@ -86,11 +90,25 @@ jobs:
           mv .review-tools-checkout "$TOOLS"
           echo "TOOLS=$TOOLS" >> "$GITHUB_ENV"
 
+      - name: override 확인
+        # 새 push면 review/override 라벨을 떼고, 그 외에 지정 리뷰어의 override가 있으면 검수 대신 override를 반영한다
+        id: override
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEWERS: ${{ inputs.reviewers }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ACTION: ${{ github.event.action }}
+        run: >-
+          python3 "$TOOLS/scripts/review/override.py" check --repo-slug "$GITHUB_REPOSITORY" --pr "$PR_NUMBER"
+          --reviewers "$REVIEWERS" --event-action "$ACTION" --run-attempt "$GITHUB_RUN_ATTEMPT"
+
       - uses: actions/setup-python@v6
+        if: steps.override.outputs.active != 'true'
         with:
           python-version: ${{ inputs.python_version }}
 
       - name: 의존성 설치
+        if: steps.override.outputs.active != 'true'
         env:
           INSTALL_COMMAND: ${{ inputs.install_command }}
         run: |
@@ -100,6 +118,7 @@ jobs:
 
       - name: 1. 변경 수집, 분류, 결정론적 검사 (1, 2, 3-1, 5)
         id: precheck
+        if: steps.override.outputs.active != 'true'
         env:
           PYTEST_ARGS: ${{ inputs.pytest_args }}
           TEST_TIMEOUT: ${{ inputs.test_timeout }}
@@ -110,7 +129,7 @@ jobs:
 
       - name: orchestrator 프롬프트 읽기
         id: prompt
-        if: steps.precheck.outputs.precheck == 'continue'
+        if: steps.precheck.outputs.precheck == 'continue' && steps.precheck.outputs.tier != '0'
         run: |
           {
             echo "text<<EVEREX_REVIEW_PROMPT_EOF"
@@ -120,7 +139,8 @@ jobs:
 
       - name: 2. Claude 검수 (3-2, 3-3, 4-1, 4-2, 6, 7)
         id: claude
-        if: steps.precheck.outputs.precheck == 'continue'
+        # 반려(precheck=reject)이거나 판단 대상이 없으면(등급 0) Claude를 부르지 않는다
+        if: steps.precheck.outputs.precheck == 'continue' && steps.precheck.outputs.tier != '0'
         continue-on-error: true             # 실패해도 3단이 "오류"로 알린다. check 실패 여부는 gate가 정한다
         timeout-minutes: 20
         uses: anthropics/claude-code-action@v1
@@ -149,11 +169,17 @@ jobs:
           test -f .everex-review/out/verdict.json && echo "[claude] -> verdict.json" || echo "[claude] verdict.json 이 만들어지지 않음"
 
       - name: 3. PR 반영 (comment, 라벨, gate)
-        if: always() && steps.precheck.outcome == 'success'
+        if: always() && (steps.precheck.outcome == 'success' || steps.override.outputs.active == 'true')
         env:
           GH_TOKEN: ${{ github.token }}
           GATE: ${{ inputs.gate }}
-        run: python "$TOOLS/scripts/review/apply.py" --repo . --gate "$GATE" --require-clean --repo-slug "$GITHUB_REPOSITORY"
+          OVERRIDE_LOGIN: ${{ steps.override.outputs.login }}
+        run: |
+          if [ -n "$OVERRIDE_LOGIN" ]; then
+            python3 "$TOOLS/scripts/review/apply.py" --repo . --override "$OVERRIDE_LOGIN" --repo-slug "$GITHUB_REPOSITORY"
+          else
+            python3 "$TOOLS/scripts/review/apply.py" --repo . --gate "$GATE" --require-clean --repo-slug "$GITHUB_REPOSITORY"
+          fi
 
       - name: 검수 입력/출력 보관 (판정 비교용)
         if: always()

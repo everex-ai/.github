@@ -1,7 +1,7 @@
 ---
 name: dead-code
 description: 스크립트(vulture, ruff)가 찾은 미사용 함수/클래스/변수/import 후보 중 실제로 쓰이지 않는 것을 가려낸다 (검수 절차 6). 동적 참조, 레지스트리, 프레임워크 hook 같은 오탐을 걸러 JSON으로 돌려준다.
-model: sonnet
+model: haiku
 tools: Read, Grep, Glob
 ---
 

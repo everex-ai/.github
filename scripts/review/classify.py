@@ -3,7 +3,8 @@
 
 - 심볼: 모듈 수준 함수/클래스/변수, 클래스 안의 메서드/중첩 클래스/속성. 함수 안의 중첩 함수는 부모 본문의 일부로 본다.
 - 정규화 텍스트는 ast.unparse 결과다. 서식만 바뀐 것은 unchanged, 주석만 바뀐 것도 unchanged(diff에는 남는다),
-  docstring은 AST의 일부라 바뀌면 modified다.
+  docstring은 AST의 일부라 바뀌면 modified다. 다만 docstring 외에는 같으면 docstring_only=true 로 표시해
+  precheck가 테스트 필요성 판단 대상에서 뺀다.
 - after 파일이 파싱되지 않으면 parse_errors에 기록한다. precheck가 이것을 2번 실패(반려)로 바꾼다.
 
 출력: ctx/symbols.json = {symbols: [...], parse_errors: [...], notes: [...], summary: {...}}
@@ -13,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import copy
 import sys
 from pathlib import Path
 
@@ -100,6 +102,7 @@ def _walk_body(body: list[ast.stmt], prefix: str, out: dict[str, dict], in_class
                 "name": name,
                 "lines": [_start_line(node), node.end_lineno or node.lineno],
                 "text": ast.unparse(node),
+                "text_nodoc": _strip_docstrings(node),
                 "signature": _signature(node),
                 "has_docstring": ast.get_docstring(node) is not None,
                 "annotations": _annotations(node, in_class),
@@ -112,6 +115,7 @@ def _walk_body(body: list[ast.stmt], prefix: str, out: dict[str, dict], in_class
                 "name": name,
                 "lines": [_start_line(node), node.end_lineno or node.lineno],
                 "text": ast.unparse(node),
+                "text_nodoc": _strip_docstrings(node),
                 "signature": f"class {node.name}({', '.join(ast.unparse(b) for b in node.bases)})",
                 "has_docstring": ast.get_docstring(node) is not None,
                 "annotations": None,
@@ -130,11 +134,25 @@ def _walk_body(body: list[ast.stmt], prefix: str, out: dict[str, dict], in_class
                     "name": name,
                     "lines": [node.lineno, node.end_lineno or node.lineno],
                     "text": ast.unparse(node),
+                    "text_nodoc": ast.unparse(node),
                     "signature": None,
                     "has_docstring": None,
                     "annotations": {"annotated": isinstance(node, ast.AnnAssign)},
                     "decorators": [],
                 }
+
+
+def _strip_docstrings(node: ast.AST) -> str:
+    """노드에서 함수/클래스 docstring을 모두 뺀 소스. docstring만 바뀐 수정을 가려낼 때 쓴다."""
+    node = copy.deepcopy(node)
+    for n in ast.walk(node):
+        if not isinstance(n, (*FUNC_TYPES, ast.ClassDef)):
+            continue
+        body = n.body
+        if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+            if isinstance(body[0].value.value, str):
+                n.body = body[1:] or [ast.Pass()]
+    return ast.unparse(node)
 
 
 def _unique_key(name: str, out: dict[str, dict]) -> str:
@@ -197,6 +215,7 @@ def compare_file(
                 "change": change,
                 "lines": s["lines"],
                 "signature_changed": bool(old) and old["signature"] != s["signature"],
+                "docstring_only": bool(old) and old["text_nodoc"] == s["text_nodoc"],
                 "has_docstring": s["has_docstring"],
                 "annotations": s["annotations"],
                 "decorators": s["decorators"],
@@ -215,6 +234,7 @@ def compare_file(
                     "change": "removed",
                     "lines": None,
                     "signature_changed": False,
+                    "docstring_only": False,
                     "has_docstring": s["has_docstring"],
                     "annotations": s["annotations"],
                     "decorators": s["decorators"],

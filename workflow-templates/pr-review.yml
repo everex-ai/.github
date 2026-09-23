@@ -1,7 +1,8 @@
 name: pr-review
 
 # AI팀 PR 코드 검수. 실제 로직은 everex-ai/.github 의 재사용 워크플로에 있다 (docs/pr-review-agent.md).
-# 필요한 것: CLAUDE_CODE_OAUTH_TOKEN secret (organization secret 권장), .gitignore 에 .everex-review/
+# 필요한 것: CLAUDE_CODE_OAUTH_TOKEN secret, .gitignore 에 .everex-review/,
+#           repo variable PR_REVIEW_REVIEWERS (override 가능한 리뷰어 계정, 쉼표 구분). pr-review-override.yml 과 같이 쓴다
 
 on:
   pull_request:
@@ -17,6 +18,7 @@ jobs:
     uses: everex-ai/.github/.github/workflows/pr-review.yml@main
     with:
       gate: false                           # 관찰 모드. 판정 정밀도를 확인한 뒤 true로 올린다
+      reviewers: ${{ vars.PR_REVIEW_REVIEWERS }}
       # python_version: "3.11"
       # install_command: "pip install -r requirements.txt"
       # pytest_args: "-m 'not gpu'"

@@ -1,0 +1,47 @@
+name: pr-review-override
+
+# review/override 라벨 처리 (재사용 워크플로). 대상 repo의 호출 yml(workflow-templates/pr-review-override.yml)이
+# pull_request labeled 이벤트에서 부른다. pr-review 와 따로 두는 이유: 같은 워크플로에서 labeled 를 받으면
+# 무관한 라벨에서 검수 job이 skipped 되고, skipped 는 필수 check에서 통과로 취급되어 게이트를 우회할 수 있다.
+# 문서: docs/pr-review-agent.md
+
+on:
+  workflow_call:
+    inputs:
+      reviewers:
+        description: "review/override 라벨을 붙일 수 있는 GitHub 계정 (쉼표 구분). 비우면 아무도 override할 수 없다"
+        type: string
+        default: ""
+      tools_ref:
+        type: string
+        default: "main"
+
+jobs:
+  override:
+    if: github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'review/override'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write                  # comment, 라벨
+      issues: write
+      actions: write                        # 게이트 check 갱신을 위해 pr-review 실행을 다시 돌린다
+    steps:
+      - name: 검수 도구 checkout (everex-ai/.github)
+        uses: actions/checkout@v6
+        with:
+          repository: everex-ai/.github
+          ref: ${{ inputs.tools_ref }}
+          path: review-tools
+          persist-credentials: false
+
+      - name: override 처리
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEWERS: ${{ inputs.reviewers }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          LABEL: ${{ github.event.label.name }}
+          SENDER: ${{ github.event.sender.login }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: >-
+          python3 review-tools/scripts/review/override.py handle-label --repo-slug "$GITHUB_REPOSITORY"
+          --pr "$PR_NUMBER" --reviewers "$REVIEWERS" --label "$LABEL" --sender "$SENDER" --head-sha "$HEAD_SHA"

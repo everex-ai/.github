@@ -273,3 +273,64 @@ def test_require_clean_turns_dirty_tree_into_error(fixture_repo: Path):
         assert r.returncode == 1 and "agent가 대상 repo 파일을 변경함" in r.stdout
     finally:
         stray.unlink()
+
+
+def test_tier_zero_without_verdict_is_pass():
+    pre = {**_pre(), "tier": 0}
+    m = apply.merge(pre, None, None)
+    assert m["final"] == "pass" and m["agent_error"] is None
+    assert m["checks"]["3-3"] == {"result": "n/a", "detail": "판단 대상 없음 (Claude 단계 생략)"}
+    assert apply.merge({**_pre(), "tier": 1}, None, None)["final"] == "error"  # 등급 1 이상은 verdict가 있어야 한다
+
+
+def test_result_marks():
+    assert apply.result_mark("4-1", "pass") == "✅ 판단 완료"
+    assert apply.result_mark("7", "fail") == "💬 의견 있음"
+    assert apply.result_mark("4-2", "fail") == "❌ 실패"
+    assert apply.result_mark("6", "pass") == "✅ 통과"
+
+
+SUGG = {
+    "file": "calc/ops.py",
+    "start_line": 55,
+    "line": 56,
+    "replacement": "def scale(x: float) -> float:\n    return x\n",
+    "comment": "타입 힌트",
+}
+
+
+def test_validate_suggestions():
+    assert apply.validate_verdict({**GOOD, "suggestions": [SUGG]}) is None
+    assert validate({**GOOD, "suggestions": [SUGG]}, SCHEMA) == []
+    schema_expressible = [{**SUGG, "line": 0}, {**SUGG, "x": 1}, {k: v for k, v in SUGG.items() if k != "comment"}]
+    for bad in [*schema_expressible, {**SUGG, "start_line": 57}]:  # start_line > line 은 스크립트만 잡는다
+        v = {**GOOD, "suggestions": [bad]}
+        assert apply.validate_verdict(v) is not None
+        if bad in schema_expressible:
+            assert validate(v, SCHEMA) != []
+    assert apply.validate_verdict({**GOOD, "suggestions": [SUGG] * 6}) is not None
+
+
+def test_select_and_format_suggestions():
+    files = [{"path": "calc/ops.py", "changed_lines": [[50, 56]]}]
+    outside = {**SUGG, "start_line": 40, "line": 41}
+    kept, dropped = apply.select_suggestions({**GOOD, "suggestions": [SUGG, outside]}, files)
+    assert kept == [SUGG] and dropped == [outside]
+    c = apply.suggestion_comment(SUGG)
+    assert c["path"] == "calc/ops.py" and c["line"] == 56 and c["start_line"] == 55 and c["side"] == "RIGHT"
+    assert "```suggestion\ndef scale(x: float) -> float:\n    return x\n```" in c["body"]
+    single = apply.suggestion_comment({**SUGG, "start_line": None, "line": 55})
+    assert "start_line" not in single
+    ri = _ri(_pre())
+    body = apply.render_comment(ri["pr"], ri, apply.merge(ri["precheck"], GOOD, None), GOOD, (kept, dropped))
+    assert "### 수정 제안 (1건" in body and "변경 줄 밖이라 달지 않은 제안 1건" in body
+
+
+def test_override_body_keeps_previous_result_once():
+    prev = COMMENT_MARKER + "\n## 코드 검수 결과: 반려\n\n| # | ...\n"
+    b1 = apply.override_body(prev, "kim", "abcdef1234")
+    assert b1.startswith(COMMENT_MARKER + "\n" + apply.OVERRIDE_MARK)
+    assert "@kim" in b1 and "`abcdef1`" in b1 and "## 코드 검수 결과: 반려" in b1
+    b2 = apply.override_body(b1, "lee", "9999999999")
+    assert b2.count(apply.OVERRIDE_MARK) == 1 and "@lee" in b2 and "@kim" not in b2 and "## 코드 검수 결과: 반려" in b2
+    assert "(이전 검수 결과 없음)" in apply.override_body(None, "kim", "abcdef1234")

@@ -1,4 +1,4 @@
-"""jsonschema 의존성 없이 draft-07 스키마의 핵심(type, required, additionalProperties, enum, items, $ref, anyOf)만 검사한다."""
+"""jsonschema 의존성 없이 draft-07 스키마의 핵심(type, required, additionalProperties, enum, items, $ref, anyOf, minimum)만 검사한다."""
 
 from __future__ import annotations
 
@@ -49,6 +49,8 @@ def validate(value: object, schema: dict, root: dict | None = None, path: str = 
             return errors
     if "enum" in schema and value not in schema["enum"]:
         errors.append(f"{path}: enum 밖의 값 {value!r}")
+    if isinstance(value, int) and not isinstance(value, bool) and "minimum" in schema and value < schema["minimum"]:
+        errors.append(f"{path}: minimum 미달")
     if isinstance(value, str):
         if "maxLength" in schema and len(value) > schema["maxLength"]:
             errors.append(f"{path}: maxLength 초과")

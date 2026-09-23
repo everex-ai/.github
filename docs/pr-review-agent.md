@@ -48,11 +48,14 @@ AI Engineer가 Python repo에 올린 PR을 팀의 검수 절차(아래 7단계)�
 | `scripts/review/claude_summary.py` | Claude 실행 결과(로컬 CLI JSON, action의 execution_file)에서 turn 수, 권한 거부, subagent 목록을 한 줄로 요약 |
 | `.github/workflows/pr-review.yml` | 재사용 워크플로(`workflow_call`). checkout, 의존성 설치, 1단 → 2단 → 3단, 결과 artifact 보관 |
 | `workflow-templates/pr-review.yml` | 대상 repo에 넣는 호출 yml. organization의 "New workflow" 화면에 템플릿으로도 나온다 |
-| `plugins/everex-review/orchestrator.md` | 2단 프롬프트. review-input.json을 읽고 subagent 넷을 동시에 불러 verdict.json을 쓴다 |
-| `plugins/everex-review/agents/test-necessity.md` | subagent. 3-2, 4-1 심볼별 테스트 필요 여부와 근거 (model: sonnet, 읽기 전용) |
-| `plugins/everex-review/agents/test-coverage.md` | subagent. 3-3, 4-2 심볼을 실제로 검증하는 테스트가 있는지 |
-| `plugins/everex-review/agents/dead-code.md` | subagent. 6 미사용 후보의 오탐 제거 (동적 참조, 프레임워크 hook, 공개 API) |
-| `plugins/everex-review/agents/design-review.md` | subagent. 7 비효율, 확장성 의견 (최대 5개, 변경 줄만) |
+| `.github/workflows/pr-review-override.yml` | 재사용 워크플로. `review/override` 라벨이 붙으면 붙인 사람을 확인하고 override를 반영 |
+| `workflow-templates/pr-review-override.yml` | 대상 repo에 넣는 두 번째 호출 yml (`pull_request: labeled`) |
+| `scripts/review/override.py` | override 라벨 확인(새 push 시 해제, 지정 리뷰어 확인)과 반영 |
+| `plugins/everex-review/orchestrator.md` | 2단 프롬프트 (model: opus). 등급 1이면 혼자 판단, 등급 2면 subagent를 동시에 불러 verdict.json을 쓴다 |
+| `plugins/everex-review/agents/test-necessity.md` | subagent (opus). 3-2, 4-1 심볼별 테스트 필요 여부와 근거. 반려로 이어지는 판단이라 가장 좋은 모델 |
+| `plugins/everex-review/agents/test-coverage.md` | subagent (sonnet). 3-3, 4-2 심볼을 실제로 검증하는 테스트가 있는지 |
+| `plugins/everex-review/agents/dead-code.md` | subagent (haiku). 6 미사용 후보의 오탐 제거 (동적 참조, 프레임워크 hook, 공개 API) |
+| `plugins/everex-review/agents/design-review.md` | subagent (opus). 7 비효율, 확장성 의견과 수정 제안. 프로젝트 문서를 먼저 읽는다 |
 | `schemas/review-input.json` | precheck 출력(Claude 입력)의 스키마 |
 | `schemas/review-verdict.json` | Claude 출력(`out/verdict.json`)의 스키마 |
 | `tests/review/` | 이 repo의 pytest. 스크립트마다 단위 테스트와 fixture 통합 테스트 |
@@ -87,7 +90,7 @@ cat $FX/.everex-review/out/review-comment.md
 FX=/tmp/fx-clean
 python scripts/review/dev/make_fixture.py $FX --clean
 python scripts/review/collect.py --repo $FX --base main --head feature && python scripts/review/classify.py --repo $FX && python scripts/review/precheck.py --repo $FX
-scripts/review/run_claude.sh $FX claude-opus-5        # 두 번째 인자는 orchestrator 모델. subagent는 sonnet 고정
+scripts/review/run_claude.sh $FX claude-opus-5        # 두 번째 인자는 orchestrator 모델. subagent 모델은 agents/*.md frontmatter
 python scripts/review/apply.py --repo $FX --gate true --dry-run --require-clean
 
 # 3) 실제 repo의 브랜치로 (작업 트리는 PR head가 checkout된 상태여야 한다)
@@ -105,10 +108,40 @@ fixture PR의 기대 결과: `scale` 함수에서 D103, ANN001×2, ANN201과 for
 ## 2단(Claude) 구조
 
 - `claude -p` 에 `orchestrator.md`를 프롬프트로, `--plugin-dir plugins/everex-review`로 subagent를 싣는다. subagent는 `Agent` 도구로 `everex-review:test-necessity` 처럼 플러그인 이름이 붙어 호출된다.
-- orchestrator는 `precheck.verdict`가 reject면 아무것도 하지 않는다. 아니면 subagent 넷을 동시에 부르고, 각 JSON을 합쳐 `verdict-schema.json`(precheck가 ctx에 복사해 둔 `schemas/review-verdict.json`)대로 `out/verdict.json`을 쓴다.
+- orchestrator는 `precheck.verdict`가 reject면 아무것도 하지 않는다. 아니면 `precheck.tier`에 따라 혼자 판단하거나(등급 1) subagent를 동시에 부르고(등급 2), `verdict-schema.json`(precheck가 ctx에 복사해 둔 `schemas/review-verdict.json`)대로 `out/verdict.json`을 쓴다.
+- 판단 대상 심볼은 `precheck.targets`다. 테스트, 삭제, docstring만 바뀐 심볼은 스크립트가 뺀다.
 - 판정 규칙은 orchestrator 프롬프트에 있다. 3-3/4-2 fail이면 reject. 6, 7은 comment. checks에 1, 2, 3-1, 5를 쓰면 apply가 verdict 전체를 무효로 본다.
 - 도구 권한: orchestrator `Read,Grep,Glob,Agent,Write`, subagent는 frontmatter로 `Read, Grep, Glob`만. **주의**: claude CLI 2.1.272의 `-p` 모드에서는 (CI는 claude-code-action이 설치하는 2.1.278) `Write(.everex-review/out/**)` 같은 경로 한정 규칙이 allow/deny 모두 동작하지 않았다(bare `Write`만 동작). 그래서 Write를 통째로 허용하고 `apply.py --require-clean`이 작업 트리가 바뀌었으면 verdict를 버리고 error로 처리한다. 같은 이유로 `jira-doc.yml`의 `Edit(out/**)`, `Read(ctx/**)`도 실제로는 의도대로 동작하지 않을 수 있으니 확인이 필요하다.
-- subagent 프롬프트마다 판단 기준, 출력 JSON, 신뢰 경계 문장이 있다. 판정 불일치가 생기면 고칠 곳은 `agents/*.md`의 "판단 기준" 절이다.
+- subagent 프롬프트마다 판단 기준, 출력 JSON, 신뢰 경계 문장이 있다. 판정 불일치가 생기면 고칠 곳은 `agents/*.md`의 "판단 기준" 절이다. 등급 1에서도 orchestrator가 같은 파일을 읽으므로 한 곳만 고치면 된다.
+- design-review는 `project_context`(대상 repo의 README, `docs/*.md`, 선택 파일 `.github/review-context.md`)를 먼저 읽는다. 프로젝트 목적, 확장 예정 영역, 설계 원칙을 `.github/review-context.md`에 적어 두면 확장성 의견의 질이 올라간다.
+
+## PR 크기별 실행 (등급)
+
+precheck가 PR 크기로 등급을 정하고, 워크플로와 orchestrator가 따른다. 같은 PR에는 항상 같은 등급이 나온다.
+
+| 등급 | 조건 | Claude 단계 |
+|---|---|---|
+| 0 | 판단 대상 심볼, 삭제된 심볼, 미사용 후보가 모두 없음 (문서, 설정, 주석, docstring만 바뀐 PR) | 부르지 않음. 판정은 스크립트 검사만으로 |
+| 1 | 판단 대상 3개 이하, 테스트 외 python 변경 50줄 이하, signature 변경 없음, 삭제 없음 | orchestrator(opus) 혼자. `ctx/criteria/`의 subagent 판단 기준을 그대로 적용 |
+| 2 | 그 외 | subagent 분할 (미사용 후보가 없으면 dead-code는 부르지 않음) |
+
+"심볼"은 함수, 클래스, 메서드, 모듈 수준 변수처럼 이름이 붙은 코드 단위다. 경계값은 `precheck.py`의 `TIER1_MAX_TARGETS`, `TIER1_MAX_LINES`.
+
+## 수정 제안 (suggestion)
+
+design-review(등급 1은 orchestrator)가 변경 줄 안에서 몇 줄로 고칠 수 있는 것은 수정 코드를 함께 낸다(최대 5개). apply가 PR review의 inline comment로 ```` ```suggestion ```` 블록을 달아 작성자가 PR 화면에서 버튼으로 반영할 수 있다. 변경 줄 밖이면 GitHub가 달 수 없어 버리고, 같은 위치·내용은 다시 달지 않는다. agent가 코드를 직접 고치지는 않는다.
+
+## 판정에 이의가 있을 때 (override)
+
+1. 작성자가 검수 comment에 어느 항목에 대한 이의인지와 근거를 답글로 남긴다.
+2. 리뷰어가 받아들이면 PR에 `review/override` 라벨을 붙인다. 받아들이지 않으면 작성자가 수정해 다시 push하고, 검수가 다시 돈다.
+3. `pr-review-override` 워크플로가 라벨을 붙인 사람을 확인한다.
+   - repo variable `PR_REVIEW_REVIEWERS`(쉼표 구분 GitHub 계정)에 없으면 라벨을 떼고 안내 comment를 단다. 비어 있으면 아무도 override할 수 없다.
+   - 있으면 검수 comment 맨 위에 "리뷰어 @○○ 이(가) commit abc1234 의 판정을 override함"을 붙이고(원래 결과는 아래에 남긴다) 라벨을 `review/override`만 남긴다. 게이트 모드의 check를 통과로 바꾸려고 그 commit의 최신 pr-review 실행을 다시 돌린다. 다시 돌린 실행은 override를 확인하고 검사 없이 통과시킨다.
+4. override는 그 commit에만 유효하다. 새 push가 오면 pr-review가 라벨을 떼고 처음부터 검수한다.
+5. override된 PR은 agent 판정이 틀렸을 가능성이 있는 표본이다. `review/override` 라벨로 모아 판단 기준 보정에 쓴다.
+
+스크립트 판정(3-1, 5)에 대한 이의는 라벨보다 코드로 해결한다. 규칙이 틀렸으면 대상 repo의 `[tool.ruff]`를 고치고, 특정 줄만 예외면 `# noqa: 코드`를 단다.
 
 ## 알아 둘 것
 
@@ -124,12 +157,13 @@ fixture PR의 기대 결과: `scale` 함수에서 D103, ANN001×2, ANN201과 for
 
 1. 대상 repo를 PR head SHA로 checkout (`fetch-depth: 0`), `everex-ai/.github`을 checkout해 `$RUNNER_TEMP/review-tools`로 옮김 (대상 repo 안에 두면 pytest, vulture, 작업 트리 비교에 섞인다).
 2. Python 설치, `install_command`(기본 `pip install -r requirements.txt`)와 이 repo의 `requirements-dev.txt` 설치.
-3. `collect.py --event $GITHUB_EVENT_PATH` → `classify.py` → `precheck.py`. PR 메타데이터는 이벤트 payload에서 읽으므로 토큰이 필요 없다.
-4. `precheck=continue`일 때만 `orchestrator.md`를 프롬프트로 읽어 `anthropics/claude-code-action@v1`을 실행한다 (jira-doc과 같은 방식). 인증은 `CLAUDE_CODE_OAUTH_TOKEN`(Claude 계정 구독 토큰)이며 이 스텝에만 준다. `github_token`도 넘기는데, 주지 않으면 action이 대상 repo에 Claude GitHub App 설치를 요구하기 때문이다. `--allowedTools`에 `mcp__github*`가 없어 Claude에게 GitHub 도구는 붙지 않고, 토큰은 action 자체의 작성자 확인에만 쓰인다. action이 이 토큰을 Claude 프로세스 환경 변수에 넣지만 Bash와 네트워크 도구가 없어 밖으로 나갈 경로가 없고, 토큰은 job이 끝나면 만료된다. Claude Code 버전은 action이 정한다(v1 기준 2.1.278). `continue-on-error`라서 실패해도 다음 스텝이 "오류"로 알린다. 실행 기록(`execution_file`)은 `.everex-review/out/claude-execution.json`으로 복사해 artifact에 남기고 요약 한 줄을 로그에 찍는다.
-5. `apply.py --gate <gate> --require-clean`. `github.token`은 이 스텝에만 준다. `gate: false`면 comment와 라벨만, `true`면 반려/오류 시 check 실패.
-6. `.everex-review/` 전체를 artifact `everex-review-pr<번호>`로 30일 보관. 사람 판정과 비교할 때 `review-input.json`, `verdict.json`, `claude-result.json`(비용, turn 수)을 여기서 본다.
+3. `override 확인`: 새 push(첫 시도)면 `review/override` 라벨을 뗀다. 그 외에 지정 리뷰어의 override가 있으면 4~5를 건너뛰고 6에서 override를 반영한다.
+4. `collect.py --event $GITHUB_EVENT_PATH` → `classify.py` → `precheck.py`. PR 메타데이터는 이벤트 payload에서 읽으므로 토큰이 필요 없다. precheck가 등급을 `tier` 출력으로 낸다.
+5. `precheck=continue`이고 등급이 0이 아닐 때만 `orchestrator.md`를 프롬프트로 읽어 `anthropics/claude-code-action@v1`을 실행한다 (jira-doc과 같은 방식). 인증은 `CLAUDE_CODE_OAUTH_TOKEN`(Claude 계정 구독 토큰)이며 이 스텝에만 준다. `github_token`도 넘기는데, 주지 않으면 action이 대상 repo에 Claude GitHub App 설치를 요구하기 때문이다. `--allowedTools`에 `mcp__github*`가 없어 Claude에게 GitHub 도구는 붙지 않고, 토큰은 action 자체의 작성자 확인에만 쓰인다. action이 이 토큰을 Claude 프로세스 환경 변수에 넣지만 Bash와 네트워크 도구가 없어 밖으로 나갈 경로가 없고, 토큰은 job이 끝나면 만료된다. Claude Code 버전은 action이 정한다(v1 기준 2.1.278). `continue-on-error`라서 실패해도 다음 스텝이 "오류"로 알린다. 실행 기록(`execution_file`)은 `.everex-review/out/claude-execution.json`으로 복사해 artifact에 남기고 요약 한 줄을 로그에 찍는다.
+6. `apply.py --gate <gate> --require-clean`(override면 `--override <리뷰어>`). `gate: false`면 comment와 라벨만, `true`면 반려/오류 시 check 실패. 수정 제안은 inline review로 단다. `github.token`은 override 확인, Claude(action의 작성자 확인용), 반영 스텝에만 준다.
+7. `.everex-review/` 전체를 artifact `everex-review-pr<번호>`로 30일 보관. 사람 판정과 비교할 때 `review-input.json`, `verdict.json`, `claude-result.json`(비용, turn 수)을 여기서 본다.
 
-입력: `gate`, `python_version`, `install_command`, `pytest_args`, `test_timeout`, `orchestrator_model`(기본 `claude-opus-5`), `tools_ref`(기본 `main`), `skip_draft`(기본 true). fork에서 온 PR은 secret을 받을 수 없어 건너뛴다.
+입력: `gate`, `python_version`, `install_command`, `pytest_args`, `test_timeout`, `orchestrator_model`(기본 `claude-opus-5`), `tools_ref`(기본 `main`), `skip_draft`(기본 true), `reviewers`(override 가능한 계정, 기본 빈 값). fork에서 온 PR은 secret을 받을 수 없어 건너뛴다.
 
 처음에는 로컬 검증 경로와 맞추려고 CLI를 직접 설치해 `run_claude.sh`로 불렀고, pose-ai-verifier에서 첫 실제 PR들이 성공한 뒤 jira-doc과 같은 claude-code-action으로 바꿨다. 봇이 연 PR(dependabot 등)은 action의 작성자 확인에서 실패하므로 "오류"로 표시된다.
 
@@ -139,7 +173,8 @@ fixture PR의 기대 결과: `scale` 함수에서 D103, ANN001×2, ANN201과 for
 2. `CLAUDE_CODE_OAUTH_TOKEN`을 organization secret으로 등록한다 (Organization Settings > Secrets and variables > Actions > New organization secret). 대상 repo가 늘어도 secret을 다시 등록할 필요가 없다. Repository access는 "Selected repositories"로 대상 repo들을 고르거나 "Private repositories"로 둔다. `.github` repo는 public이라 "Private repositories" 범위에 들어가지 않으므로, jira-doc이 쓰는 `.github` repo의 기존 repo secret은 지우지 않는다 (같은 이름이면 repo secret이 우선한다).
 3. 대상 repo에 `workflow-templates/pr-review.yml`을 `.github/workflows/pr-review.yml`로 넣는다. 의존성 설치 명령이나 Python 버전이 다르면 `with:`에서 바꾼다.
 4. 대상 repo의 `.gitignore`에 `.everex-review/`를 넣는다.
-5. PR을 하나 열고 대상 repo의 Actions 탭에서 `pr-review` 실행을 본다. 확인할 것: 1단 로그의 `[precheck] 판정 ...`, 2단 로그의 `[claude] turns=... denials=0 subagents={...}` (subagent 넷이 모두 보여야 한다), PR에 `<!-- everex-review -->` comment와 `review/pass|reject` 라벨, artifact.
+5. override를 쓰려면 `workflow-templates/pr-review-override.yml`을 `.github/workflows/pr-review-override.yml`로 넣고, repo variable `PR_REVIEW_REVIEWERS`에 리뷰어 계정을 쉼표로 등록한다 (Settings > Secrets and variables > Actions > Variables).
+6. PR을 하나 열고 대상 repo의 Actions 탭에서 `pr-review` 실행을 본다. 확인할 것: 1단 로그의 `[precheck] 판정 ...`, 2단 로그의 `[claude] turns=... denials=0 subagents={...}` (subagent 넷이 모두 보여야 한다), PR에 `<!-- everex-review -->` comment와 `review/pass|reject` 라벨, artifact.
 
 알아 둘 것:
 - `pull_request` 이벤트는 PR 브랜치의 워크플로 파일로 돈다. 작성자가 호출 yml의 `with:` 값을 바꿀 수는 있지만 재사용 워크플로와 스크립트, 프롬프트는 `everex-ai/.github@main`에서 오므로 PR로 바꿀 수 없다.

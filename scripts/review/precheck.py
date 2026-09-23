@@ -41,6 +41,11 @@ from common import (  # noqa: E402
 
 DEFAULT_RUFF_CONFIG = Path(__file__).parent / "ruff-default.toml"
 VERDICT_SCHEMA = Path(__file__).resolve().parents[2] / "schemas" / "review-verdict.json"
+CRITERIA_DIR = Path(__file__).resolve().parents[2] / "plugins" / "everex-review" / "agents"
+# 등급 1(orchestrator 단독)의 상한. 넘으면 등급 2(subagent 분할)
+TIER1_MAX_TARGETS = 3
+TIER1_MAX_LINES = 50
+MAX_CONTEXT_DOCS = 20
 DEAD_CODE_RUFF_CODES = {"F401", "F841", "F811"}
 MAX_DIFF_BYTES = 64 * 1024
 HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
@@ -409,6 +414,52 @@ def ensure_head(repo: Path, pr: dict, allow: bool) -> None:
         log("precheck", "경고: 작업 트리에 커밋되지 않은 변경이 있음. 검사 결과가 PR과 다를 수 있음")
 
 
+# ---------- 등급, 프로젝트 맥락 ----------
+
+
+def judgment_targets(symbols: list[dict]) -> list[dict]:
+    """agent가 판단할 심볼: 테스트가 아니고, 추가/수정됐고, docstring만 바뀐 것이 아닌 것."""
+    return [
+        s
+        for s in symbols
+        if not s["is_test"] and s["change"] in ("added", "modified") and not s.get("docstring_only", False)
+    ]
+
+
+def compute_tier(files: list[dict], symbols: list[dict], dead: dict) -> tuple[int, str, list[str]]:
+    """Claude 단계를 어떻게 돌릴지 정해 (등급, 이유, 판단 대상 이름 목록)을 돌려준다.
+
+    0: 판단 대상도, 삭제된 심볼도, 미사용 후보도 없음 -> Claude를 부르지 않는다
+    1: 작은 변경 -> orchestrator가 subagent 없이 혼자 판단한다
+    2: 그 외 -> subagent 4개로 나눠 판단한다
+    """
+    targets = judgment_targets(symbols)
+    names = [f"{s['file']}::{s['name']}" for s in targets]
+    removed = [s for s in symbols if not s["is_test"] and s["change"] == "removed"]
+    has_dead = bool(dead.get("candidates"))
+    lines = sum(f["additions"] + f["deletions"] for f in files if f["is_python"] and not f["is_test"])
+    if not targets and not removed and not has_dead:
+        return 0, "판단 대상 심볼과 미사용 후보가 없음", names
+    sig = [s["name"] for s in targets if s["signature_changed"]]
+    if len(targets) <= TIER1_MAX_TARGETS and lines <= TIER1_MAX_LINES and not sig and not removed:
+        return 1, f"판단 대상 {len(targets)}개, 변경 {lines}줄", names
+    why = [f"판단 대상 {len(targets)}개", f"변경 {lines}줄"]
+    if sig:
+        why.append("signature 변경: " + ", ".join(sig))
+    if removed:
+        why.append("삭제된 심볼: " + ", ".join(s["name"] for s in removed))
+    return 2, ", ".join(why), names
+
+
+def find_project_context(repo: Path) -> list[str]:
+    """design-review가 먼저 읽을 프로젝트 문서: 루트 README, docs/ 아래 md, 선택 파일 .github/review-context.md."""
+    tracked = [p for p in git(repo, "ls-files").out.splitlines() if p]
+    out = [p for p in tracked if p == ".github/review-context.md"]
+    out += sorted(p for p in tracked if "/" not in p and p.lower().startswith("readme"))
+    out += sorted(p for p in tracked if p.startswith("docs/") and p.endswith(".md"))[:MAX_CONTEXT_DOCS]
+    return out
+
+
 # ---------- 조립 ----------
 
 
@@ -422,8 +473,9 @@ def build_review_input(
     tests: dict,
     candidates: dict,
     dead: dict,
+    project_context: list[str] | None = None,
 ) -> dict:
-    """지금까지의 결과를 review-input.json 한 덩어리로 합치고 precheck 판정을 계산한다."""
+    """지금까지의 결과를 review-input.json 한 덩어리로 합치고 precheck 판정과 등급을 계산한다."""
     reasons: list[dict] = []
     checks: dict[str, str] = {"1": "pass", "2": "pass", "3-1": "pass", "5": "n/a"}
     notes: list[str] = list(symbols.get("notes", []))
@@ -473,6 +525,7 @@ def build_review_input(
         notes.append("--skip-tests 로 테스트를 건너뜀")
 
     verdict = "reject" if any(v == "fail" for v in checks.values()) else "continue"
+    tier, tier_reason, targets = compute_tier(files, symbols.get("symbols", []), dead)
 
     slim_files = []
     for f in files:
@@ -505,7 +558,17 @@ def build_review_input(
         "tests": tests,
         "test_candidates": candidates,
         "dead_code_candidates": dead,
-        "precheck": {"verdict": verdict, "checks": checks, "reasons": reasons, "escalate": escalate, "notes": notes},
+        "project_context": project_context or [],
+        "precheck": {
+            "verdict": verdict,
+            "checks": checks,
+            "reasons": reasons,
+            "escalate": escalate,
+            "notes": notes,
+            "tier": tier,
+            "tier_reason": tier_reason,
+            "targets": targets,
+        },
     }
 
 
@@ -553,14 +616,22 @@ def main() -> None:
     write_json(ctx / "candidates.json", {"test_candidates": candidates, "dead_code_candidates": dead})
     log("precheck", f"테스트 후보 {len(candidates)}개 심볼, 미사용 후보 {len(dead['candidates'])}건")
 
-    ri = build_review_input(work, pr or {}, files, symbols, lint, fmt, tests, candidates, dead)
+    ri = build_review_input(
+        work, pr or {}, files, symbols, lint, fmt, tests, candidates, dead, find_project_context(repo)
+    )
     write_json(ctx / "review-input.json", ri)
     write_json(ctx / "tree-baseline.json", tree_state(repo, work))  # apply --require-clean 의 비교 기준
     shutil.copyfile(VERDICT_SCHEMA, ctx / "verdict-schema.json")  # orchestrator가 출력 형식을 확인할 때 읽는다
+    # 등급 1에서 orchestrator가 subagent 없이 같은 판단 기준을 적용하도록 기준 파일을 ctx에 둔다 (기준은 agents/*.md 한 곳)
+    (ctx / "criteria").mkdir(exist_ok=True)
+    for f in CRITERIA_DIR.glob("*.md"):
+        shutil.copyfile(f, ctx / "criteria" / f.name)
     v = ri["precheck"]["verdict"]
     github_output("precheck", v)
     github_output("escalate", "true" if ri["precheck"]["escalate"] else "false")
+    github_output("tier", str(ri["precheck"]["tier"]))
     log("precheck", f"판정 {v} (사유 {len(ri['precheck']['reasons'])}건) -> {ctx / 'review-input.json'}")
+    log("precheck", f"등급 {ri['precheck']['tier']}: {ri['precheck']['tier_reason']}")
 
 
 if __name__ == "__main__":

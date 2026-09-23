@@ -10,6 +10,8 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 WF = yaml.safe_load((ROOT / ".github" / "workflows" / "pr-review.yml").read_text())
 CALLER = yaml.safe_load((ROOT / "workflow-templates" / "pr-review.yml").read_text())
+OV = yaml.safe_load((ROOT / ".github" / "workflows" / "pr-review-override.yml").read_text())
+OV_CALLER = yaml.safe_load((ROOT / "workflow-templates" / "pr-review-override.yml").read_text())
 ON = True  # PyYAML은 'on' 키를 True로 읽는다
 
 
@@ -56,7 +58,8 @@ def test_stage_order_and_conditions():
     for script in ("collect.py", "classify.py", "precheck.py"):
         assert script in pre["run"]
     assert "--event" in pre["run"]
-    assert claude["if"] == "steps.precheck.outputs.precheck == 'continue'"  # 반려면 Claude를 부르지 않는다
+    # 반려이거나 판단 대상이 없으면(등급 0) Claude를 부르지 않는다
+    assert claude["if"] == "steps.precheck.outputs.precheck == 'continue' && steps.precheck.outputs.tier != '0'"
     assert claude["continue-on-error"] is True
     assert claude["uses"] == "anthropics/claude-code-action@v1"
     w = claude["with"]
@@ -83,7 +86,7 @@ def test_secrets_are_step_scoped():
         if "CLAUDE_CODE_OAUTH_TOKEN" in scoped:
             assert "2. Claude" in s["name"]
         if "github.token" in scoped:
-            assert "2. Claude" in s["name"] or "3. PR 반영" in s["name"]
+            assert any(k in s["name"] for k in ("override 확인", "2. Claude", "3. PR 반영"))
 
 
 def test_scripts_referenced_by_workflow_exist():
@@ -100,3 +103,30 @@ def test_scripts_referenced_by_workflow_exist():
     text = (ROOT / ".github" / "workflows" / "pr-review.yml").read_text()
     for rel in ("scripts/review/collect.py", "scripts/review/claude_summary.py", "scripts/review/apply.py"):
         assert rel in text
+
+
+def test_override_check_runs_first_and_gates_the_pipeline():
+    names = [s.get("name", s.get("uses", "")) for s in steps()]
+    ov = step("override 확인")
+    assert names.index("override 확인") < names.index("1. 변경 수집, 분류, 결정론적 검사 (1, 2, 3-1, 5)")
+    assert ov["id"] == "override" and 'scripts/review/override.py" check' in ov["run"]
+    assert "GITHUB_RUN_ATTEMPT" in ov["run"]  # 다시 돌린 실행에서는 라벨을 떼지 않는다
+    for part in ("의존성 설치", "1. 변경 수집"):
+        assert step(part)["if"] == "steps.override.outputs.active != 'true'"
+    apply_ = step("3. PR 반영")
+    assert "steps.override.outputs.active == 'true'" in apply_["if"] and "--override" in apply_["run"]
+    assert WF[ON]["workflow_call"]["inputs"]["reviewers"]["default"] == ""
+    assert CALLER["jobs"]["review"]["with"]["reviewers"] == "${{ vars.PR_REVIEW_REVIEWERS }}"
+
+
+def test_override_workflow_is_separate_and_scoped():
+    assert OV_CALLER[ON]["pull_request"]["types"] == ["labeled"]
+    assert "labeled" not in CALLER[ON]["pull_request"]["types"]  # 검수 워크플로는 라벨 이벤트를 받지 않는다
+    job = OV["jobs"]["override"]
+    assert "review/override" in job["if"]
+    assert job["permissions"]["actions"] == "write"
+    assert OV_CALLER["permissions"] == job["permissions"]
+    run = job["steps"][-1]["run"]
+    assert "override.py handle-label" in run and "--sender" in run
+    assert OV_CALLER["jobs"]["override"]["uses"] == "everex-ai/.github/.github/workflows/pr-review-override.yml@main"
+    assert json.loads((ROOT / "workflow-templates" / "pr-review-override.properties.json").read_text())["name"]

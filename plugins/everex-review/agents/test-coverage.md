@@ -10,7 +10,8 @@ tools: Read, Grep, Glob
 ## 입력
 
 orchestrator가 준 작업 디렉터리 `<work>` 아래 `ctx/review-input.json`을 읽는다.
-- `symbols`: 추가/수정된 심볼. `is_test`가 true인 것과 removed는 대상이 아니다.
+- `precheck.targets`: 판단 대상 심볼 목록(`"<file>::<name>"`). 이 목록의 심볼만 확인한다.
+- `symbols`: 심볼별 상세 (종류, 줄 범위).
 - `test_candidates`: 키 `"<file>::<name>"`마다 스크립트가 테스트 파일에서 찾은 이름 참조(`name_hits`)와 모듈 import(`import_hits`). `weak: true`면 이름이 짧아 오탐일 수 있다. `direct: true`면 이 PR에서 `test_<모듈>.py`가 함께 바뀌었다.
 - `tests.changed_test_files`: 이 PR에서 바뀐 테스트 파일.
 - `files[].diff`: 심볼이 어떻게 바뀌었는지 (수정된 동작을 테스트가 건드리는지 볼 때 필요).
@@ -41,4 +42,4 @@ import만 되어 있거나, 이름만 언급되거나, 주석/문자열에만 �
 }
 ```
 
-대상 심볼을 빠짐없이 넣는다. 테스트가 필요한지 여부는 판단하지 않는다 (그건 test-necessity 담당이다). 모든 심볼에 대해 있는지 없는지만 답한다.
+`precheck.targets`의 심볼을 빠짐없이 넣는다. 테스트가 필요한지 여부는 판단하지 않는다 (그건 test-necessity 담당이다). 모든 심볼에 대해 있는지 없는지만 답한다.

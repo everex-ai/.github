@@ -282,5 +282,66 @@ def test_precheck_on_fixture(collected: Path):
     ri = precheck.build_review_input(collected, pr, files, symbols, lint, fmt, tests, cands, dead)
     assert ri["precheck"]["verdict"] == "reject"
     assert {r["check"] for r in ri["precheck"]["reasons"]} == {"3-1"}
+    assert ri["precheck"]["tier"] == 2  # 판단 대상 5개
     schema = json.loads((ROOT / "schemas" / "review-input.json").read_text())
     assert validate(ri, schema) == []
+
+
+def _sym(name: str, change: str = "modified", **kw) -> dict:
+    base = {
+        "file": "a.py",
+        "name": name,
+        "change": change,
+        "is_test": False,
+        "signature_changed": False,
+        "docstring_only": False,
+    }
+    return {**base, **kw}
+
+
+def _files(lines: int) -> list[dict]:
+    return [
+        {"path": "a.py", "is_python": True, "is_test": False, "additions": lines, "deletions": 0},
+        {"path": "tests/test_a.py", "is_python": True, "is_test": True, "additions": 500, "deletions": 0},
+    ]
+
+
+NO_DEAD = {"candidates": []}
+
+
+def test_tier_zero_when_nothing_to_judge():
+    syms = [_sym("f", docstring_only=True), _sym("test_x", "added", is_test=True)]
+    tier, why, targets = precheck.compute_tier(_files(5), syms, NO_DEAD)
+    assert tier == 0 and targets == [] and why
+    assert (
+        precheck.compute_tier(_files(5), syms, {"candidates": [{"name": "os"}]})[0] == 1
+    )  # 미사용 후보가 있으면 판단 필요
+    assert precheck.compute_tier(_files(5), [_sym("g", "removed")], NO_DEAD)[0] == 2  # 삭제는 영향이 커 분할
+
+
+def test_tier_one_and_two_boundaries():
+    three = [_sym("a"), _sym("b", "added"), _sym("c")]
+    assert precheck.compute_tier(_files(50), three, NO_DEAD)[:1] == (1,)
+    assert precheck.compute_tier(_files(50), three, NO_DEAD)[2] == ["a.py::a", "a.py::b", "a.py::c"]
+    assert precheck.compute_tier(_files(51), three, NO_DEAD)[0] == 2  # 테스트 파일 줄 수는 세지 않는다
+    assert precheck.compute_tier(_files(10), [*three, _sym("d")], NO_DEAD)[0] == 2
+    tier, why, _ = precheck.compute_tier(_files(10), [_sym("a", signature_changed=True)], NO_DEAD)
+    assert tier == 2 and "signature" in why
+
+
+def test_find_project_context(tmp_path: Path):
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    for rel in ("README.md", "docs/design.md", "docs/img.png", "src/README.md", ".github/review-context.md", "x.py"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("x")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    assert precheck.find_project_context(tmp_path) == [".github/review-context.md", "README.md", "docs/design.md"]
+
+
+def test_review_input_carries_tier_and_context(tmp_path: Path):
+    pr, files, symbols, lint, fmt, tests, cands, dead = _base_inputs(tmp_path)
+    ri = precheck.build_review_input(tmp_path, pr, files, symbols, lint, fmt, tests, cands, dead, ["README.md"])
+    assert ri["project_context"] == ["README.md"]
+    assert ri["precheck"]["tier"] == 0 and ri["precheck"]["targets"] == [] and ri["precheck"]["tier_reason"]

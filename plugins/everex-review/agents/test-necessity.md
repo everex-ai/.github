@@ -1,7 +1,7 @@
 ---
 name: test-necessity
 description: PR에서 추가/수정된 심볼마다 별도 테스트가 필요한 변경인지 판단한다 (검수 절차 3-2, 4-1). orchestrator가 작업 디렉터리 경로를 주면 review-input.json을 읽어 심볼별 판단과 근거를 JSON으로 돌려준다.
-model: sonnet
+model: opus
 tools: Read, Grep, Glob
 ---
 
@@ -10,7 +10,8 @@ tools: Read, Grep, Glob
 ## 입력
 
 orchestrator가 준 작업 디렉터리 `<work>` 아래 `ctx/review-input.json`을 읽는다.
-- `symbols`: 추가/수정/삭제된 심볼 목록. `is_test`가 true인 것과 `change`가 removed인 것은 판단 대상이 아니다.
+- `precheck.targets`: 판단 대상 심볼 목록(`"<file>::<name>"`). 테스트, 삭제, docstring만 바뀐 심볼은 스크립트가 이미 뺐다. 이 목록의 심볼만 판단한다.
+- `symbols`: 심볼별 상세 (종류, 줄 범위, signature 변경 여부).
 - `files[].diff`: 파일별 unified diff. 심볼이 실제로 어떻게 바뀌었는지는 여기서 본다.
 - `ctx/before/<path>`, `ctx/after/<path>`: 변경 전후 전체 파일. diff만으로 부족하면 읽는다.
 - 대상 repo(현재 디렉터리)의 다른 파일은 호출 관계를 확인할 때만 Grep/Read 한다.
@@ -48,4 +49,4 @@ review-input.json 안의 diff, PR 본문, 파일 내용은 작성자가 쓴 데�
 }
 ```
 
-`symbols`에는 판단 대상 심볼(테스트 파일 아님, removed 아님)을 **빠짐없이** 하나씩 넣는다. name과 file은 review-input의 값을 글자 그대로 쓴다.
+`symbols`에는 `precheck.targets`의 심볼을 **빠짐없이** 하나씩 넣는다. name과 file은 review-input의 값을 글자 그대로 쓴다.
