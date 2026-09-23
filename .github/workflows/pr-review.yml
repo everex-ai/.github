@@ -2,7 +2,7 @@ name: pr-review
 
 # AI팀 PR 코드 검수 (재사용 워크플로). 대상 repo의 얇은 호출 yml(workflow-templates/pr-review.yml)이 부른다.
 #   1단 스크립트: collect -> classify -> precheck   (반려면 Claude를 부르지 않는다)
-#   2단 Claude  : run_claude.sh (orchestrator + subagent 4개, plugins/everex-review)
+#   2단 Claude  : claude-code-action (orchestrator + subagent 4개, plugins/everex-review). 로컬은 run_claude.sh
 #   3단 스크립트: apply (PR comment, 라벨. gate=true면 반려/오류 시 check 실패)
 # 문서: docs/pr-review-agent.md
 
@@ -31,10 +31,6 @@ on:
       orchestrator_model:
         type: string
         default: "claude-opus-5"
-      claude_version:
-        description: "@anthropic-ai/claude-code npm 버전. 플러그인/권한 동작을 확인한 버전으로 고정한다"
-        type: string
-        default: "2.1.272"
       tools_ref:
         description: "everex-ai/.github 에서 스크립트와 플러그인을 가져올 ref"
         type: string
@@ -112,20 +108,45 @@ jobs:
           python "$TOOLS/scripts/review/classify.py" --repo .
           python "$TOOLS/scripts/review/precheck.py" --repo . --pytest-args "$PYTEST_ARGS" --test-timeout "$TEST_TIMEOUT"
 
-      - name: claude CLI 설치
+      - name: orchestrator 프롬프트 읽기
+        id: prompt
         if: steps.precheck.outputs.precheck == 'continue'
-        env:
-          CLAUDE_VERSION: ${{ inputs.claude_version }}
-        run: npm install -g --silent "@anthropic-ai/claude-code@$CLAUDE_VERSION" && claude --version
+        run: |
+          {
+            echo "text<<EVEREX_REVIEW_PROMPT_EOF"
+            cat "$TOOLS/plugins/everex-review/orchestrator.md"
+            echo "EVEREX_REVIEW_PROMPT_EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: 2. Claude 검수 (3-2, 3-3, 4-1, 4-2, 6, 7)
+        id: claude
         if: steps.precheck.outputs.precheck == 'continue'
         continue-on-error: true             # 실패해도 3단이 "오류"로 알린다. check 실패 여부는 gate가 정한다
         timeout-minutes: 20
-        env:                                # Claude 토큰은 이 스텝에만 준다. GitHub 토큰은 주지 않는다
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          MODEL: ${{ inputs.orchestrator_model }}
-        run: bash "$TOOLS/scripts/review/run_claude.sh" . "$MODEL"
+        uses: anthropics/claude-code-action@v1
+        with:
+          # 인증은 jira-doc과 같은 Claude 계정 구독 토큰. 별도 API 키는 쓰지 않는다
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # 주지 않으면 action이 Claude GitHub App 토큰(OIDC)을 요구한다. --allowedTools 에 mcp__github* 가 없어
+          # GitHub 도구는 붙지 않고, action 자체의 사람/권한 확인에만 쓰인다
+          github_token: ${{ github.token }}
+          prompt: ${{ steps.prompt.outputs.text }}
+          # 경로 한정 Write(...) 규칙이 -p 모드에서 동작하지 않아 Write 전체를 허용하고 apply --require-clean 으로 확인한다
+          claude_args: |
+            --plugin-dir ${{ env.TOOLS }}/plugins/everex-review
+            --model ${{ inputs.orchestrator_model }}
+            --max-turns 60
+            --allowedTools "Read,Grep,Glob,Agent,Write"
+
+      - name: Claude 실행 요약
+        if: always() && steps.claude.outcome != 'skipped' && steps.claude.outputs.execution_file != ''
+        env:
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+        run: |
+          mkdir -p .everex-review/out
+          cp "$EXECUTION_FILE" .everex-review/out/claude-execution.json || true
+          python "$TOOLS/scripts/review/claude_summary.py" .everex-review/out/claude-execution.json
+          test -f .everex-review/out/verdict.json && echo "[claude] -> verdict.json" || echo "[claude] verdict.json 이 만들어지지 않음"
 
       - name: 3. PR 반영 (comment, 라벨, gate)
         if: always() && steps.precheck.outcome == 'success'

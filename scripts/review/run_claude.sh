@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 2단(Claude) 실행. CI(pr-review.yml)와 로컬이 같은 스크립트를 쓴다.
+# 2단(Claude) 로컬 실행. CI(pr-review.yml)는 claude-code-action 으로 같은 프롬프트, 플러그인, 도구 권한을 쓴다.
 #   scripts/review/run_claude.sh <대상 repo> [orchestrator 모델]
 # 전제: precheck.py 까지 돌아 <repo>/.everex-review/ctx/review-input.json 이 있고,
 #       claude CLI가 로그인되어 있거나(로컬) CLAUDE_CODE_OAUTH_TOKEN 환경 변수가 있다(CI).
@@ -28,17 +28,7 @@ claude -p "$(cat "$PLUGIN/orchestrator.md")" \
   < /dev/null > "$OUT/claude-result.json"
 CODE=$?
 set -e
-python3 - "$OUT/claude-result.json" <<'PY' || true
-import json, sys
-try:
-    d = json.load(open(sys.argv[1]))
-except Exception as e:  # noqa: BLE001
-    print(f"[claude] 결과 JSON을 읽지 못함: {e}", file=sys.stderr); sys.exit(0)
-print(f"[claude] {d.get('result')}", file=sys.stderr)
-print(f"[claude] turns={d.get('num_turns')} cost_usd={round(d.get('total_cost_usd') or 0, 2)} "
-      f"duration_s={round((d.get('duration_ms') or 0) / 1000)} denials={len(d.get('permission_denials') or [])} "
-      f"subagents={(d.get('subagent_stats') or {}).get('by_type')}", file=sys.stderr)
-PY
+python3 "$TOOLS/scripts/review/claude_summary.py" "$OUT/claude-result.json" || true
 if [ ! -f "$OUT/verdict.json" ]; then
   echo "[claude] verdict.json 이 만들어지지 않음 (claude exit $CODE)" >&2
   exit 1

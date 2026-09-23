@@ -44,7 +44,8 @@ AI Engineer가 Python repo에 올린 PR을 팀의 검수 절차(아래 7단계)�
 | `scripts/review/apply.py` | 4단계. `review-input.json`과 `out/verdict.json`을 합쳐 PR comment를 만들고 GitHub에 쓴다. GitHub에 쓰는 유일한 곳 |
 | `scripts/review/ruff-default.toml` | 대상 repo에 ruff 설정이 없을 때 쓰는 기본 규칙 (E, F, W, I, D google, ANN) |
 | `scripts/review/dev/make_fixture.py` | 로컬 검증용 대상 repo 생성기. `--clean`이면 3-1을 통과해 Claude 단계까지 간다 |
-| `scripts/review/run_claude.sh` | 2단 실행. CI와 로컬이 같은 스크립트로 `claude -p`를 돌린다 (orchestrator 프롬프트, `--plugin-dir`, 도구 권한) |
+| `scripts/review/run_claude.sh` | 2단 로컬 실행. CI의 claude-code-action 스텝과 같은 프롬프트, `--plugin-dir`, 도구 권한으로 `claude -p`를 돌린다 |
+| `scripts/review/claude_summary.py` | Claude 실행 결과(로컬 CLI JSON, action의 execution_file)에서 turn 수, 권한 거부, subagent 목록을 한 줄로 요약 |
 | `.github/workflows/pr-review.yml` | 재사용 워크플로(`workflow_call`). checkout, 의존성 설치, 1단 → 2단 → 3단, 결과 artifact 보관 |
 | `workflow-templates/pr-review.yml` | 대상 repo에 넣는 호출 yml. organization의 "New workflow" 화면에 템플릿으로도 나온다 |
 | `plugins/everex-review/orchestrator.md` | 2단 프롬프트. review-input.json을 읽고 subagent 넷을 동시에 불러 verdict.json을 쓴다 |
@@ -99,14 +100,14 @@ pytest && ruff check . && ruff format --check .
 
 fixture PR의 기대 결과: `scale` 함수에서 D103, ANN001×2, ANN201과 format 위반이 나와 3-1 실패로 **반려**. pytest 4개 통과. `divide`/`multiply`는 테스트 후보가 있고 `scale`은 없음. 미사용 후보로 `os`(ruff F401, vulture), `scale`, `unused_helper`(vulture).
 
-`--clean` fixture의 기대 결과 (2026-09-16 opus orchestrator + sonnet subagent 실측): precheck continue → agent가 `scale`은 테스트 필요하나 없음(3-3 fail)으로 **반려**, `multiply`/`divide`는 테스트 있음, 미사용 `os`/`scale`/`unused_helper` 확인, 설계 의견으로 multiply의 반올림 고정과 미사용 numpy 의존성. 한 번에 약 0.7~1.3 USD, 1~2분 (실측 2회).
+`--clean` fixture의 기대 결과 (2026-09-16 opus orchestrator + sonnet subagent 실측): precheck continue → agent가 `scale`은 테스트 필요하나 없음(3-3 fail)으로 **반려**, `multiply`/`divide`는 테스트 있음, 미사용 `os`/`scale`/`unused_helper` 확인, 설계 의견으로 multiply의 반올림 고정과 미사용 numpy 의존성. 한 번에 API 환산 약 0.7~1.3 USD 규모, 1~2분 (실측 2회). 구독 토큰으로 돌리므로 실제 과금이 아니라 요금제 한도를 소모한다.
 
 ## 2단(Claude) 구조
 
 - `claude -p` 에 `orchestrator.md`를 프롬프트로, `--plugin-dir plugins/everex-review`로 subagent를 싣는다. subagent는 `Agent` 도구로 `everex-review:test-necessity` 처럼 플러그인 이름이 붙어 호출된다.
 - orchestrator는 `precheck.verdict`가 reject면 아무것도 하지 않는다. 아니면 subagent 넷을 동시에 부르고, 각 JSON을 합쳐 `verdict-schema.json`(precheck가 ctx에 복사해 둔 `schemas/review-verdict.json`)대로 `out/verdict.json`을 쓴다.
 - 판정 규칙은 orchestrator 프롬프트에 있다. 3-3/4-2 fail이면 reject. 6, 7은 comment. checks에 1, 2, 3-1, 5를 쓰면 apply가 verdict 전체를 무효로 본다.
-- 도구 권한: orchestrator `Read,Grep,Glob,Agent,Write`, subagent는 frontmatter로 `Read, Grep, Glob`만. **주의**: claude CLI 2.1.272의 `-p` 모드에서는 `Write(.everex-review/out/**)` 같은 경로 한정 규칙이 allow/deny 모두 동작하지 않았다(bare `Write`만 동작). 그래서 Write를 통째로 허용하고 `apply.py --require-clean`이 작업 트리가 바뀌었으면 verdict를 버리고 error로 처리한다. 같은 이유로 `jira-doc.yml`의 `Edit(out/**)`, `Read(ctx/**)`도 실제로는 의도대로 동작하지 않을 수 있으니 확인이 필요하다.
+- 도구 권한: orchestrator `Read,Grep,Glob,Agent,Write`, subagent는 frontmatter로 `Read, Grep, Glob`만. **주의**: claude CLI 2.1.272의 `-p` 모드에서는 (CI는 claude-code-action이 설치하는 2.1.278) `Write(.everex-review/out/**)` 같은 경로 한정 규칙이 allow/deny 모두 동작하지 않았다(bare `Write`만 동작). 그래서 Write를 통째로 허용하고 `apply.py --require-clean`이 작업 트리가 바뀌었으면 verdict를 버리고 error로 처리한다. 같은 이유로 `jira-doc.yml`의 `Edit(out/**)`, `Read(ctx/**)`도 실제로는 의도대로 동작하지 않을 수 있으니 확인이 필요하다.
 - subagent 프롬프트마다 판단 기준, 출력 JSON, 신뢰 경계 문장이 있다. 판정 불일치가 생기면 고칠 곳은 `agents/*.md`의 "판단 기준" 절이다.
 
 ## 알아 둘 것
@@ -124,13 +125,13 @@ fixture PR의 기대 결과: `scale` 함수에서 D103, ANN001×2, ANN201과 for
 1. 대상 repo를 PR head SHA로 checkout (`fetch-depth: 0`), `everex-ai/.github`을 checkout해 `$RUNNER_TEMP/review-tools`로 옮김 (대상 repo 안에 두면 pytest, vulture, 작업 트리 비교에 섞인다).
 2. Python 설치, `install_command`(기본 `pip install -r requirements.txt`)와 이 repo의 `requirements-dev.txt` 설치.
 3. `collect.py --event $GITHUB_EVENT_PATH` → `classify.py` → `precheck.py`. PR 메타데이터는 이벤트 payload에서 읽으므로 토큰이 필요 없다.
-4. `precheck=continue`일 때만 claude CLI(`claude_version`으로 고정, 기본 2.1.272)를 설치하고 `run_claude.sh` 실행. `CLAUDE_CODE_OAUTH_TOKEN`은 이 스텝에만 주고 GitHub 토큰은 주지 않는다. `continue-on-error`라서 실패해도 다음 스텝이 "오류"로 알린다.
+4. `precheck=continue`일 때만 `orchestrator.md`를 프롬프트로 읽어 `anthropics/claude-code-action@v1`을 실행한다 (jira-doc과 같은 방식). 인증은 `CLAUDE_CODE_OAUTH_TOKEN`(Claude 계정 구독 토큰)이며 이 스텝에만 준다. `github_token`도 넘기는데, 주지 않으면 action이 대상 repo에 Claude GitHub App 설치를 요구하기 때문이다. `--allowedTools`에 `mcp__github*`가 없어 Claude에게 GitHub 도구는 붙지 않고, 토큰은 action 자체의 작성자 확인에만 쓰인다. action이 이 토큰을 Claude 프로세스 환경 변수에 넣지만 Bash와 네트워크 도구가 없어 밖으로 나갈 경로가 없고, 토큰은 job이 끝나면 만료된다. Claude Code 버전은 action이 정한다(v1 기준 2.1.278). `continue-on-error`라서 실패해도 다음 스텝이 "오류"로 알린다. 실행 기록(`execution_file`)은 `.everex-review/out/claude-execution.json`으로 복사해 artifact에 남기고 요약 한 줄을 로그에 찍는다.
 5. `apply.py --gate <gate> --require-clean`. `github.token`은 이 스텝에만 준다. `gate: false`면 comment와 라벨만, `true`면 반려/오류 시 check 실패.
 6. `.everex-review/` 전체를 artifact `everex-review-pr<번호>`로 30일 보관. 사람 판정과 비교할 때 `review-input.json`, `verdict.json`, `claude-result.json`(비용, turn 수)을 여기서 본다.
 
-입력: `gate`, `python_version`, `install_command`, `pytest_args`, `test_timeout`, `orchestrator_model`(기본 `claude-opus-5`), `claude_version`, `tools_ref`(기본 `main`), `skip_draft`(기본 true). fork에서 온 PR은 secret을 받을 수 없어 건너뛴다.
+입력: `gate`, `python_version`, `install_command`, `pytest_args`, `test_timeout`, `orchestrator_model`(기본 `claude-opus-5`), `tools_ref`(기본 `main`), `skip_draft`(기본 true). fork에서 온 PR은 secret을 받을 수 없어 건너뛴다.
 
-claude-code-action 대신 CLI를 직접 부르는 이유: 로컬에서 검증한 것과 같은 스크립트(`run_claude.sh`)를 CI가 그대로 쓰게 해서 진입점을 하나로 두기 위함이다. 인증은 jira-doc과 같은 `CLAUDE_CODE_OAUTH_TOKEN`이다.
+처음에는 로컬 검증 경로와 맞추려고 CLI를 직접 설치해 `run_claude.sh`로 불렀고, pose-ai-verifier에서 첫 실제 PR들이 성공한 뒤 jira-doc과 같은 claude-code-action으로 바꿨다. 봇이 연 PR(dependabot 등)은 action의 작성자 확인에서 실패하므로 "오류"로 표시된다.
 
 ## 대상 repo에 설치
 
@@ -143,7 +144,7 @@ claude-code-action 대신 CLI를 직접 부르는 이유: 로컬에서 검증한
 알아 둘 것:
 - `pull_request` 이벤트는 PR 브랜치의 워크플로 파일로 돈다. 작성자가 호출 yml의 `with:` 값을 바꿀 수는 있지만 재사용 워크플로와 스크립트, 프롬프트는 `everex-ai/.github@main`에서 오므로 PR로 바꿀 수 없다.
 - pytest는 PR의 코드를 실행한다 (일반 CI와 같다). Claude 단계에는 Bash 도구가 없어 PR 내용이 agent를 속여도 명령 실행이나 토큰 유출로 이어지지 않는다.
-- 비용은 PR push 한 번에 약 0.7~1.3 USD (precheck 반려면 0). `concurrency`로 같은 PR의 이전 실행은 취소된다.
+- Claude 사용량은 구독 토큰 소유자의 요금제 한도를 소모한다 (별도 과금 없음). 로그의 `api_equiv_usd`는 같은 사용량을 API 종량제로 썼을 때의 환산값이며, PR push 한 번에 0.2~1.3 USD 규모다 (precheck 반려면 Claude를 부르지 않는다). `concurrency`로 같은 PR의 이전 실행은 취소된다.
 
 ## 다음 단계
 
