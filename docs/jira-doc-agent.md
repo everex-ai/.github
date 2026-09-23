@@ -45,7 +45,7 @@
 | 모드 | 언제 | 하는 일 | Claude |
 |---|---|---|---|
 | review | Jira F1(request 전환), Actions 수동 실행 | 결과 산출물 구역, TL;DR, 검수 comment, 문서화 리뷰 | 사용 |
-| digest | Jira F3(번개 버튼), Actions 수동 실행 | 그 task의 TL;DR을 지금까지의 진행 결과로 갱신 | 사용 |
+| digest | Jira F3(번개 버튼), Actions 수동 실행 | 그 task의 TL;DR과 결과 산출물 구역을 지금까지의 기록으로 다시 씀. comment와 판정 없음 | 사용 |
 | alerts | 매주 수요일 09:00 KST cron, Actions 수동 실행 | stop 사유 미기재와 5영업일 무활동을 Slack 한 건으로 보고 | 미사용 |
 
 정리(digest)는 담당자가 필요할 때 F3으로 돌린다. 주기 실행은 alerts뿐이다.
@@ -57,13 +57,13 @@
 3. 3단계(Claude)가 끝난 뒤 4단계 요약(Summary 탭)에 `INNO-17 | Task | review | 통과|보완 요청|보류`가 나오면 Jira에 반영된 것이다.
 4. INNO-17을 열어 TL;DR 필드와 description의 결과 산출물 구역이 바뀌었고, 진행 배경과 예상 산출물은 그대로이며, `[ai-doc-agent]`로 시작하는 검수 comment가 달렸는지 확인한다. 검수 comment의 검사 표는 "예상 산출물 작성 (T1)"처럼 이름과 ID가 함께 나오고 순서는 T, B, I, R, A 순으로 고정이다. 결과 산출물 구역은 예상 산출물 항목 순서대로 달성 여부가 붙고, 미달성 항목에는 "미달성 사유"가, 예상에 없던 결과는 아래 "초과 달성"에 "추가 사유"와 함께 따로 나온다(기록에 사유가 없으면 "사유 미기재").
    관찰 모드에서는 `문서화 리뷰 (관찰 모드, 팀장 확인용)`으로 시작하는 comment가 하나 더 달리고(T4~T8 표와 항목별 피드백, 결과는 만족/보완 필요로 표시, 보완 요청 후보, 게이트 모드였다면의 판정), 같은 내용이 Summary 탭에도 나온다.
-5. 같은 방법으로 mode를 `digest`, issueKey에 task 키를 넣어 실행하면 TL;DR만 갱신되는 것을 볼 수 있다(F3 버튼과 같은 동작).
+5. 같은 방법으로 mode를 `digest`, issueKey에 task 키를 넣어 실행하면 TL;DR과 결과 산출물 구역만 갱신되고 comment는 달리지 않는 것을 볼 수 있다(F3 버튼과 같은 동작). 결과 산출물 구역의 회색 안내 줄 끝에 `(F3 정리)`가 붙는다.
 6. mode를 `alerts`, issueKey를 비워 실행하면 주간 점검이 Slack 채널로 간다. 메시지 본문은 Summary 탭에도 그대로 남는다.
 
 ## 운영 중 자주 쓰는 것
 
 - 특정 task를 다시 검수: Actions에서 Run workflow (issueKey, review). 또는 Jira에서 request 전환을 다시 하면 F1이 실행한다.
-- 담당자가 정정 comment를 남긴 뒤 바로 반영: Jira task 화면의 Automation(번개) 버튼에서 "F3 문서 정리 지금 실행".
+- 담당자가 정정 comment를 남긴 뒤 바로 반영, 또는 진행 중 중간 정리: Jira task 화면의 Automation(번개) 버튼에서 "F3 문서 정리 지금 실행". TL;DR과 결과 산출물 구역이 함께 다시 쓰인다.
 - 게이트 모드 전환: 변수 `JIRA_DOC_GATE`를 `true`로 바꾸고, Jira 워크플로의 `end` 전환에 Administrator 제한을 건다. agent가 쓰는 계정이 space Administrator여야 한다.
   게이트 모드에서는 문서화 리뷰(T4~T8)가 담당자용 검수 comment에 들어가고, 미달이면 통과가 보완 요청(`rejected` 전환)으로 바뀐다. 팀장용 comment는 달리지 않는다.
 - agent 상태 초기화(다시 처음부터 정리하게 하려면): `scripts/jira.sh prop-del INNO-26`.
@@ -73,7 +73,8 @@
 
 - agent가 쓰는 Jira 계정이 팀장 개인 계정이므로 agent의 comment도 팀장 이름으로 달린다. 그래서 agent의 모든 comment는 첫 줄이 `[ai-doc-agent]`이고, 스크립트는 이 표식과 Automation 작성자를 보고 사람의 comment와 구분한다. 팀장이 직접 쓰는 comment에는 이 표식을 넣지 않는다.
 - description의 agent 구역과 TL;DR은 실행 때마다 통째로 다시 쓰인다. 고치고 싶은 내용은 "정정:"으로 시작하는 comment로 남긴다.
-- 정리 모드는 사람의 입력(사람 구역, 사람 comment, sub-task, PR, 상태 전환)이 지난 실행과 같으면 그 task를 건너뛴다. 억지로 다시 정리하려면 F3을 누르거나 property를 지운다.
+- F3로 정리한 결과 산출물에서는 사유가 기록에 없는 미달성·초과 달성 항목에 "사유 미기재"를 쓰지 않는다(진행 중이라 아직 사유가 없을 수 있으므로). "사유 미기재" 표시와 T8 판정은 검수 때만 한다.
+- F3나 task를 지정한 수동 실행은 항상 돈다. task 키 없이 전체 정리를 돌릴 때만, 사람의 입력(사람 구역, 사람 comment, sub-task, PR, 상태 전환)이 지난 실행과 같은 task를 건너뛴다.
 - 팀장용 comment의 팀장 멘션은 agent가 팀장 계정으로 쓰므로 알림이 가지 않을 수 있다. 관찰 기간에는 Summary 탭이나 JQL `project = INNO AND comment ~ "문서화 리뷰"`로 모아 본다.
 - 주간 점검 메시지의 멘션은 `config/slack-users.json`에 Slack 멤버 ID가 있는 사람만 붙는다. 없으면 Jira 표시 이름만 나간다.
 - 주간 점검은 중복을 걸러 내지 않는다. 사유를 남기거나 활동을 남길 때까지 매주 같은 항목이 다시 올라온다.

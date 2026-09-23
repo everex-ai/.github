@@ -11,7 +11,7 @@ alerts 모드(주간 점검)는 Jira에 쓰지 않고 ctx/_scan/*.alerts.json을
 - 문서화 리뷰(T4~T8, Task 검수): 관찰 모드는 판정을 바꾸지 않고 팀장용 comment와 Actions Summary로 공유하고,
   게이트 모드는 미달이면 통과를 보완 요청으로 내린다. T8(초과 달성·미달성 사유)은 이 스크립트가 계산한다.
 - comment의 멘션은 담당자와 팀장 두 사람으로 제한한다.
-- 정리 모드의 누락 알림은 ctx/_scan/*.alerts.json에서 만들고 property의 notified로 중복을 막는다.
+- 정리 모드(F3)도 Task의 결과 산출물 구역을 다시 쓴다. comment와 판정은 없고, 사유가 기록에 없으면 "사유 미기재"를 쓰지 않는다.
 """
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ VERDICT_KO = {"pass": "통과", "fix": "보완 요청", "escalate": "보류", No
 TRANSITION_FOR = {"pass": "end", "fix": "rejected"}
 MENTION_RE = re.compile(r"\[~(?:accountid:)?([^\]]+)\]")
 SECTION_NOTE = {"Task": "agent가 comment, sub-task, PR 기록을 근거로 작성함. 직접 수정하지 말고 \"정정:\" comment로 남길 것."}
+SOURCE_KO = {"review": "검수", "digest": "F3 정리"}     # 결과 산출물 구역의 안내 줄 끝에 붙여 출처를 보인다
 
 # 검사 항목의 표시 순서와 이름. Jira comment의 검사 표는 항상 이 순서로, 이 이름으로 나간다 (ID는 괄호로 덧붙인다).
 # 정의는 prompts/rules.md(설계 문서 5.5절)와 같다.
@@ -91,8 +92,9 @@ def check_table(checks: list[dict], feedback: list[dict] | None = None) -> str:
     return "\n".join(rows)
 
 
-def deliverables_wiki(expected: list[dict], items: list[dict], extra: list[dict]) -> str:
-    """결과 산출물 구역 본문. 예상 산출물 번호 순서로 한 항목씩, 그 뒤에 초과 달성 목록."""
+def deliverables_wiki(expected: list[dict], items: list[dict], extra: list[dict], final: bool = True) -> str:
+    """결과 산출물 구역 본문. 예상 산출물 번호 순서로 한 항목씩, 그 뒤에 초과 달성 목록.
+    final=False(F3 정리)면 사유가 기록에 없을 때 "사유 미기재" 줄을 쓰지 않는다. 진행 중인 항목은 아직 사유가 없기 때문."""
     by_id = {str(it["id"]): it for it in items}
     lines: list[str] = []
     if not expected:
@@ -103,8 +105,9 @@ def deliverables_wiki(expected: list[dict], items: list[dict], extra: list[dict]
         lines.append(f"# *{e['text']}* / {mark}")
         if it.get("result"):
             lines.append(f"#* 결과: {it['result']}")
-        if not it.get("done"):
-            lines.append(f"#* 미달성 사유: {(it.get('why') or '').strip() or NO_REASON}")
+        why = (it.get("why") or "").strip()
+        if not it.get("done") and (why or final):
+            lines.append(f"#* 미달성 사유: {why or NO_REASON}")
         if it.get("evidence"):
             lines.append(f"#* 근거: {it['evidence']}")
         if not it.get("done") and it.get("reason"):
@@ -114,7 +117,9 @@ def deliverables_wiki(expected: list[dict], items: list[dict], extra: list[dict]
         lines.append("*초과 달성* {color:#6b778c}(예상 산출물에 없었지만 추가로 나온 결과){color}")
         for x in extra:
             lines.append(f"* {x['result']}")
-            lines.append(f"** 추가 사유: {(x.get('why') or '').strip() or NO_REASON}")
+            why = (x.get("why") or "").strip()
+            if why or final:
+                lines.append(f"** 추가 사유: {why or NO_REASON}")
             if x.get("evidence"):
                 lines.append(f"** 근거: {x['evidence']}")
     return "\n".join(lines)
@@ -314,10 +319,16 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
         elif v == "pass" and any(script_checks.get(cid, {}).get("result") == "fail" for cid in ("T1", "T2", "B1", "B2", "I1", "I2", "R4")):
             notes.append("스크립트 검사에 실패 항목이 있어 통과를 보완 요청으로 내림")
             v = "fix"
-    # T3: Claude가 낸 items의 번호가 예상 산출물 번호(1..n)와 1:1인지 (Task 검수만)
-    if mode == "review" and itype == "Task":
+    # T3: Claude가 낸 items의 번호가 예상 산출물 번호(1..n)와 1:1인지 (Task)
+    # 검수에서는 어긋나면 보류로 내리고, F3 정리는 판정이 없으므로 결과 산출물을 갱신하지 않는다
+    items_ok = True
+    if itype == "Task" and mode in ("review", "digest"):
         want = [str(e["id"]) for e in expected]
         got = sorted((str(a["id"]) for a in items), key=lambda x: (len(x), x))
+        items_ok = not want or want == got
+    if mode == "digest" and not items_ok:
+        notes.append("예상 산출물과 결과의 번호가 맞지 않아 결과 산출물은 갱신하지 않음 (T3)")
+    if mode == "review" and itype == "Task":
         if not want:
             checks.append({"id": "T3", "result": "n/a", "detail": "예상 산출물이 없어 대응할 수 없음"})
         elif want == got:
@@ -352,14 +363,14 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
     else:
         doc_checks = []
 
-    # 1) description의 agent 구역 (Task 검수만). 방금 다시 읽어서 사람 구역이 바뀌었어도 보존한다
+    # 1) description의 agent 구역 (Task 검수와 F3 정리). 방금 다시 읽어서 사람 구역이 바뀌었어도 보존한다
     fresh = j.issue(key, ["description"] + ([j.tldr_field] if j.tldr_field else []))
     desc = (fresh.get("fields") or {}).get("description") or ""
     stamp = now_stamp()
     fields: dict = {}
-    if mode == "review" and itype == "Task":
-        body = deliverables_wiki(expected, items, extra)
-        new_desc = set_section(desc, "결과 산출물", body, stamp, SECTION_NOTE["Task"])
+    if itype == "Task" and (mode == "review" or (mode == "digest" and items_ok)):
+        body = deliverables_wiki(expected, items, extra, final=(mode == "review"))
+        new_desc = set_section(desc, "결과 산출물", body, f"{stamp} ({SOURCE_KO[mode]})", SECTION_NOTE["Task"])
         if new_desc != desc:
             fields["description"] = new_desc
     # 2) TL;DR
@@ -390,9 +401,11 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
     # 4) property
     prop = j.prop_get(key)
     prop.update({"lastRunAt": dt.datetime.now().astimezone().isoformat(timespec="seconds"), "lastMode": mode,
-                 "inputHash": meta.get("inputHash", prop.get("inputHash")), "lastVerdict": v})
-    if mode == "review" and itype == "Task":
-        prop["docFails"] = doc_fails
+                 "inputHash": meta.get("inputHash", prop.get("inputHash"))})
+    if mode == "review":                               # F3 정리는 판정을 내지 않으므로 검수 판정을 덮어쓰지 않는다
+        prop["lastVerdict"] = v
+        if itype == "Task":
+            prop["docFails"] = doc_fails
     prop.setdefault("notified", [])
     j.prop_set(key, prop)
 
