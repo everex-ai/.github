@@ -148,7 +148,8 @@ def human_input_hash(itype: str, desc: str, comments: list[dict], subtasks: list
     return "sha256:" + h.hexdigest()
 
 
-def collect_issue(j: Jira, key: str, site: str, org: str, mode: str) -> dict | None:
+def collect_issue(j: Jira, key: str, site: str, org: str, mode: str, force: bool = False) -> dict | None:
+    """force=True(task를 지정한 F3·수동 실행)면 사람 입력이 지난 실행과 같아도 건너뛰지 않는다."""
     fields = ISSUE_FIELDS + ([j.tldr_field] if j.tldr_field else [])
     data = j.issue(key, fields)
     f = data.get("fields", {})
@@ -174,7 +175,7 @@ def collect_issue(j: Jira, key: str, site: str, org: str, mode: str) -> dict | N
     state = j.prop_get(key)
     ihash = human_input_hash(itype, desc, comments, subtasks, prs, changelog)
 
-    if mode == "digest" and state.get("inputHash") == ihash:
+    if mode == "digest" and not force and state.get("inputHash") == ihash:
         print(f"[collect] {key}: 사람의 입력 변화 없음(해시 동일). Claude 정리 대상에서 제외")
         return {"key": key, "skipped": True}
 
@@ -265,7 +266,7 @@ def main() -> None:
         print(f"[collect] alerts: 점검 대상 {len(list((CTX / '_scan').glob('*.json')))}건")
         return
     if args.issue:
-        collect_issue(j, args.issue.strip(), site, org, args.mode)
+        collect_issue(j, args.issue.strip(), site, org, args.mode, force=True)
         return
     if args.mode == "review":
         sys.exit("review 모드에는 --issue가 필요하다")
