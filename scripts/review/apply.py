@@ -264,6 +264,8 @@ def render_comment(
             need = "" if a is None else ("예" if a["needs_test"] else "아니오")
             found = "" if a is None or a.get("test_found") is None else ("예" if a["test_found"] else "아니오")
             evid = "" if a is None else (a.get("evidence") or a.get("reason") or "")
+            if a is None and s.get("docstring_only"):
+                need, evid = "-", "docstring만 변경 (판단 대상 아님)"
             loc = f"{s['file']}:{s['lines'][0]}" if s.get("lines") else s["file"]
             lines.append(f"| `{s['name']}` | {loc} | {s['kind']} | {s['change']} | {need} | {found} | {_cell(evid)} |")
         lines.append("")

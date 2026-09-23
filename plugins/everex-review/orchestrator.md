@@ -56,7 +56,7 @@ subagent 출력이 JSON이 아니거나 심볼이 빠져 있으면 그 subagent�
 - `verdict`: 3-3 또는 4-2가 `fail`이면 `reject`, 아니면 `pass`. 6과 7은 판정에 영향을 주지 않는다.
 - `requests[]`: 작성자가 해야 할 일을 항목당 한 줄로. 반려 사유(테스트 추가)를 먼저, 그다음 미사용 코드 제거, 설계 의견 순.
 
-만든 JSON이 `verdict-schema.json`의 `required`, `enum`, `additionalProperties: false`, `maxLength`를 지키는지 스스로 확인한 뒤 Write 도구로 `.everex-review/out/verdict.json`에 쓴다. 파일 내용은 JSON만이다 (설명, 코드 펜스 없음).
+만든 JSON이 `verdict-schema.json`의 `required`, `enum`, `additionalProperties: false`, `maxLength`를 지키는지 스키마를 읽어 스스로 확인한 뒤 (Bash는 주어지지 않는다. 쓴 뒤에는 apply.py가 다시 검증한다) Write 도구로 `.everex-review/out/verdict.json`에 쓴다. 파일 내용은 JSON만이다 (설명, 코드 펜스 없음).
 
 ## 5. 마지막 답변
 

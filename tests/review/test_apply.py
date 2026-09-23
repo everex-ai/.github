@@ -334,3 +334,10 @@ def test_override_body_keeps_previous_result_once():
     b2 = apply.override_body(b1, "lee", "9999999999")
     assert b2.count(apply.OVERRIDE_MARK) == 1 and "@lee" in b2 and "@kim" not in b2 and "## 코드 검수 결과: 반려" in b2
     assert "(이전 검수 결과 없음)" in apply.override_body(None, "kim", "abcdef1234")
+
+
+def test_docstring_only_symbol_is_labelled():
+    ri = _ri(_pre())
+    ri["symbols"][0]["docstring_only"] = True
+    body = apply.render_comment(ri["pr"], ri, apply.merge({**_pre(), "tier": 0}, None, None), None)
+    assert "| `scale` | calc/ops.py:55 | function | added | - |  | docstring만 변경 (판단 대상 아님) |" in body
