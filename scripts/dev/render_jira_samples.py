@@ -200,7 +200,7 @@ TASK_ITEMS = [
         "result": "comment에 모델 v2의 검증 데이터(val set) export 오류율 0.7%라는 수치만 있고 데이터 규모, 계산 방법, 리포트 링크 없음",
         "evidence": f"[comment 2026-09-12|{comment_url('INNO-17', 10123)}]",
         "why": "근거 부족으로 확인 불가",
-        "reason": "평가 리포트 링크 comment 필요",
+        "reason": "평가 리포트 링크, 데이터 규모, 오류율 계산 방법 comment 필요",
     },
     {
         "id": "3",
@@ -251,9 +251,12 @@ TASK_CHECKS = [
     {"id": "T6", "result": "fail", "detail": "작업 기간 중 사람 comment 1건"},
     {"id": "T7", "result": "pass", "detail": "sub-task 기록 있음"},
 ]
-TASK_REQUESTS = ["평가 리포트 링크 comment 필요", "기기 사양 확정 뒤 후속 task 키 comment 필요"]
-TASK_SUMMARY = f"""* 예상 산출물 3개 중 1개 달성. 재현 테스트는 [PR #42 export 오류 수정|https://github.com/everex-ai/repo/pull/42]로 병합됨
-* 오류율 항목은 모델 v2의 검증 데이터 오류율 0.7%라는 수치만 있고 계산 방법과 리포트 링크가 기록에 없어 미달성으로 둠([comment 2026-09-12|{comment_url("INNO-17", 10123)}])
+TASK_REQUESTS = [
+    "평가 리포트 링크, 데이터 규모, 오류율 계산 방법 comment 필요",
+    "기기 사양 확정 뒤 후속 task 키 comment 필요",
+]
+TASK_SUMMARY = f"""* 재현 테스트 추가 항목은 [PR #42 export 오류 수정|https://github.com/everex-ai/repo/pull/42]로 병합되어 달성함
+* 오류율 1% 미만 항목은 모델 v2의 검증 데이터 오류율 0.7%라는 수치만 있고 계산 방법과 리포트 링크가 기록에 없어 미달성으로 둠([comment 2026-09-12|{comment_url("INNO-17", 10123)}])
 * 예상에 없던 오류율 대시보드([PR #45 오류율 대시보드|https://github.com/everex-ai/repo/pull/45])는 초과 달성으로 기록함"""
 BUG_CHECKS = [
     {"id": "B3", "result": "pass", "detail": "원인과 해결에 PR 링크 있음"},

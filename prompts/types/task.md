@@ -22,7 +22,7 @@ items의 항목 수와 id는 expected와 정확히 같아야 한다(T3). 빠뜨�
     "result": "comment에 모델 v2의 검증 데이터(val set) export 오류율 0.7%라는 수치만 있고 데이터 규모, 계산 방법, 리포트 링크 없음",
     "evidence": "[comment 2026-09-12|https://<site>/browse/INNO-17?focusedCommentId=10123]",
     "why": "근거 부족으로 확인 불가",
-    "reason": "평가 리포트 링크 comment 필요" },
+    "reason": "평가 리포트 링크, 데이터 규모, 오류율 계산 방법 comment 필요" },
   { "id": "3", "done": false,
     "result": "ONNX 변환 스크립트 초안까지 작성",
     "why": "배포 대상 기기 사양이 확정되지 않아 변환 옵션을 정하지 못함([comment 2026-09-13|https://<site>/browse/INNO-17?focusedCommentId=10140])",
@@ -58,7 +58,7 @@ apply.py가 만드는 결과 산출물 구역의 모양은 다음과 같다 (참
 #* 결과: comment에 모델 v2의 검증 데이터(val set) export 오류율 0.7%라는 수치만 있고 데이터 규모, 계산 방법, 리포트 링크 없음
 #* 미달성 사유: 근거 부족으로 확인 불가
 #* 근거: [comment 2026-09-12|...]
-#* 요청: 평가 리포트 링크 comment 필요
+#* 요청: 평가 리포트 링크, 데이터 규모, 오류율 계산 방법 comment 필요
 # *ONNX 변환* / ❌ 미달성
 #* 결과: ONNX 변환 스크립트 초안까지 작성
 #* 미달성 사유: 배포 대상 기기 사양이 확정되지 않아 변환 옵션을 정하지 못함([comment 2026-09-13|...])
@@ -102,8 +102,8 @@ h2. Summary
 
 ## comment.wiki (검수 모드, 결과 요약 부분만)
 ```
-* 예상 산출물 3개 중 1개 달성. 재현 테스트는 [PR #42 export 오류 수정|https://github.com/everex-ai/repo/pull/42]로 병합됨
-* 오류율 항목은 모델 v2의 검증 데이터 오류율 0.7%라는 수치만 있고 계산 방법과 리포트 링크가 기록에 없어 미달성으로 둠([comment 2026-09-12|https://<site>/browse/INNO-17?focusedCommentId=10123])
+* 재현 테스트 추가 항목은 [PR #42 export 오류 수정|https://github.com/everex-ai/repo/pull/42]로 병합되어 달성함
+* 오류율 1% 미만 항목은 모델 v2의 검증 데이터 오류율 0.7%라는 수치만 있고 계산 방법과 리포트 링크가 기록에 없어 미달성으로 둠([comment 2026-09-12|https://<site>/browse/INNO-17?focusedCommentId=10123])
 * 예상에 없던 오류율 대시보드([PR #45 오류율 대시보드|https://github.com/everex-ai/repo/pull/45])는 초과 달성으로 기록함
 ```
 
