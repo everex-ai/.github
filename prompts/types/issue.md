@@ -14,7 +14,7 @@ precheck의 I1이 unknown이면 description.wiki의 이슈 유형 구역을 직�
 h2. Summary
 * (대응 결과: 수용 / 반려 / task INNO-000으로 이관, 이유 한 줄)
 * (근거: [comment 링크] 또는 만들어진 task 키)
-* {color:#6b778c}상태: <status>, 판정: <통과|보완 요청|보류>, 갱신: YYYY-MM-DD HH:MM{color}
+* {color:#6b778c}상태: <status>, 판정: <통과|보완 요청|보류>, 갱신: <meta.json의 collectedAt, YYYY-MM-DD HH:MM>{color}
 ```
 정리 모드에서는 "판정" 부분을 빼고 "상태"와 "갱신"만 쓰며, 아직 대응이 정해지지 않았으면 첫 항목에
 "검토 중: (지금까지의 논의 요지)"를 쓴다.
@@ -23,7 +23,7 @@ h2. Summary
 둘 다 빈 배열([])로 둔다. checks에 I1, I2(precheck 인용), I3(agent 판단), R2, R3, R4를 넣는다.
 
 ## comment.wiki (검수 모드, 결과 요약 부분만)
-대응 결과가 무엇이고 어디에 근거가 있는지를 개조식 1~3줄로 쓴다.
+대응 결과가 무엇이고 어디에 근거가 있는지를 개조식 1–3줄로 쓰고, 줄마다 근거 wiki 링크([comment 날짜|URL] 또는 만들어진 task 키)를 붙인다.
 
 ## 판정
 - pass: I1, I2, I3, R4가 모두 pass 또는 n/a

@@ -44,3 +44,11 @@ def test_orchestrator_references_agents_and_check_ids():
         assert re.search(rf"(^|[^\d-]){re.escape(cid)}([^\d-]|$)", text, re.M), cid
     assert ", ".join(SCRIPT_CHECKS) in text  # 스크립트 판정 항목을 넣지 말라는 문장
     assert ".everex-review/out/verdict.json" in text and "verdict-schema.json" in text
+
+
+def test_plugin_files_have_writing_rules():
+    # PR 검수 comment에 들어가는 문장(detail, reason, evidence, comment, requests)의 작성 규칙
+    for p in [PLUGIN / "orchestrator.md", *sorted((PLUGIN / "agents").glob("*.md"))]:
+        text = p.read_text()
+        assert "\n## 작성 규칙\n" in text, p.name
+        assert "추정:" in text and "필요" in text, p.name
