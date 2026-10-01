@@ -30,7 +30,7 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from jira_api import AGENT_MARK, Jira, JiraError, set_section  # noqa: E402
+from jira_api import AGENT_MARK, STOP_REASON_PREFIX, Jira, JiraError, set_section  # noqa: E402
 
 VERDICT_KO = {"pass": "통과", "fix": "보류", "escalate": "검토 요청", None: "정리"}
 # 검수 결과를 다시 정하는 규칙(recheck_verdict)과 상태 전환. 검사 이름은 CHECK_NAMES, prompts/rules.md와 같다
@@ -96,9 +96,39 @@ def check_label(cid: str) -> str:
     return f"{CHECK_NAMES.get(cid, cid)} ({cid})"
 
 
+def cell_text(text: str) -> str:
+    """검사 표 칸에 넣을 문장. 칸 구분자와 겹치지 않게 Jira wiki 링크 밖의 "|"만 "/"로 바꾼다.
+
+    링크 [제목|URL] 안의 "|"는 링크를 이루므로 그대로 둔다.
+
+    Args:
+        text: 검사 결과의 detail 또는 문서화 리뷰 points의 한 줄(wiki markup).
+
+    Returns:
+        링크 밖의 "|"를 "/"로 바꾼 문장.
+    """
+    parts: list[str] = []
+    pos = 0
+    for m in WIKI_LINK_RE.finditer(text):
+        parts += [text[pos:m.start()].replace("|", "/"), m.group(0)]
+        pos = m.end()
+    parts.append(text[pos:].replace("|", "/"))
+    return "".join(parts)
+
+
 def check_table(checks: list[dict], feedback: list[dict] | None = None) -> str:
-    """verdict.checks를 고정 순서로 정렬해 wiki 표로 만든다. 같은 ID가 여러 번 있으면 마지막 것을 쓴다.
-    문서화 리뷰 항목은 feedback의 points가 있으면 그것을 내용 칸에 쓴다(없으면 detail)."""
+    """verdict.checks를 고정 순서로 정렬해 wiki 표로 만든다.
+
+    같은 ID가 여러 번 있으면 마지막 것을 쓴다. 문서화 리뷰 항목은 feedback의 points가 있으면 그것을 내용 칸에
+    쓴다(없으면 detail). 내용 칸의 문장은 cell_text로 바꿔 링크 밖의 "|"만 "/"로 바꾼다.
+
+    Args:
+        checks: 검사 결과 목록.
+        feedback: verdict.json의 feedback(문서화 리뷰 항목별 피드백). 없으면 detail만 쓴다.
+
+    Returns:
+        검사 표(wiki markup).
+    """
     by_id: dict[str, dict] = {}
     for c in checks:
         by_id[c["id"]] = c
@@ -107,7 +137,7 @@ def check_table(checks: list[dict], feedback: list[dict] | None = None) -> str:
     for cid in sorted(by_id, key=lambda x: (CHECK_ORDER.get(x, 99), x)):
         c = by_id[cid]
         texts = points_by_id.get(cid) or [c.get("detail") or ""]
-        cell = CELL_BREAK.join(t.replace("|", "/").replace("\n", " ").strip() for t in texts if t.strip())
+        cell = CELL_BREAK.join(cell_text(t).replace("\n", " ").strip() for t in texts if t.strip())
         rows.append(f"| {check_label(cid)} | {result_label(c['result'])} | {cell} |")
     return "\n".join(rows)
 
@@ -229,6 +259,19 @@ def owner_fails(checks: list[dict]) -> list[dict]:
         실패한 담당자 검사 목록. checks의 순서를 따른다.
     """
     return [c for c in checks if c["result"] == "fail" and c["id"] in OWNER_FIXABLE_CHECKS]
+
+
+def last_check(checks: list[dict], cid: str) -> dict:
+    """검사 결과 목록에서 ID가 cid인 검사를 찾는다. 검사 표(check_table)처럼 같은 ID가 여러 번 있으면 마지막 것을 쓴다.
+
+    Args:
+        checks: 검사 결과 목록.
+        cid: 검사 ID.
+
+    Returns:
+        찾은 검사 결과. 없으면 빈 dict.
+    """
+    return next((c for c in reversed(checks) if c["id"] == cid), {})
 
 
 def recheck_verdict(v: str, itype: str, items: list[dict], checks: list[dict], gate: bool,
@@ -545,6 +588,14 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
         if reason:
             changes.append(reason)
             notes.append(reason)
+        # 보류이고 R4가 보완 필요면 늦은 사유를 남기는 방법을 요청 끝에 넣는다. CI agent는 이 문장을 requests에 적지 않는다
+        if v == "fix" and last_check(checks, "R4").get("result") == "fail":
+            days = list(dict.fromkeys(s["at"][:10] for s in pre.get("stops") or [] if not s.get("hasReason")))
+            when = f"({', '.join(days)})" if days else ""
+            r4_request = (f"stop{when}의 사유를 '{STOP_REASON_PREFIX}'로 시작하는 comment로 남긴 뒤 다시 "
+                          "request 전환(담당자가 완료를 요청해 task를 ready-to-done 상태로 보내는 Jira 전환) 필요")
+            if r4_request not in requests:
+                requests.append(r4_request)
 
     # 1) description의 agent 구역 (Task 검수와 F3 정리). 방금 다시 읽어서 사람 구역이 바뀌었어도 보존한다
     fresh = j.issue(key, ["description"] + ([j.tldr_field] if j.tldr_field else []))
@@ -699,7 +750,8 @@ def review_slack_reasons(v: str, itype: str, expected: list[dict], items: list[d
 
     보류: 사유 없는 미달성 항목, 실패한 담당자 검사(OWNER_FIXABLE_CHECKS), 검수 결과를 바꾼 이유.
     검토 요청: 담당자가 남긴 미달성 사유, 검수 결과를 바꾼 이유. 통과: 달성 요약 줄(Task)과 결과 요약 줄.
-    위 항목이 비면 결과 요약 줄을 적는다.
+    위 항목이 비면 결과 요약 줄을 적는다. 검토 요청과 통과에서 R4의 사유가 늦게 기록되었으면(late) 끝에 R4 줄을
+    붙여 팀장이 확인하게 한다.
 
     Args:
         v: 최종 검수 결과 코드값(pass, fix, escalate).
@@ -730,7 +782,11 @@ def review_slack_reasons(v: str, itype: str, expected: list[dict], items: list[d
         if itype == "Task" and expected:
             out.append(deliverables_summary(expected, items, extra))
         out += summary_lines
-    return out or summary_lines
+    out = out or summary_lines
+    r4 = last_check(checks, "R4")
+    if v in ("pass", "escalate") and r4.get("late"):
+        out.append(f"{check_label('R4')}: {wiki_to_slack(r4.get('detail') or '')}")
+    return out
 
 
 def review_slack_text(v: str, key: str, title: str, url: str, mention: str, state_line: str, reasons: list[str],

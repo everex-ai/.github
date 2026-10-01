@@ -101,6 +101,7 @@ verdict에는 코드값을 쓰고, 괄호 안은 검수 결과 이름이다.
 - fix(보류): 담당자가 고칠 수 있음. 아래 중 하나에 해당한다
   - why가 빈 미달성 항목이 있음. why가 "근거 부족으로 확인 불가"인 항목도 담당자의 사유가 없는 것으로 간주한다
   - 담당자가 고칠 수 있는 검사(T1, T2, R2의 링크 부재, R4, B1, B2, B3, B4, I1, I2, I3)가 fail
+- R4가 fail이고 검수 결과가 보류이면 apply.py가 R4 요청 문장(stop의 사유를 "stop 사유:"로 시작하는 comment로 남긴 뒤 다시 request 전환(담당자가 완료를 요청해 task를 ready-to-done 상태로 보내는 Jira 전환)을 하라는 문장)을 requests에 넣으므로, R4 요청 문장은 requests에 적지 않는다
 
 ## 출력 (out/<KEY>/ 아래에만 쓴다)
 - verdict.json: schemas/verdict.json 형식. issueKey는 ctx 폴더 이름, mode는 "review".

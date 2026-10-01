@@ -227,7 +227,9 @@ def collect_scan(j: Jira, project: str, site: str) -> None:
             "assignee": {"accountId": (f.get("assignee") or {}).get("accountId"), "displayName": (f.get("assignee") or {}).get("displayName")},
             "attachmentCount": len(f.get("attachment") or []),
             "sections": {t: section_body(desc, t) for t in ["진행 배경", "예상 산출물", "현황", "개선", "첨부", "이슈 유형", "이슈 내용"]},
-            "humanComments": [{"created": c["created"], "url": c["url"]} for c in comments if c["kind"] == "human"],
+            # body: 본문 앞 100자. 늦게 남긴 stop 사유("stop 사유:"로 시작하는 comment)를 precheck가 찾는 데 쓴다
+            "humanComments": [{"created": c["created"], "url": c["url"], "body": c["body"][:100]}
+                              for c in comments if c["kind"] == "human"],
             "statusChanges": [c for c in changelog if c["field"] == "status"],
             "state": j.prop_get(key),
         })

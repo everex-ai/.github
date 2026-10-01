@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from jira_api import section_body, strip_placeholders  # noqa: E402
+from jira_api import STOP_REASON_PREFIX, section_body, strip_placeholders  # noqa: E402
 
 LIST_ITEM_RE = re.compile(r"^\s*(?:([*#\-]+)|(\d+)[.)])\s+(.*)$")   # 글머리표(*, #, -), 번호(1. 1))
 LEGACY_AC_RE = re.compile(r"^AC-\d+\s*[:：]\s*")                       # 예전 형식 'AC-1:'은 접두어만 떼고 본문을 쓴다
@@ -130,7 +130,23 @@ def check_issue_template(desc: str) -> dict:
 
 
 def stop_events(status_changes: list[dict], human_comments: list[dict], now: dt.datetime) -> list[dict]:
-    """stop(Backlog 진입)마다 그 뒤 다음 상태 변경 전까지 사람 comment가 있었는지."""
+    """stop(Backlog 진입)마다 사유 comment가 있었는지 확인한다.
+
+    stop 뒤 다음 상태 변경 전까지 사람 comment가 있으면 사유로 센다. 없으면 stop 뒤에 작성된 사람 comment 중
+    본문이 STOP_REASON_PREFIX("stop 사유:")로 시작하는 첫 comment를 늦은 사유로 센다. 비교는 본문 앞 공백을 빼고
+    대소문자를 무시하며, 작성 시각(created)이 없는 comment는 뺀다.
+    늦은 사유 comment 하나가 그 앞의 사유 없는 stop 여러 개를 함께 인정할 수 있다.
+
+    Args:
+        status_changes: 상태 변경 이력(시간순).
+        human_comments: 사람 comment 목록. 항목마다 created, url, body(없을 수 있음).
+        now: 지금 시각. 마지막 stop 뒤에 상태 변경이 없으면 사유를 찾는 구간의 끝으로 쓴다.
+
+    Returns:
+        stop마다 at(stop 시각), hasReason, hoursOpen, reasonUrl, late(늦은 사유 여부)를 담은 목록.
+        늦은 사유가 있으면 lateReasonAt(그 comment의 작성 시각)도 담는다.
+    """
+    prefix = STOP_REASON_PREFIX.lower()
     out = []
     for i, ch in enumerate(status_changes):
         if not is_status(ch.get("to"), STOP_TO):
@@ -138,18 +154,48 @@ def stop_events(status_changes: list[dict], human_comments: list[dict], now: dt.
         t0 = parse_ts(ch["created"])
         t1 = parse_ts(status_changes[i + 1]["created"]) if i + 1 < len(status_changes) else now
         reasons = [c for c in human_comments if (parse_ts(c["created"]) or now) > t0 and (parse_ts(c["created"]) or now) <= t1]
-        out.append({"at": ch["created"], "hasReason": bool(reasons), "hoursOpen": round((t1 - t0).total_seconds() / 3600, 1),
-                    "reasonUrl": reasons[0].get("url", "") if reasons else ""})
+        late = None
+        if not reasons:
+            marked = [c for c in human_comments if (parse_ts(c.get("created")) or t0) > t0   # created가 없으면 뺀다
+                      and (c.get("body") or "").lstrip().lower().startswith(prefix)]
+            late = min(marked, key=lambda c: parse_ts(c["created"])) if marked else None
+        reason = reasons[0] if reasons else late
+        st = {"at": ch["created"], "hasReason": reason is not None, "hoursOpen": round((t1 - t0).total_seconds() / 3600, 1),
+              "reasonUrl": reason.get("url", "") if reason else "", "late": late is not None}
+        if late is not None:
+            st["lateReasonAt"] = late["created"]
+        out.append(st)
     return out
 
 
 def check_r4(stops: list[dict]) -> dict:
+    """stop마다 사유 comment가 있는지로 R4(stop 사유 comment) 결과를 정한다.
+
+    사유 없는 stop이 있으면 fail이다. 모두 사유가 있고 그중 늦은 사유가 있으면 pass이고, detail 끝에
+    "늦게 기록: stop <날짜> 뒤 다음 상태 변경 이후에 남긴 [stop 사유 comment <날짜>|<URL>]"를 붙이고 late를 True로 둔다.
+    늦은 사유가 여러 개면 "; "로 잇고, comment URL이 비면 링크 없이 "stop 사유 comment <날짜>"로 적는다.
+
+    Args:
+        stops: stop_events의 결과.
+
+    Returns:
+        검사 결과(result, detail, 늦은 사유가 있으면 late).
+    """
     if not stops:
         return {"result": "n/a", "detail": "stop 이력 없음"}
     missing = [s for s in stops if not s["hasReason"]]
-    if not missing:
-        return {"result": "pass", "detail": f"stop {len(stops)}회 모두 사유 comment 있음"}
-    return {"result": "fail", "detail": "사유 comment 없는 stop: " + ", ".join(s["at"][:10] for s in missing)}
+    if missing:
+        return {"result": "fail", "detail": "사유 comment 없는 stop: " + ", ".join(s["at"][:10] for s in missing)}
+    detail = f"stop {len(stops)}회 모두 사유 comment 있음"
+    late = [s for s in stops if s.get("late")]
+    if not late:
+        return {"result": "pass", "detail": detail}
+    marks = []
+    for s in late:
+        name = f"stop 사유 comment {s['lateReasonAt'][:10]}"
+        link = f"[{name}|{s['reasonUrl']}]" if s.get("reasonUrl") else name
+        marks.append(f"stop {s['at'][:10]} 뒤 다음 상태 변경 이후에 남긴 {link}")
+    return {"result": "pass", "detail": f"{detail}. 늦게 기록: {'; '.join(marks)}", "late": True}
 
 
 def check_a2(itype: str, changelog: list[dict], desc_section: str) -> dict:

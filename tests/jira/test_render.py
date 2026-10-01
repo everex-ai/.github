@@ -43,6 +43,12 @@ def jp(render):
     return render.load_modules()[1]
 
 
+@pytest.fixture(scope="module")
+def jc(render):
+    """scripts/collect.py (모듈 이름 jira_collect). tests/review/가 불러오는 scripts/review/collect.py와 섞이지 않게 한다."""
+    return render.load_module("jira_collect", ROOT / "scripts" / "collect.py")
+
+
 @pytest.fixture(autouse=True)
 def slack(ja, monkeypatch, tmp_path_factory):
     """apply_issue가 Slack에 보내려던 본문을 모은다. 실제 Slack에는 보내지 않는다."""
@@ -482,6 +488,15 @@ def test_check_table_uses_same_labels_for_all_checks(ja):
     assert "통과" not in table and "실패" not in table
 
 
+def test_check_table_keeps_wiki_links_in_cells(ja):
+    link = "[stop 사유 comment 2026-09-25|https://e.com/c?focusedCommentId=1]"
+    checks = [{"id": "R4", "result": "pass", "detail": f"a|b {link} c|d"}, {"id": "T5", "result": "fail"}]
+    feedback = [{"id": "T5", "points": ["[PR #1|https://e.com/1] 링크 밖 x|y", "둘째 줄"]}]
+    table = ja.check_table(checks, feedback)
+    assert f"| stop 사유 comment (R4) | ✅ 만족 | a/b {link} c/d |" in table  # 링크 안의 "|"는 그대로 둠
+    assert "| 예상 산출물 분할 단위 (T5) | ❌ 보완 필요 | [PR #1|https://e.com/1] 링크 밖 x/y \\\\ 둘째 줄 |" in table
+
+
 def test_verdict_change_notes_start_with_check_name(render, tmp_path):
     files = {p.name: p.read_text(encoding="utf-8") for p in render.render(tmp_path)}
     bug = files["review-comment-bug-escalate.wiki"].splitlines()
@@ -565,3 +580,236 @@ def test_tldr_label_not_found_is_reported(render, ja, tmp_path):
     ja.apply_issue(j, ctx / "INNO-17", out, "review", False, "", summ)
     assert "TL;DR의 검수 결과 표시를 찾지 못해 바꾸지 않음" in summ.rows[0]
     assert all("TL;DR의 검수 결과 표시" not in body for _, body in j.comments)
+
+
+# 늦게 남긴 stop 사유(R4). stop 2026-09-08 18:00, 다음 상태 변경 2026-09-10 09:30
+KST = dt.timezone(dt.timedelta(hours=9))
+NOW = dt.datetime(2026, 9, 29, 9, 0, tzinfo=KST)
+STOP_CHANGES = [
+    {"created": "2026-09-08T18:00:00.000+0900", "field": "status", "to": "Backlog"},
+    {"created": "2026-09-10T09:30:00.000+0900", "field": "status", "to": "In Progress"},
+]
+R4_REQUEST = (
+    "stop(2026-09-08)의 사유를 'stop 사유:'로 시작하는 comment로 남긴 뒤 다시 "
+    "request 전환(담당자가 완료를 요청해 task를 ready-to-done 상태로 보내는 Jira 전환) 필요"
+)
+LATE_URL = f"{ISSUE_URL}?focusedCommentId=1"  # 늦은 사유 comment(2026-09-25)의 링크
+LATE_NOTE = "늦게 기록: stop 2026-09-08 뒤 다음 상태 변경 이후에 남긴"
+R4_LATE_DETAIL = f"stop 1회 모두 사유 comment 있음. {LATE_NOTE} [stop 사유 comment 2026-09-25|{LATE_URL}]"
+# Slack 알림의 이유 묶음에 들어가는 줄. wiki 링크는 Slack 링크로 바뀜
+R4_LATE_LINE = (
+    f"stop 사유 comment (R4): stop 1회 모두 사유 comment 있음. {LATE_NOTE} <{LATE_URL}|stop 사유 comment 2026-09-25>"
+)
+ESCALATE_REASON = (
+    '예상 산출물 2번 "오류율 1% 미만": 라벨 재수집이 다음 분기로 밀림(<https://example.com/c/1|comment 2026-09-15>)'
+)
+
+
+def human_comment(created, body, cid):
+    return {"created": created, "url": f"{ISSUE_URL}?focusedCommentId={cid}", "body": body}
+
+
+def test_stop_events_comment_before_next_change_is_reason(jp):
+    c = human_comment("2026-09-09T10:00:00.000+0900", "데이터 대기", 1)
+    [st] = jp.stop_events(STOP_CHANGES, [c], NOW)
+    assert st["hasReason"] is True and st["late"] is False
+    assert st["reasonUrl"] == c["url"] and "lateReasonAt" not in st
+
+
+def test_stop_events_marked_comment_after_next_change_is_late_reason(jp):
+    plain = human_comment("2026-09-20T10:00:00.000+0900", "진행 상황 공유", 1)
+    marked = human_comment("2026-09-25T11:00:00.000+0900", "  STOP 사유: 고객사 데이터 대기", 2)
+    later = human_comment("2026-09-26T11:00:00.000+0900", "stop 사유: 다시 적음", 3)
+    [st] = jp.stop_events(STOP_CHANGES, [later, plain, marked], NOW)  # 본문 앞 공백과 대소문자는 무시함
+    assert st["hasReason"] is True and st["late"] is True
+    assert st["lateReasonAt"] == marked["created"] and st["reasonUrl"] == marked["url"]
+
+
+def test_stop_events_reason_before_next_change_wins_over_marked_comment(jp):
+    on_time = human_comment("2026-09-09T10:00:00.000+0900", "데이터 대기", 1)
+    marked = human_comment("2026-09-25T11:00:00.000+0900", "stop 사유: 고객사 데이터 대기", 2)
+    [st] = jp.stop_events(STOP_CHANGES, [marked, on_time], NOW)
+    assert st["hasReason"] is True and st["late"] is False
+    assert st["reasonUrl"] == on_time["url"] and "lateReasonAt" not in st
+
+
+def test_stop_events_plain_comment_after_next_change_is_not_reason(jp):
+    c = human_comment("2026-09-25T11:00:00.000+0900", "사유: 고객사 데이터 대기", 1)
+    [st] = jp.stop_events(STOP_CHANGES, [c], NOW)
+    assert st["hasReason"] is False and st["late"] is False and st["reasonUrl"] == ""
+
+
+@pytest.mark.parametrize(
+    "comment",
+    [
+        {"created": "2026-09-25T11:00:00.000+0900", "url": LATE_URL},
+        {"created": "2026-09-25T11:00:00.000+0900", "url": LATE_URL, "body": None},
+        {"created": None, "url": LATE_URL, "body": "stop 사유: 고객사 데이터 대기"},
+    ],
+    ids=["body 키 없음", "body가 None", "created가 None"],
+)
+def test_stop_events_comment_without_body_or_created_is_not_late_reason(jp, comment):
+    [st] = jp.stop_events(STOP_CHANGES, [comment], NOW)
+    assert st["hasReason"] is False and st["late"] is False
+
+
+def test_stop_events_marked_comment_before_stop_is_not_reason(jp):
+    c = human_comment("2026-09-05T11:00:00.000+0900", "stop 사유: 미리 적음", 1)
+    [st] = jp.stop_events(STOP_CHANGES, [c], NOW)
+    assert st["hasReason"] is False and st["late"] is False
+
+
+def test_check_r4_late_reason_passes_with_both_dates(jp):
+    marked = human_comment("2026-09-25T11:00:00.000+0900", "stop 사유: 고객사 데이터 대기", 1)
+    r4 = jp.check_r4(jp.stop_events(STOP_CHANGES, [marked], NOW))
+    assert r4 == {"result": "pass", "detail": R4_LATE_DETAIL, "late": True}
+    on_time = human_comment("2026-09-09T10:00:00.000+0900", "데이터 대기", 2)
+    assert jp.check_r4(jp.stop_events(STOP_CHANGES, [on_time], NOW)) == {
+        "result": "pass",
+        "detail": "stop 1회 모두 사유 comment 있음",
+    }
+    # 링크가 없는 comment 하나가 사유 없는 stop 두 개를 함께 인정함. 여러 개는 "; "로 이음
+    changes = [
+        *STOP_CHANGES,
+        {"created": "2026-09-20T18:00:00.000+0900", "field": "status", "to": "Backlog"},
+        {"created": "2026-09-22T09:00:00.000+0900", "field": "status", "to": "In Progress"},
+    ]
+    no_url = {**marked, "url": ""}
+    assert jp.check_r4(jp.stop_events(changes, [no_url], NOW))["detail"] == (
+        "stop 2회 모두 사유 comment 있음. 늦게 기록: stop 2026-09-08 뒤 다음 상태 변경 이후에 남긴 "
+        "stop 사유 comment 2026-09-25; stop 2026-09-20 뒤 다음 상태 변경 이후에 남긴 stop 사유 comment 2026-09-25"
+    )
+
+
+@pytest.mark.parametrize(
+    ("late_reason", "want_codes"),
+    [(False, ["HOLD_REASON_MISSING:2026-09-08"]), (True, [])],
+    ids=["늦은 사유가 없으면 R4 항목", "늦은 사유가 있으면 R4 항목 없음"],
+)
+def test_run_scan_skips_r4_alert_for_late_reason(ja, jp, tmp_path, late_reason, want_codes):
+    # 예전 stop(2026-09-08)은 다음 상태 변경까지 사유가 없고, 지금 stop(2026-09-20)은 사유가 있음
+    marked = human_comment("2026-09-15T11:00:00.000+0900", "stop 사유: 고객사 데이터 대기", 1)
+    current = human_comment("2026-09-21T10:00:00.000+0900", "장비 수리 대기", 2)
+    changes = [*STOP_CHANGES, {"created": "2026-09-20T18:00:00.000+0900", "field": "status", "to": "Backlog"}]
+    scan = {
+        "key": "INNO-40",
+        "type": "Task",
+        "status": "Backlog",
+        "created": "2026-09-01T10:00:00.000+0900",
+        "humanComments": [marked, current] if late_reason else [current],
+        "statusChanges": changes,
+    }
+    (tmp_path / "INNO-40.json").write_text(json.dumps(scan), encoding="utf-8")
+    jp.run_scan(tmp_path / "INNO-40.json", NOW)
+    alerts = json.loads((tmp_path / "INNO-40.alerts.json").read_text(encoding="utf-8"))["alerts"]
+    assert [a["code"] for a in alerts] == want_codes
+    lines, _ = ja.weekly_lines(tmp_path, {})  # 주간 점검 메시지의 R4 항목
+    assert any(line.startswith("*stop 사유 미기재*") for line in lines) == bool(want_codes)
+
+
+class ScanJira:
+    """collect_scan이 부르는 Jira 메서드(search, changelog, prop_get)만 흉내 낸다."""
+
+    def __init__(self, comments):
+        self.comments = comments
+
+    def search(self, jql, fields):
+        f = {"summary": "라벨 재수집", "status": {"name": "Backlog"}, "issuetype": {"name": "Task"}}
+        return [{"key": "INNO-40", "fields": f | {"comment": {"comments": self.comments}}}]
+
+    def changelog(self, key):
+        return []
+
+    def prop_get(self, key):
+        return {}
+
+
+def test_collect_scan_keeps_first_100_chars_of_human_comment_body(jc, tmp_path, monkeypatch):
+    monkeypatch.setattr(jc, "CTX", tmp_path)
+    long_body = "stop 사유: " + "가" * 150
+    comments = [
+        {
+            "id": "1",
+            "created": "2026-09-25T11:00:00.000+0900",
+            "author": {"accountType": "atlassian"},
+            "body": long_body,
+        },
+        {"id": "2", "created": "2026-09-25T12:00:00.000+0900", "author": {"accountType": "atlassian"}, "body": "짧음"},
+        {"id": "3", "created": "2026-09-25T13:00:00.000+0900", "author": {"accountType": "app"}, "body": "안내"},
+    ]
+    jc.collect_scan(ScanJira(comments), "INNO", "https://example.atlassian.net")
+    scan = json.loads((tmp_path / "_scan" / "INNO-40.json").read_text(encoding="utf-8"))
+    assert [c["body"] for c in scan["humanComments"]] == [long_body[:100], "짧음"]
+    assert len(scan["humanComments"][0]["body"]) == 100
+
+
+def run_r4_fail(render, ja, jp, work, verdict, requests, mode="review", a2=None):
+    """사유 없는 stop(2026-09-08)이 있는 INNO-17을 실행하고 (FakeJira, Summary)를 돌려준다."""
+    ctx, out = work / "ctx", work / "out"
+    stops = jp.stop_events(STOP_CHANGES, [], NOW)
+    checks = {"R4": jp.check_r4(stops)} | ({"A2": a2} if a2 else {})
+    render.write_issue(ctx, "INNO-17", "Task", EXPECTED, checks, stops=stops)
+    v = render.task_verdict("INNO-17", mode, verdict)
+    v |= {"items": [ITEMS[0], {**ITEMS[1], "done": True}], "extra": [], "requests": requests}
+    render.write_out(out, "INNO-17", v, "* 요약")
+    j = render.FakeJira({"INNO-17": ""})
+    summ = ja.Summary(str(work / "summary.md"))
+    ja.apply_issue(j, ctx / "INNO-17", out, mode, False, "acc-lead", summ)
+    return j, summ
+
+
+@pytest.mark.parametrize(
+    "given",
+    [["평가 리포트 링크 comment 필요"], [R4_REQUEST, "평가 리포트 링크 comment 필요"]],
+    ids=["CI agent가 적지 않으면 끝에 넣음", "CI agent가 이미 적었으면 넣지 않음"],
+)
+def test_r4_fail_adds_request_once_to_hold_slack(render, ja, jp, tmp_path, slack, given):
+    j, _ = run_r4_fail(render, ja, jp, tmp_path, "pass", given)
+    assert slack[0].startswith("<@U-ASSIGNEE> [INNO-17] 검수 결과: 보류. ")
+    assert slack[0].count(R4_REQUEST) == 1
+    requests = slack[0].split("\n요청\n")[1].split("\n근거:")[0].splitlines()
+    want = given if R4_REQUEST in given else [*given, R4_REQUEST]
+    assert requests == [f"{i}. {r}" for i, r in enumerate(want, 1)]
+    assert j.comments[0][1].count(R4_REQUEST) == 1  # 검수 comment의 요청에도 한 번만 들어감
+
+
+def test_r4_request_not_added_when_a2_makes_review_request(render, ja, jp, tmp_path, slack):
+    a2 = {"result": "fail", "detail": "2026-09-26 10:00에 '예상 산출물' 구역이 바뀜"}
+    j, summ = run_r4_fail(render, ja, jp, tmp_path, "pass", [], a2=a2)
+    body = j.comments[0][1]
+    assert body.startswith("[ai-doc-agent]\n검수 결과: *검토 요청*\n")
+    assert R4_REQUEST not in body and "*요청*" not in body  # 검수 comment의 요청
+    assert "requests" not in summ.rows[0]  # requests가 비어 있음
+    assert "| stop 사유 comment (R4) | ❌ 보완 필요 |" in body
+    assert R4_REQUEST not in slack[0]
+
+
+def test_r4_request_not_added_in_digest_mode(render, ja, jp, tmp_path, slack):
+    j, summ = run_r4_fail(render, ja, jp, tmp_path, None, [], mode="digest")
+    assert j.comments == [] and slack == []
+    assert "requests" not in summ.rows[0]  # requests가 비어 있음
+    assert all(R4_REQUEST not in str(v) for v in j.fields["INNO-17"].values())
+
+
+@pytest.mark.parametrize(
+    ("v", "itype", "items", "changes", "want"),
+    [
+        ("pass", "Task", [ITEMS[0], {**ITEMS[1], "done": True}], [], ["예상 산출물 2개 중 2개 달성", "요약"]),
+        ("escalate", "Task", [ITEMS[0], REASONED], [HOLD_TO_REQUEST], [ESCALATE_REASON, HOLD_TO_REQUEST]),
+        ("escalate", "Bug", [], [], ["요약"]),
+    ],
+    ids=["통과", "검토 요청", "이유가 비면 결과 요약 줄 뒤에 붙임"],
+)
+def test_slack_reasons_show_late_r4(ja, v, itype, items, changes, want):
+    late = [{"id": "R4", "result": "pass", "detail": R4_LATE_DETAIL, "late": True}]
+    base = ja.review_slack_reasons(v, itype, EXPECTED, items, [], [], changes, "* 요약")
+    got = ja.review_slack_reasons(v, itype, EXPECTED, items, [], late, changes, "* 요약")
+    assert base == want and got == [*want, R4_LATE_LINE]
+    on_time = [{"id": "R4", "result": "pass", "detail": "stop 1회 모두 사유 comment 있음"}]
+    assert ja.review_slack_reasons(v, itype, EXPECTED, items, [], on_time, changes, "* 요약") == base
+
+
+def test_slack_reasons_hold_omits_late_r4(ja):
+    late = [{"id": "R4", "result": "pass", "detail": R4_LATE_DETAIL, "late": True}]
+    got = ja.review_slack_reasons("fix", "Task", EXPECTED, ITEMS, [], late, [], "* 요약")
+    assert got == ['사유 없는 미달성: 예상 산출물 2번 "오류율 1% 미만"']

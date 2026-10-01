@@ -17,6 +17,7 @@ import urllib.request
 
 PROPERTY_KEY = "ai-doc-agent"
 AGENT_MARK = "[ai-doc-agent]"          # agent가 쓰는 모든 comment의 첫 줄 표식
+STOP_REASON_PREFIX = "stop 사유:"       # 늦게 남긴 stop 사유 comment의 시작 표시. precheck.py(R4 계산)와 apply.py(R4 요청 문장)가 사용함
 H2 = re.compile(r"^h2\.\s*(.+?)\s*$", re.M)
 
 

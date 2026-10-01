@@ -306,6 +306,19 @@ PASS_ITEMS = [
 PASS_SUMMARY = f"""* 재현 테스트 추가 항목은 [PR #42 export 오류 수정|https://github.com/everex-ai/repo/pull/42]로 병합되어 달성함
 * 오류율 1% 미만 항목은 모델 v2의 검증 데이터(val set, export 요청 12,000건) 오류율 0.7%(오류 건수를 export 요청 건수로 나눔)가 {REPORT_LINK}에 있어 달성함
 * ONNX 변환 항목은 [PR #48 ONNX 변환|https://github.com/everex-ai/repo/pull/48]로 병합되어 달성함"""
+# stop 이력: 2026-09-08에 stop하고 다음 상태 변경(2026-09-10 In Progress)까지 사람 comment가 없음
+# 보류 샘플(INNO-17)은 사유가 없어 R4가 보완 필요이고, 통과 샘플(INNO-22)은 늦게 남긴 사유(LATE_REASON)가 있음
+STOP_CHANGES = [
+    {"created": "2026-09-02T10:00:00.000+0900", "field": "status", "to": "In Progress"},
+    {"created": "2026-09-08T18:00:00.000+0900", "field": "status", "to": "Backlog"},
+    {"created": "2026-09-10T09:30:00.000+0900", "field": "status", "to": "In Progress"},
+    {"created": "2026-09-25T15:00:00.000+0900", "field": "status", "to": "ready-to-done"},
+]
+LATE_REASON = {
+    "created": "2026-09-25T11:00:00.000+0900",
+    "url": comment_url("INNO-22", 10210),
+    "body": "stop 사유: 고객사 검증 데이터 전달을 기다리느라 작업을 멈춤",
+}
 BUG_CHECKS = [
     {"id": "B3", "result": "pass", "detail": "원인과 해결에 PR 링크 있음"},
     {"id": "B4", "result": "fail", "detail": "해결 뒤 To-be 동작 확인 comment 없음"},
@@ -329,12 +342,13 @@ BUG_CHANGELOG = [
 ]
 
 
-def precheck_checks(jp: types.ModuleType, itype: str) -> dict:
+def precheck_checks(jp: types.ModuleType, itype: str, stops: list[dict] | None = None) -> dict:
     """샘플 task의 스크립트 검사 결과를 scripts/precheck.py의 검사 함수로 계산한다.
 
     Args:
         jp: jira_precheck 모듈.
         itype: Task 또는 Bug.
+        stops: precheck.stop_events의 결과. 없으면 stop 이력이 없는 것으로 R4를 계산한다.
 
     Returns:
         precheck.json의 checks.
@@ -346,7 +360,7 @@ def precheck_checks(jp: types.ModuleType, itype: str) -> dict:
     else:
         checks = jp.check_bug_template(BUG_DESC, 2)
         checks["A2"] = jp.check_a2("Bug", BUG_CHANGELOG, "개선")
-    checks["R4"] = jp.check_r4([])
+    checks["R4"] = jp.check_r4(stops or [])
     return checks
 
 
@@ -383,6 +397,7 @@ def write_issue(
     checks: dict,
     status: str = "ready-to-done",
     summary: str = "",
+    stops: list[dict] | None = None,
 ) -> None:
     """ctx/<KEY>/에 apply.py가 읽는 입력(issue.json, precheck.json, meta.json)을 쓴다.
 
@@ -394,11 +409,15 @@ def write_issue(
         checks: precheck가 계산한 검사 결과.
         status: 지금 Jira 상태 이름.
         summary: task 제목.
+        stops: precheck.stop_events의 결과. 주면 precheck.json의 stops에 쓴다.
     """
     d = ctx / key
     issue = {"key": key, "type": itype, "summary": summary, "status": status, "url": f"{SITE}/browse/{key}"}
     write_json(d / "issue.json", issue | {"assignee": {"accountId": ASSIGNEE}})
-    write_json(d / "precheck.json", {"expected": expected, "checks": checks})
+    pre = {"expected": expected, "checks": checks}
+    if stops is not None:
+        pre["stops"] = stops
+    write_json(d / "precheck.json", pre)
     write_json(d / "meta.json", {"inputHash": "sample"})
 
 
@@ -491,9 +510,11 @@ def render(out_dir: Path) -> list[Path]:
         stack.enter_context(mock.patch.object(ja, "slack_post", lambda text: sent.append(text) or "전송 완료"))
 
         # 검수 모드, 관찰 모드: 결과 산출물 구역, 검수 comment, 문서화 리뷰 comment, 보류 Slack 알림
-        # (미달성 2번의 why가 "근거 부족으로 확인 불가"라 보류)
+        # (미달성 2번의 why가 "근거 부족으로 확인 불가"라 보류. 사유 없는 stop이 있어 요청 끝에 R4 요청 문장이 붙음)
         expected, task_checks = jp.expected_items(TASK_DESC), precheck_checks(jp, "Task")
-        write_issue(ctx, "INNO-17", "Task", expected, task_checks, summary=TASK_TITLE)
+        hold_stops = jp.stop_events(STOP_CHANGES, [], FIXED_NOW)
+        hold_checks = precheck_checks(jp, "Task", hold_stops)
+        write_issue(ctx, "INNO-17", "Task", expected, hold_checks, summary=TASK_TITLE, stops=hold_stops)
         write_out(out, "INNO-17", task_verdict("INNO-17", "review", "fix"), TASK_SUMMARY)
         j = run_issue(ja, work, "INNO-17", "review", gate=False)
         save("deliverables-review.wiki", agent_section(j.fields["INNO-17"]["description"]))
@@ -510,11 +531,14 @@ def render(out_dir: Path) -> list[Path]:
         run_issue(ja, work, "INNO-21", "review", gate=False)
         save("slack-review-request.txt", sent[-1])
 
-        # 통과 Slack 알림: 예상 산출물이 모두 달성임
-        write_issue(ctx, "INNO-22", "Task", expected, task_checks, summary=TASK_TITLE)
+        # 통과 검수 comment와 Slack 알림: 예상 산출물이 모두 달성이고, stop 사유를 늦게 남겨 R4가 "늦게 기록"임
+        pass_stops = jp.stop_events(STOP_CHANGES, [LATE_REASON], FIXED_NOW)
+        pass_checks = precheck_checks(jp, "Task", pass_stops)
+        write_issue(ctx, "INNO-22", "Task", expected, pass_checks, summary=TASK_TITLE, stops=pass_stops)
         passed = task_verdict("INNO-22", "review", "pass") | {"items": PASS_ITEMS, "extra": [], "requests": []}
         write_out(out, "INNO-22", passed, PASS_SUMMARY)
-        run_issue(ja, work, "INNO-22", "review", gate=False)
+        j = run_issue(ja, work, "INNO-22", "review", gate=False)
+        save("review-comment-task-pass.wiki", j.comments[0][1])
         save("slack-review-pass.txt", sent[-1])
 
         # 검수 모드, 게이트 모드: 문서화 리뷰가 검수 comment에 들어간다

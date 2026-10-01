@@ -64,9 +64,13 @@ agent가 계산하는 항목만 직접 판단한다. "검수 모드 영향"은 �
 | I3 | 대응 결과의 근거 | Issue | TL;DR의 대응 결과에 근거(comment 링크 또는 만들어진 task 키)가 있음 | agent | 실패 시 보류 |
 | R2 | 1년 뒤에도 이해 가능한 기록 | 공통 | 배경(Bug는 현황, Issue는 이슈 내용. Task의 진행 배경은 T4에서 본다)에 "왜"가 있고, agent 구역의 결과마다 확인 가능한 링크가 있으며, 결정 사항의 이유가 comment에 남아 있음 | agent | 링크 부재는 보류, 나머지는 comment 권고 |
 | R3 | 개조식 작성 | 공통 | agent 구역은 개조식으로 씀. 사람 구역이 서술형이면 comment로 권고만 함 | agent | comment 권고 |
-| R4 | stop 사유 comment | 공통 | `stop`으로 Backlog에 들어간 뒤 사람이 쓴 사유 comment가 있음 (Automation의 안내 comment는 제외) | 스크립트 | stop 이력이 있는데 실패면 보류 |
+| R4 | stop 사유 comment | 공통 | `stop`으로 Backlog에 들어간 뒤 사람이 작성한 사유 comment가 있음. Automation의 안내 comment는 제외 | 스크립트 | stop 이력이 있는데 실패면 보류 |
 | A1 | 영업일 기준 5일 이상 활동 없음 | 공통 | in-progress에서 영업일 기준 5일 이상 사람의 활동이 없음 | 스크립트 (정리 모드 알림 전용) | 해당 없음 |
 | A2 | 완료 기준의 사후 변경 | Task, Bug | 가장 최근 ready-to-done 전환 이후에 완료 기준 구역(예상 산출물 또는 개선)이 바뀜 | 스크립트 | 실패 시 검토 요청 |
+
+- R4는 stop 뒤 다음 상태 변경 전에 작성한 사람 comment를 사유로 인정한다
+  - 다음 상태 변경 뒤에 작성한 사람 comment는 본문이 "stop 사유:"로 시작할 때만 사유로 인정한다(precheck.py가 계산)
+  - 이렇게 인정한 사유는 apply.py가 검사 표의 R4 내용 칸에 "늦게 기록"으로 표시한다
 
 ## 문서화 리뷰 (Task, 검수 모드)
 
@@ -108,6 +112,7 @@ verdict.json의 `verdict`에는 코드값(pass, fix, escalate)을 쓴다. 괄호
 - fix(보류): 담당자가 고칠 수 있는 경우이며 아래 중 하나에 해당한다. 무엇을 어디에 남기면 되는지 requests에 적는다
   - 사유 없는 미달성 항목이 있음. "근거 부족으로 확인 불가"는 담당자의 사유가 아니다
   - 담당자가 고칠 수 있는 검사(T1, T2, R2의 링크 부재, R4, B1, B2, B3, B4, I1, I2, I3)가 fail
+- R4가 fail이고 검수 결과가 보류이면 apply.py가 R4 요청 문장(stop의 사유를 "stop 사유:"로 시작하는 comment로 남긴 뒤 다시 request 전환을 하라는 문장)을 requests에 넣으므로, R4 요청 문장은 requests에 적지 않는다
 - 검수 결과마다 apply.py가 하는 일은 아래와 같다
   - 통과: 상태를 ready-to-done으로 유지하고 팀장에게 알린다
   - 검토 요청: 상태를 ready-to-done으로 유지하고 팀장에게 알린다
