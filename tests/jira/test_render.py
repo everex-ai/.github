@@ -43,6 +43,18 @@ def jp(render):
     return render.load_modules()[1]
 
 
+@pytest.fixture(autouse=True)
+def slack(ja, monkeypatch, tmp_path_factory):
+    """apply_issue가 Slack에 보내려던 본문을 모은다. 실제 Slack에는 보내지 않는다."""
+    sent: list[str] = []
+    users = tmp_path_factory.mktemp("slack") / "slack-users.json"
+    users.write_text(json.dumps({"acc-assignee": "U-ASSIGNEE", "acc-lead": "U-LEAD"}), encoding="utf-8")
+    monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
+    monkeypatch.setattr(ja, "SLACK_USERS", users)
+    monkeypatch.setattr(ja, "slack_post", lambda text: sent.append(text) or "전송 완료")
+    return sent
+
+
 FORMAL_ENDINGS = ("습니다", "주세요")
 
 EXPECTED = [{"id": "1", "text": "재현 테스트 추가"}, {"id": "2", "text": "오류율 1% 미만"}]
@@ -51,6 +63,30 @@ ITEMS = [
     {"id": "2", "done": False, "result": "수치만 있음", "why": "", "reason": "평가 리포트 링크 comment 필요"},
 ]
 EXTRA = [{"result": "대시보드 추가", "why": "", "evidence": "[PR #45|https://example.com/45]"}]
+REASONED = {**ITEMS[1], "why": "라벨 재수집이 다음 분기로 밀림([comment 2026-09-15|https://example.com/c/1])"}
+NOT_A_REASON = {**ITEMS[1], "why": "근거 부족으로 확인 불가"}
+R3_FAIL = [{"id": "R3", "result": "fail"}]  # 담당자가 고칠 수 있는 검사(OWNER_FIXABLE_CHECKS)가 아님
+HOLD_TO_REQUEST = "미달성 항목마다 담당자가 남긴 사유가 있어 보류에서 검토 요청으로 바꿈"
+PASS_TO_REQUEST = "미달성 항목마다 담당자가 남긴 사유가 있어 통과에서 검토 요청으로 바꿈"
+TO_HOLD = "미달성 항목이 있어 통과에서 보류로 바꿈"
+ISSUE_URL = "https://example.atlassian.net/browse/INNO-17"
+
+
+def run_review(
+    render, ja, work, verdict, items, status="ready-to-done", lead="acc-lead", tldr=None, mode="review", j=None
+):
+    """INNO-17(Task)을 가짜 Jira로 실행하고 (FakeJira, Summary)를 돌려준다. 기본은 검수 모드."""
+    ctx, out = work / "ctx", work / "out"
+    render.write_issue(ctx, "INNO-17", "Task", EXPECTED, {}, status=status)
+    v = render.task_verdict("INNO-17", mode, verdict) | {"items": items, "extra": []}
+    render.write_out(out, "INNO-17", v, "* 요약")
+    if tldr is not None:
+        (out / "INNO-17" / "tldr.wiki").write_text(tldr, encoding="utf-8")
+    if j is None:
+        j = render.FakeJira({"INNO-17": ""})
+    summ = ja.Summary(str(work / "summary.md"))
+    ja.apply_issue(j, ctx / "INNO-17", out, mode, False, lead, summ)
+    return j, summ
 
 
 def test_deliverables_request_line(ja):
@@ -84,20 +120,212 @@ def test_t8_names_items_and_request(ja):
 def test_review_comment_puts_verdict_reasons_first(ja):
     checks = [{"id": "A2", "result": "fail", "detail": "완료 기준 변경"}]
     text = ja.review_comment(
-        "escalate", checks, EXPECTED, ITEMS, EXTRA, "* 요약", ["평가 리포트 링크 comment 필요"], ["A2로 보류"]
+        "escalate", checks, EXPECTED, ITEMS, EXTRA, "* 요약", ["평가 리포트 링크 comment 필요"], ["A2로 검토 요청"]
     )
-    assert text.startswith("검수 결과: *보류*\n* A2로 보류\n\n예상 산출물 2개 중 1개 달성, 초과 달성 1건")
+    assert text.startswith("검수 결과: *검토 요청*\n* A2로 검토 요청\n\n예상 산출물 2개 중 1개 달성, 초과 달성 1건")
     assert text.index("*결과 요약*") < text.index("*요청*") < text.index("|| 검사 || 결과 || 내용 ||")
 
 
-def test_doc_review_comment_explains_modes(ja):
+def test_doc_review_comment_first_line(ja):
     t8 = ja.check_t8(EXPECTED, ITEMS, EXTRA)
-    text = ja.doc_review_comment("INNO-1", "pass", "fix", [t8], [], "acc-lead")
-    assert text.startswith("문서화 리뷰 (팀장 확인용): INNO-1\n관찰 모드: ")
-    assert (
-        "/ 게이트 모드(문서화 리뷰에 보완 필요 항목이 있으면 통과를 보완 요청으로 내리는 모드)였다면: *보완 요청*"
-        in text
+    text = ja.doc_review_comment([t8], [], "acc-lead")
+    assert text.startswith("문서화 리뷰 결과(관찰 모드): *보완 필요*\n\n|| 검사 || 결과 || 내용 ||")
+    assert "*담당자에게 보낼 요청 후보*\n# 미달성 항목 2번의 미달성 사유" in text
+    assert text.endswith("\n\n[~accountid:acc-lead]")
+    ok = ja.doc_review_comment([{"id": "T4", "result": "pass", "detail": "a"}], [], "")
+    assert ok.startswith("문서화 리뷰 결과(관찰 모드): *통과*\n\n")
+    assert "요청 후보" not in ok and "accountid" not in ok
+    assert ja.doc_review_md("INNO-1", [t8], [])[0] == "### 문서화 리뷰 INNO-1(관찰 모드): 보완 필요"
+
+
+@pytest.mark.parametrize(
+    ("v", "itype", "items", "checks", "gate", "doc_fails", "want"),
+    [
+        ("pass", "Task", [ITEMS[0]], [], False, [], ("pass", None)),
+        ("fix", "Task", [ITEMS[0], REASONED], [], False, [], ("escalate", HOLD_TO_REQUEST)),
+        ("pass", "Task", [ITEMS[0], REASONED], [], False, [], ("escalate", PASS_TO_REQUEST)),
+        ("fix", "Task", [ITEMS[0], REASONED], R3_FAIL, False, [], ("escalate", HOLD_TO_REQUEST)),
+        ("fix", "Task", [ITEMS[0], REASONED], [], False, ["T5"], ("escalate", HOLD_TO_REQUEST)),
+        ("fix", "Task", ITEMS, [], False, [], ("fix", None)),
+        ("fix", "Task", [ITEMS[0], NOT_A_REASON], [], False, [], ("fix", None)),
+        ("fix", "Task", [ITEMS[0], REASONED], [{"id": "T1", "result": "fail"}], False, [], ("fix", None)),
+        ("fix", "Task", [ITEMS[0], REASONED], [], True, ["T5"], ("fix", None)),
+        ("pass", "Task", ITEMS, [], False, [], ("fix", TO_HOLD)),
+        ("pass", "Task", [ITEMS[0], NOT_A_REASON], [], False, [], ("fix", TO_HOLD)),
+        ("pass", "Task", [ITEMS[0], REASONED], [{"id": "T1", "result": "fail"}], False, [], ("fix", TO_HOLD)),
+        ("escalate", "Task", ITEMS, [], False, [], ("escalate", None)),
+        ("fix", "Bug", [REASONED], [], False, [], ("fix", None)),
+    ],
+    ids=[
+        "모두 달성이면 통과 유지",
+        "사유 모두 있으면 보류를 검토 요청으로",
+        "사유 모두 있으면 통과를 검토 요청으로",
+        "담당자 검사가 아닌 R3 실패는 무시",
+        "관찰 모드의 문서화 리뷰 보완 필요는 무시",
+        "사유 없으면 보류 유지",
+        "근거 부족으로 확인 불가는 사유가 아님",
+        "담당자 검사 T1 실패면 보류 유지",
+        "게이트 모드의 문서화 리뷰 보완 필요면 보류 유지",
+        "통과인데 사유 없는 미달성이면 보류",
+        "통과인데 근거 부족이면 보류",
+        "통과이고 사유 모두 있어도 담당자 검사 실패면 보류",
+        "검토 요청 유지",
+        "Task가 아니면 그대로",
+    ],
+)
+def test_recheck_verdict(ja, v, itype, items, checks, gate, doc_fails, want):
+    assert ja.recheck_verdict(v, itype, items, checks, gate, doc_fails) == want
+
+
+def test_hold_moves_ready_task_back_and_mentions_assignee(render, ja, tmp_path, slack):
+    j, summ = run_review(render, ja, tmp_path, "fix", ITEMS, status="Ready-to-Done")
+    assert j.transitioned_to == [("INNO-17", "In Progress")]
+    assert "검수 결과: *보류*\n* 상태를 in-progress로 되돌림\n" in j.comments[0][1]
+    assert slack[0].startswith(
+        "<@U-ASSIGNEE> [INNO-17] 검수 결과: 보류. 상태를 in-progress로 되돌림\n"
+        f'<{ISSUE_URL}|INNO-17>\n보류 이유\n• 사유 없는 미달성: 예상 산출물 2번 "오류율 1% 미만"\n요청\n1. '
     )
+    assert slack[0].endswith(f"\n근거: <{ISSUE_URL}?focusedCommentId=10200|검수 comment>")
+    assert not any(e in slack[0] for e in FORMAL_ENDINGS)
+    assert "Slack 알림 전송(담당자)" in summ.rows[0]
+
+
+def test_hold_keeps_status_outside_ready(render, ja, tmp_path, slack):
+    j, summ = run_review(render, ja, tmp_path, "fix", ITEMS, status="In Progress")
+    assert j.transitioned_to == []
+    assert "* 지금 상태가 In Progress라 in-progress로 되돌리지 않음\n" in j.comments[0][1]
+    assert "지금 상태가 In Progress라 in-progress로 되돌리지 않음" in summ.rows[0]
+    assert slack[0].startswith("<@U-ASSIGNEE> [INNO-17] 검수 결과: 보류. 지금 상태 In Progress 유지\n")
+
+
+def test_request_keeps_status_and_mentions_lead(render, ja, tmp_path, slack):
+    j, summ = run_review(render, ja, tmp_path, "fix", [ITEMS[0], REASONED])
+    assert j.transitioned_to == []
+    assert f"검수 결과: *검토 요청*\n* {HOLD_TO_REQUEST}\n* 상태를 바꾸지 않고 팀장 확인을 요청함\n" in j.comments[0][1]
+    assert slack[0].startswith("<@U-LEAD> [INNO-17] 검수 결과: 검토 요청. 상태 변경 없음\n")
+    assert (
+        '\n• 예상 산출물 2번 "오류율 1% 미만": 라벨 재수집이 다음 분기로 밀림(<https://example.com/c/1|comment 2026-09-15>)\n'
+        f"• {HOLD_TO_REQUEST}\n팀장이 task를 확인한 뒤 in-progress 또는 done으로 직접 전환 필요\n"
+    ) in slack[0]
+    assert "\n요청\n" not in slack[0]
+    assert not any(e in slack[0] for e in FORMAL_ENDINGS)
+    assert "Slack 알림 전송(팀장)" in summ.rows[0]
+    run_review(render, ja, tmp_path / "no-lead-id", "fix", [ITEMS[0], REASONED], lead="acc-unknown")
+    assert slack[1].startswith("팀장 [INNO-17] 검수 결과: 검토 요청. ")
+
+
+def test_pass_asks_lead_to_move_done(render, ja, tmp_path, slack):
+    j, _ = run_review(render, ja, tmp_path, "pass", [ITEMS[0], {**ITEMS[1], "done": True}])
+    assert j.transitioned_to == []
+    assert "검수 결과: *통과*\n* 상태를 바꾸지 않고 팀장 확인을 요청함\n" in j.comments[0][1]
+    assert slack[0].startswith(
+        "<@U-LEAD> [INNO-17] 검수 결과: 통과. 상태 변경 없음\n"
+        f"<{ISSUE_URL}|INNO-17>\n통과 이유\n• 예상 산출물 2개 중 2개 달성\n• 요약\n"
+        "팀장이 task를 확인한 뒤 done으로 직접 전환 필요\n"
+    )
+    assert not any(e in slack[0] for e in FORMAL_ENDINGS)
+
+
+def test_slack_failure_stays_in_summary(render, ja, tmp_path, monkeypatch):
+    monkeypatch.setattr(ja, "slack_post", lambda text: "전송 실패: HTTP Error 500")
+    _, summ = run_review(render, ja, tmp_path, "fix", ITEMS)
+    assert "Slack 보류 알림: 전송 실패: HTTP Error 500" in summ.rows[0]
+
+
+@pytest.mark.parametrize("prefix", ["검수 결과: ", "판정: "], ids=["새 접두어", "이전 접두어"])
+def test_tldr_verdict_follows_changed_result(render, ja, tmp_path, prefix):
+    tldr = f"h2. Summary\n* 결과\n* {{color:#6b778c}}상태: ready-to-done, {prefix}보류, 갱신: 2026-09-29 09:00{{color}}"
+    j, _ = run_review(render, ja, tmp_path, "fix", [ITEMS[0], REASONED], tldr=tldr)
+    field = j.fields["INNO-17"][render.FakeJira.tldr_field]
+    assert f"{prefix}검토 요청, 갱신" in field and f"{prefix}보류" not in field
+
+
+def test_wiki_to_slack(ja):
+    text = "{color:#6b778c}근거: [PR #42|https://example.com/42], [comment|https://e.com/c?focusedCommentId=1]{color}"
+    assert (
+        ja.wiki_to_slack(text) == "근거: <https://example.com/42|PR #42>, <https://e.com/c?focusedCommentId=1|comment>"
+    )
+    assert ja.wiki_to_slack("[~accountid:acc-lead] 확인 필요") == "[~accountid:acc-lead] 확인 필요"
+    assert ja.wiki_to_slack("지연 < 50ms & [PR|https://e.com/?a=1&b=2]") == (
+        "지연 &lt; 50ms &amp; <https://e.com/?a=1&amp;b=2|PR>"
+    )
+
+
+def test_slack_text_escapes_title_and_requests(ja):
+    text = ja.review_slack_text(
+        "fix", "INNO-1", "지연 <50ms & 경량화", "https://e.com/INNO-1", "담당자", "", [], ["a > b 확인 필요"], ""
+    )
+    assert "<https://e.com/INNO-1|INNO-1 지연 &lt;50ms &amp; 경량화>" in text
+    assert "\n1. a &gt; b 확인 필요" in text
+
+
+def test_slack_post_reports_timeout(ja, monkeypatch):
+    monkeypatch.undo()  # autouse fixture slack이 바꾼 slack_post를 원래 함수로 되돌린다
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.example.com/x")
+
+    def timeout(*args, **kwargs):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(ja.urllib.request, "urlopen", timeout)
+    assert ja.slack_post("본문") == "전송 실패: timed out"
+
+
+def test_transition_failure_is_reported_and_slack_still_sent(render, ja, tmp_path, slack):
+    j = render.FakeJira({"INNO-17": ""})
+
+    def fail(key, status):
+        raise ja.JiraError("'In Progress'로 가는 전환이 INNO-17에 없음")
+
+    j.transition_to = fail
+    _, summ = run_review(render, ja, tmp_path, "fix", ITEMS, j=j)
+    note = "in-progress 전환 실패: 'In Progress'로 가는 전환이 INNO-17에 없음"
+    assert f"* {note}\n" in j.comments[0][1]
+    assert note in summ.rows[0]
+    assert slack[0].startswith("<@U-ASSIGNEE> [INNO-17] 검수 결과: 보류. in-progress 전환 실패\n")
+
+
+def test_comment_failure_after_transition_keeps_state_note_and_slack(render, ja, tmp_path, slack):
+    j = render.FakeJira({"INNO-17": ""})
+
+    def fail(key, body):
+        raise ja.JiraError("POST /issue/INNO-17/comment -> 500: boom")
+
+    j.add_comment = fail
+    _, summ = run_review(render, ja, tmp_path, "fix", ITEMS, j=j)
+    assert j.transitioned_to == [("INNO-17", "In Progress")]
+    assert "상태를 in-progress로 되돌림" in summ.rows[0]
+    assert "검수 comment 등록 실패: POST /issue/INNO-17/comment -> 500: boom" in summ.rows[0]
+    assert slack[0].startswith("<@U-ASSIGNEE> [INNO-17] 검수 결과: 보류. 상태를 in-progress로 되돌림\n")
+    assert "근거:" not in slack[0]
+
+
+def test_no_comment_id_means_no_evidence_line(render, ja, tmp_path, slack):
+    j = render.FakeJira({"INNO-17": ""})
+    j.add_comment = lambda key, body: j.comments.append((key, body))  # 반환값 없음
+    run_review(render, ja, tmp_path, "fix", ITEMS, j=j)
+    assert "근거:" not in slack[0]
+
+
+def test_digest_mode_has_no_transition_or_slack(render, ja, tmp_path, slack):
+    tldr = "h2. Summary\n* 결과\n* {color:#6b778c}상태: In Progress, 갱신: 2026-09-29 09:00{color}"
+    j, _ = run_review(render, ja, tmp_path, None, ITEMS, tldr=tldr, mode="digest")
+    assert j.transitioned_to == [] and slack == [] and j.comments == []
+    assert j.fields["INNO-17"][render.FakeJira.tldr_field] == tldr
+
+
+def test_jira_transition_to_matches_target_status(ja):
+    jr = object.__new__(ja.Jira)
+    calls = []
+    jr.transitions = lambda key: [
+        {"id": "5", "name": "In Progress", "to": {"name": "Done"}},
+        {"id": "11", "name": "reopen", "to": {"name": "IN PROGRESS"}},
+        {"id": "12", "name": "start", "to": {"name": "In Progress"}},
+    ]
+    jr._req = lambda method, path, params=None, body=None, ok404=False: calls.append((method, path, body))
+    jr.transition_to("INNO-1", "In Progress")
+    assert calls == [("POST", "/issue/INNO-1/transitions", {"transition": {"id": "11"}})]
+    with pytest.raises(ja.JiraError, match="'Backlog'로 가는 전환이 INNO-1에 없음"):
+        jr.transition_to("INNO-1", "Backlog")
 
 
 def test_failure_comment(ja, monkeypatch):
@@ -150,6 +378,9 @@ def test_rendered_samples_have_no_formal_endings(render, tmp_path):
         "failure-comment.wiki",
         "missing-alert-comment.wiki",
         "weekly-slack.txt",
+        "slack-review-hold.txt",
+        "slack-review-request.txt",
+        "slack-review-pass.txt",
     }
     for p in files:
         text = p.read_text(encoding="utf-8")
@@ -230,12 +461,12 @@ def test_t3_mismatch_detail(render, ja, tmp_path):
     j = render.FakeJira({"INNO-17": ""})
     ja.apply_issue(j, ctx / "INNO-17", out, "review", False, "", ja.Summary(str(tmp_path / "summary.md")))
     body = j.comments[0][1]
-    assert "검수 결과: *보류*" in body
-    assert "예상 산출물 번호(1, 2)와 CI agent 출력 번호(1)가 다름. CI agent 출력 오류로 간주해 보류" in body
+    assert "검수 결과: *검토 요청*" in body
+    assert "예상 산출물 번호(1, 2)와 CI agent 출력 번호(1)가 다름. CI agent 출력 오류로 간주해 검토 요청" in body
     assert (
-        "* 예상 산출물과 결과 산출물의 1:1 대응 (T3) 결과에 따라 보류로 내림: 예상 산출물과 결과 산출물의 번호가 맞지 않음"
-        in body
-    )
+        "* 예상 산출물과 결과 산출물의 1:1 대응 (T3) 결과에 따라 통과에서 검토 요청으로 바꿈: "
+        "예상 산출물과 결과 산출물의 번호가 맞지 않음"
+    ) in body
 
 
 def test_check_table_uses_same_labels_for_all_checks(ja):
@@ -251,12 +482,13 @@ def test_check_table_uses_same_labels_for_all_checks(ja):
 def test_verdict_change_notes_start_with_check_name(render, tmp_path):
     files = {p.name: p.read_text(encoding="utf-8") for p in render.render(tmp_path)}
     bug = files["review-comment-bug-escalate.wiki"].splitlines()
-    assert bug[2].startswith("* 완료 기준의 사후 변경 (A2) 결과에 따라 보류로 내림: 마지막 request 전환(")
+    assert bug[2].startswith(
+        "* 완료 기준의 사후 변경 (A2) 결과에 따라 보류에서 검토 요청으로 바꿈: 마지막 request 전환("
+    )
     assert "실패" not in files["review-comment-bug-escalate.wiki"]  # 검사 표와 같은 이름(보완 필요)을 사용함
     gate = files["review-comment-task-gate.wiki"]
-    assert (
-        "* 문서화 리뷰에 보완 필요 항목이 있어 통과를 보완 요청으로 내림: " not in gate
-    )  # 판정이 이미 보완 요청이라 바뀌지 않음
+    # 검수 결과가 이미 보류라 바뀌지 않음
+    assert "* 문서화 리뷰에 보완 필요 항목이 있어 통과에서 보류로 바꿈: " not in gate
     assert "(T3)" not in files["review-comment-task-observe.wiki"].split("*검사 항목*")[0]
 
 
@@ -271,7 +503,7 @@ def test_gate_note_names_doc_review_checks(render, ja, tmp_path):
     ja.apply_issue(j, ctx / "INNO-17", out, "review", True, "", ja.Summary(str(tmp_path / "summary.md")))
     body = j.comments[0][1]
     assert (
-        "* 문서화 리뷰에 보완 필요 항목이 있어 통과를 보완 요청으로 내림: 예상 산출물 분할 단위 (T5), 진행 기록 comment (T6)"
+        "* 문서화 리뷰에 보완 필요 항목이 있어 통과에서 보류로 바꿈: 예상 산출물 분할 단위 (T5), 진행 기록 comment (T6)"
         in body
     )
     assert body.index("(T5)") < body.index("*검사 항목*")
@@ -302,3 +534,31 @@ def test_failure_comment_reasons(render, ja, tmp_path):
         bodies[key] = j.comments[0][1]
     assert "판정 파일(verdict.json) 없음. 추정: CI agent 실행이 실패했거나 끝나지 않음" in bodies["INNO-1"]
     assert "판정 파일(verdict.json)을 JSON으로 읽을 수 없음" in bodies["INNO-2"]
+
+
+def test_t3_mismatch_when_already_review_request(render, ja, tmp_path):
+    ctx, out = tmp_path / "ctx", tmp_path / "out"
+    render.write_issue(ctx, "INNO-17", "Task", EXPECTED, {})
+    v = render.task_verdict("INNO-17", "review", "escalate")
+    v["items"] = [ITEMS[0]]
+    render.write_out(out, "INNO-17", v, "* 요약")
+    j = render.FakeJira({"INNO-17": ""})
+    ja.apply_issue(j, ctx / "INNO-17", out, "review", False, "", ja.Summary(str(tmp_path / "summary.md")))
+    body = j.comments[0][1]
+    head = body.split("*검사 항목*")[0]
+    assert "검수 결과: *검토 요청*" in head and "(T3) 결과에 따라" not in head
+    assert "| 예상 산출물과 결과 산출물의 1:1 대응 (T3) | ❌ 보완 필요 |" in body
+
+
+def test_tldr_label_not_found_is_reported(render, ja, tmp_path):
+    ctx, out = tmp_path / "ctx", tmp_path / "out"
+    render.write_issue(ctx, "INNO-17", "Task", EXPECTED, {})
+    v = render.task_verdict("INNO-17", "review", "pass")
+    v["items"] = [ITEMS[0]]
+    render.write_out(out, "INNO-17", v, "* 요약")
+    (out / "INNO-17" / "tldr.wiki").write_text("h2. Summary\n* 상태: In Progress\n", encoding="utf-8")
+    j = render.FakeJira({"INNO-17": ""})
+    summ = ja.Summary(str(tmp_path / "summary.md"))
+    ja.apply_issue(j, ctx / "INNO-17", out, "review", False, "", summ)
+    assert "TL;DR의 검수 결과 표시를 찾지 못해 바꾸지 않음" in summ.rows[0]
+    assert all("TL;DR의 검수 결과 표시" not in body for _, body in j.comments)

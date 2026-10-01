@@ -93,7 +93,7 @@ class FakeJira:
         self.descriptions = descriptions
         self.comments: list[tuple[str, str]] = []
         self.fields: dict[str, dict] = {}
-        self.transitions: list[tuple[str, str]] = []
+        self.transitioned_to: list[tuple[str, str]] = []
 
     def issue(self, key: str, fields: list[str]) -> dict:
         """description 필드만 돌려준다.
@@ -116,14 +116,18 @@ class FakeJira:
         """
         self.fields.setdefault(key, {}).update(fields)
 
-    def add_comment(self, key: str, body: str) -> None:
-        """comment 본문을 모아 둔다.
+    def add_comment(self, key: str, body: str) -> dict:
+        """comment 본문을 모아 두고, Jira 응답처럼 comment ID를 돌려준다.
 
         Args:
             key: task 키.
             body: comment 본문(wiki markup).
+
+        Returns:
+            Jira comment 응답 모양의 dict. id는 10200부터 comment마다 1씩 늘어나는 숫자 문자열.
         """
         self.comments.append((key, body))
+        return {"id": str(10199 + len(self.comments))}
 
     def prop_get(self, key: str) -> dict:
         """빈 property를 돌려준다.
@@ -144,14 +148,14 @@ class FakeJira:
             prop: property 값.
         """
 
-    def transition(self, key: str, name: str) -> None:
-        """상태 전환 요청을 모아 둔다.
+    def transition_to(self, key: str, status: str) -> None:
+        """도착 상태 이름으로 한 상태 전환 요청을 모아 둔다.
 
         Args:
             key: task 키.
-            name: 전환 이름.
+            status: 도착 상태 이름.
         """
-        self.transitions.append((key, name))
+        self.transitioned_to.append((key, status))
 
 
 def write_json(path: Path, data: object) -> None:
@@ -236,7 +240,7 @@ TASK_FEEDBACK = [
     {
         "id": "T6",
         "points": [
-            "작업 기간(첫 In Progress 전환부터 마지막 request 전환(담당자의 완료 요청)까지) 8영업일 동안 "
+            "작업 기간(첫 in-progress 전환부터 마지막 request 전환(담당자의 완료 요청)까지) 8영업일 동안 "
             "사람 comment 1건(request 전환 당일)뿐이라 중간 결과와 방향 변경 이유를 알 수 없음"
         ],
         "request": "진행 중 나온 중간 수치와 방향을 바꾼 이유 comment 필요",
@@ -258,6 +262,50 @@ TASK_REQUESTS = [
 TASK_SUMMARY = f"""* 재현 테스트 추가 항목은 [PR #42 export 오류 수정|https://github.com/everex-ai/repo/pull/42]로 병합되어 달성함
 * 오류율 1% 미만 항목은 모델 v2의 검증 데이터 오류율 0.7%라는 수치만 있고 계산 방법과 리포트 링크가 기록에 없어 미달성으로 둠([comment 2026-09-12|{comment_url("INNO-17", 10123)}])
 * 예상에 없던 오류율 대시보드([PR #45 오류율 대시보드|https://github.com/everex-ai/repo/pull/45])는 초과 달성으로 기록함"""
+TASK_TITLE = "export 오류 원인 확인과 재발 방지"
+# 검토 요청 샘플(INNO-21): INNO-17과 같은 예상 산출물에서, 미달성 항목마다 담당자가 comment로 사유를 남긴 경우
+REQUEST_ITEMS = [
+    TASK_ITEMS[0],
+    {
+        "id": "2",
+        "done": False,
+        "result": "comment에 고객사 검증 데이터로 export 오류율을 측정할 계획만 있고 측정 결과 없음",
+        "evidence": f"[comment 2026-09-15|{comment_url('INNO-21', 10160)}]",
+        "why": f"고객사 검증 데이터 제공이 10월로 밀려 오류율을 측정하지 못함([comment 2026-09-15|{comment_url('INNO-21', 10160)}])",
+        "reason": "고객사 검증 데이터로 측정한 오류율과 리포트 링크 comment 필요",
+    },
+    {
+        "id": "3",
+        "done": False,
+        "result": "ONNX 변환 스크립트 초안까지 작성",
+        "why": f"배포 대상 기기 사양이 확정되지 않아 변환 옵션을 정하지 못함([comment 2026-09-13|{comment_url('INNO-21', 10140)}])",
+        "evidence": f"[comment 2026-09-13|{comment_url('INNO-21', 10140)}]",
+        "reason": "기기 사양 확정 뒤 후속 task 키 comment 필요",
+    },
+]
+REQUEST_SUMMARY = f"""* 재현 테스트 추가 항목은 [PR #42 export 오류 수정|https://github.com/everex-ai/repo/pull/42]로 병합되어 달성함
+* 오류율 1% 미만 항목은 고객사 검증 데이터 제공이 10월로 밀렸다는 담당자 comment가 있어 미달성으로 둠([comment 2026-09-15|{comment_url("INNO-21", 10160)}])
+* ONNX 변환 항목은 배포 대상 기기 사양이 확정되지 않았다는 담당자 comment가 있어 미달성으로 둠([comment 2026-09-13|{comment_url("INNO-21", 10140)}])"""
+# 통과 샘플(INNO-22): INNO-17과 같은 예상 산출물이 모두 달성인 경우
+REPORT_LINK = "[export 오류율 평가 리포트|https://github.com/everex-ai/repo/blob/main/reports/export-error-rate.md]"
+PASS_ITEMS = [
+    TASK_ITEMS[0],
+    {
+        "id": "2",
+        "done": True,
+        "result": "모델 v2의 검증 데이터(val set, export 요청 12,000건) export 오류율 0.7%(오류 건수를 export 요청 건수로 나눔)",
+        "evidence": REPORT_LINK,
+    },
+    {
+        "id": "3",
+        "done": True,
+        "result": "Galaxy S24용 ONNX 변환 스크립트 추가, 2026-09-16 병합",
+        "evidence": "[PR #48 ONNX 변환|https://github.com/everex-ai/repo/pull/48]",
+    },
+]
+PASS_SUMMARY = f"""* 재현 테스트 추가 항목은 [PR #42 export 오류 수정|https://github.com/everex-ai/repo/pull/42]로 병합되어 달성함
+* 오류율 1% 미만 항목은 모델 v2의 검증 데이터(val set, export 요청 12,000건) 오류율 0.7%(오류 건수를 export 요청 건수로 나눔)가 {REPORT_LINK}에 있어 달성함
+* ONNX 변환 항목은 [PR #48 ONNX 변환|https://github.com/everex-ai/repo/pull/48]로 병합되어 달성함"""
 BUG_CHECKS = [
     {"id": "B3", "result": "pass", "detail": "원인과 해결에 PR 링크 있음"},
     {"id": "B4", "result": "fail", "detail": "해결 뒤 To-be 동작 확인 comment 없음"},
@@ -327,7 +375,15 @@ def task_verdict(key: str, mode: str, verdict: str | None) -> dict:
     return v
 
 
-def write_issue(ctx: Path, key: str, itype: str, expected: list[dict], checks: dict) -> None:
+def write_issue(
+    ctx: Path,
+    key: str,
+    itype: str,
+    expected: list[dict],
+    checks: dict,
+    status: str = "ready-to-done",
+    summary: str = "",
+) -> None:
     """ctx/<KEY>/에 apply.py가 읽는 입력(issue.json, precheck.json, meta.json)을 쓴다.
 
     Args:
@@ -336,9 +392,12 @@ def write_issue(ctx: Path, key: str, itype: str, expected: list[dict], checks: d
         itype: work type(Task, Bug, Issue).
         expected: 예상 산출물 목록.
         checks: precheck가 계산한 검사 결과.
+        status: 지금 Jira 상태 이름.
+        summary: task 제목.
     """
     d = ctx / key
-    write_json(d / "issue.json", {"key": key, "type": itype, "assignee": {"accountId": ASSIGNEE}})
+    issue = {"key": key, "type": itype, "summary": summary, "status": status, "url": f"{SITE}/browse/{key}"}
+    write_json(d / "issue.json", issue | {"assignee": {"accountId": ASSIGNEE}})
     write_json(d / "precheck.json", {"expected": expected, "checks": checks})
     write_json(d / "meta.json", {"inputHash": "sample"})
 
@@ -417,7 +476,7 @@ def render(out_dir: Path) -> list[Path]:
         work = Path(stack.enter_context(tempfile.TemporaryDirectory()))
         ctx, out = work / "ctx", work / "out"
         users = work / "slack-users.json"
-        write_json(users, {ASSIGNEE: "U000SAMPLE"})
+        write_json(users, {ASSIGNEE: "U000SAMPLE", LEAD: "U000LEAD"})
         fake_dt = types.SimpleNamespace(**{k: getattr(dt, k) for k in dir(dt) if not k.startswith("_")})
         fake_dt.datetime = FixedDatetime
         run_env = {
@@ -431,13 +490,32 @@ def render(out_dir: Path) -> list[Path]:
         stack.enter_context(mock.patch.object(ja, "SLACK_USERS", users))
         stack.enter_context(mock.patch.object(ja, "slack_post", lambda text: sent.append(text) or "전송 완료"))
 
-        # 검수 모드, 관찰 모드: 결과 산출물 구역, 검수 comment, 문서화 리뷰 comment
-        write_issue(ctx, "INNO-17", "Task", jp.expected_items(TASK_DESC), precheck_checks(jp, "Task"))
+        # 검수 모드, 관찰 모드: 결과 산출물 구역, 검수 comment, 문서화 리뷰 comment, 보류 Slack 알림
+        # (미달성 2번의 why가 "근거 부족으로 확인 불가"라 보류)
+        expected, task_checks = jp.expected_items(TASK_DESC), precheck_checks(jp, "Task")
+        write_issue(ctx, "INNO-17", "Task", expected, task_checks, summary=TASK_TITLE)
         write_out(out, "INNO-17", task_verdict("INNO-17", "review", "fix"), TASK_SUMMARY)
         j = run_issue(ja, work, "INNO-17", "review", gate=False)
         save("deliverables-review.wiki", agent_section(j.fields["INNO-17"]["description"]))
         save("review-comment-task-observe.wiki", j.comments[0][1])
         save("doc-review-comment.wiki", j.comments[1][1])
+        save("slack-review-hold.txt", sent[-1])
+
+        # 검토 요청 Slack 알림: 미달성 항목마다 담당자가 남긴 사유가 있음
+        write_issue(ctx, "INNO-21", "Task", expected, task_checks, summary=TASK_TITLE)
+        reasons = [it["reason"] for it in REQUEST_ITEMS if it.get("reason")]
+        request = task_verdict("INNO-21", "review", "escalate")
+        request |= {"items": REQUEST_ITEMS, "extra": [], "requests": reasons}
+        write_out(out, "INNO-21", request, REQUEST_SUMMARY)
+        run_issue(ja, work, "INNO-21", "review", gate=False)
+        save("slack-review-request.txt", sent[-1])
+
+        # 통과 Slack 알림: 예상 산출물이 모두 달성임
+        write_issue(ctx, "INNO-22", "Task", expected, task_checks, summary=TASK_TITLE)
+        passed = task_verdict("INNO-22", "review", "pass") | {"items": PASS_ITEMS, "extra": [], "requests": []}
+        write_out(out, "INNO-22", passed, PASS_SUMMARY)
+        run_issue(ja, work, "INNO-22", "review", gate=False)
+        save("slack-review-pass.txt", sent[-1])
 
         # 검수 모드, 게이트 모드: 문서화 리뷰가 검수 comment에 들어간다
         j = run_issue(ja, work, "INNO-17", "review", gate=True)
@@ -527,7 +605,7 @@ def render(out_dir: Path) -> list[Path]:
 
         with contextlib.redirect_stdout(io.StringIO()):
             ja.slack_weekly(ctx, ja.Summary(str(work / "summary.md")))
-        save("weekly-slack.txt", sent[0])
+        save("weekly-slack.txt", sent[-1])  # 검수 알림도 sent에 쌓이므로 마지막에 보낸 주간 점검 본문을 쓴다
     return saved
 
 

@@ -10,7 +10,7 @@ precheck.json의 expected 목록이 기준이다. 담당자가 예상 산출물 
 항목마다 comment, sub-task, PR에서 실제 결과를 찾아 의미로 대응시키고 달성(done: true) 또는 미달성(done: false)을
 정한다. 근거가 없는 항목은 달성으로 쓰지 않는다.
 items의 항목 수와 id는 expected와 정확히 같아야 한다(T3). 빠뜨리거나 새 번호를 만들지 않는다.
-예상에 없던 결과는 extra(초과 달성)에 적는다. 초과 달성은 판정을 바꾸지 않지만 기록으로 남긴다.
+예상에 없던 결과는 extra(초과 달성)에 적는다. 초과 달성은 검수 결과를 바꾸지 않지만 기록으로 남긴다.
 
 ## verdict.json의 items와 extra (결과 산출물 구역은 apply.py가 이것으로 만든다)
 ```json
@@ -79,7 +79,7 @@ rules.md의 "문서화 리뷰" 기준으로 T4–T7을 checks에 넣고, 항목�
   { "id": "T5", "points": ["1번 항목은 결과 하나로 잘 나뉨",
                            "3번 '데이터 정제 및 모델 재학습'은 따로 달성 여부가 갈리는 결과 두 개가 묶여 있음"],
     "request": "예상 산출물 3번을 '데이터 정제'와 '모델 재학습' 두 항목으로 나누고 각각 끝났을 때의 기준 작성 필요" },
-  { "id": "T6", "points": ["작업 기간(첫 In Progress 전환부터 마지막 request 전환(담당자의 완료 요청)까지) 8영업일 동안 사람 comment 1건(request 전환 당일)뿐이라 중간 결과와 방향 변경 이유를 알 수 없음"],
+  { "id": "T6", "points": ["작업 기간(첫 in-progress 전환부터 마지막 request 전환(담당자의 완료 요청)까지) 8영업일 동안 사람 comment 1건(request 전환 당일)뿐이라 중간 결과와 방향 변경 이유를 알 수 없음"],
     "request": "진행 중 나온 중간 수치와 방향을 바꾼 이유 comment 필요" },
   { "id": "T7", "points": ["INNO-18은 결과 comment와 PR이 있음", "INNO-19는 description이 비어 있어 무엇을 했는지 알 수 없음"],
     "request": "INNO-19 description에 무엇을 왜 했는지 작성 필요" }
@@ -88,7 +88,7 @@ rules.md의 "문서화 리뷰" 기준으로 T4–T7을 checks에 넣고, 항목�
 - points는 comment 검사 표의 내용 칸에 들어가므로 항목당 1–3개로 짧게 쓴다.
 - points의 수치(영업일 수, comment 수)는 셈 기준(기간의 시작과 끝, 무엇을 셌는지)을 함께 적는다. docFacts의 키 이름은 적지 않는다.
   request는 "필요"로 맺는다.
-- 문서화 리뷰의 보완 요청은 requests가 아니라 feedback[].request에만 쓴다. comment.wiki에도 넣지 않는다.
+- 문서화 리뷰의 요청 문장은 requests가 아니라 feedback[].request에만 쓴다. comment.wiki에도 넣지 않는다.
 
 ## tldr.wiki 형식
 ```
@@ -96,9 +96,9 @@ h2. Summary
 * (무엇을 했는지 한 줄. 근거: [PR 또는 comment 링크])
 * (핵심 결과 1: 수치로. 모델, 데이터, 계산 방법을 함께. 예: pose-v3의 검증 데이터(val set, 1,200장) PCK@0.2(관절 위치 오차가 몸통 크기의 0.2배 이내인 비율) 0.83, 기준 모델 pose-v2 대비 +0.04. 근거: [리포트 링크])
 * (핵심 결과 2 또는 산출물. 초과 달성이 있으면 한 항목으로. 근거: [PR 또는 comment 링크])
-* {color:#6b778c}상태: <issue.json의 status>, 판정: <통과|보완 요청|보류>, 갱신: <meta.json의 collectedAt, YYYY-MM-DD HH:MM>{color}
+* {color:#6b778c}상태: <issue.json의 status>, 검수 결과: <통과|검토 요청|보류>, 갱신: <meta.json의 collectedAt, YYYY-MM-DD HH:MM>{color}
 ```
-정리 모드에서는 "판정" 부분을 빼고 "상태"와 "갱신"만 쓴다.
+정리 모드에서는 "검수 결과" 부분을 빼고 "상태"와 "갱신"만 쓴다.
 
 ## comment.wiki (검수 모드, 결과 요약 부분만)
 ```
@@ -107,8 +107,15 @@ h2. Summary
 * 예상에 없던 오류율 대시보드([PR #45 오류율 대시보드|https://github.com/everex-ai/repo/pull/45])는 초과 달성으로 기록함
 ```
 
-## 판정
-T4–T8(문서화 리뷰)은 판정에 넣지 않는다. apply.py가 모드에 따라 적용한다(관찰 모드: 팀장에게 공유, 게이트 모드: 보완 요청).
-- pass: items가 모두 done이고 R2(링크), R4, A2 등 필수 검사가 통과
-- fix: done이 false인 항목이 있거나 T1, T2, R4가 fail
-- escalate: 예상 산출물이 모호해 대응할 수 없음, 담당자가 미달성 항목을 정당한 사유로 종료하려 함, A2가 fail
+## 검수 결과
+T4–T8(문서화 리뷰)은 검수 결과에 넣지 않는다. apply.py가 모드에 따라 적용한다(관찰 모드: 팀장에게 공유, 게이트 모드: fail이 있으면 통과를 보류로 바꿈).
+verdict에는 코드값을 쓰고, 괄호 안은 검수 결과 이름이다.
+- pass(통과): items가 모두 done이고 T1, T2, R2(링크), R4, A2가 모두 pass 또는 n/a
+- escalate(검토 요청): 아래 중 하나에 해당한다
+  - done이 false인 항목마다 why에 사람의 기록(comment, sub-task, PR)에 있는 사유가 있고, T1, T2, R2(링크 부재), R4가 fail이 아님
+  - 예상 산출물이 모호해 대응할 수 없음
+  - A2가 fail
+  - 근거가 서로 모순됨
+- fix(보류): 아래 중 하나에 해당한다
+  - done이 false이고 why가 빈 문자열이거나 "근거 부족으로 확인 불가"인 항목이 있음
+  - T1, T2, R2(링크 부재), R4 중 fail이 있음
