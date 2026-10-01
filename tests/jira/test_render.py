@@ -448,7 +448,10 @@ def test_stale_alert_message_and_stop_detail(jp, tmp_path):
         alerts[key] = json.loads((tmp_path / f"{key}.alerts.json").read_text(encoding="utf-8"))["alerts"]
     assert alerts["INNO-40"][0]["detail"] == "2026-09-22 stop 뒤 6일 경과(지난 시간을 24시간 단위로 셈, 나머지 버림)"
     stale = alerts["INNO-41"][0]
-    assert stale["check"] == "A1" and stale["detail"] == "마지막 활동 2026-09-02 뒤 19영업일 경과(토요일과 일요일 제외)"
+    assert (
+        stale["check"] == "A1"
+        and stale["detail"] == "마지막 활동 2026-09-02 뒤 영업일 기준 19일 경과(토요일과 일요일 제외)"
+    )
     assert stale["message"].count(". ") == 1 and stale["message"].endswith("필요")
 
 

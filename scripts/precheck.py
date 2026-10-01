@@ -261,8 +261,8 @@ def run_scan(p: Path, now: dt.datetime) -> None:
         idle = business_days_since(last_activity, now)
         if idle >= 5:
             alerts.append({"code": f"STALE:{(last_activity.date() if last_activity else now.date()).isoformat()}", "check": "A1",
-                           "detail": f"마지막 활동 {last_activity.date().isoformat() if last_activity else '기록 없음'} 뒤 {idle}영업일 경과(토요일과 일요일 제외)",
-                           "message": f"마지막 활동(사람 comment, In Progress 전환, task 생성 중 가장 늦은 것) 뒤 {idle}영업일(토요일과 일요일을 뺀 날 수) 동안 활동 없음. 진행 상황 comment, 또는 멈춘 task면 stop 전환으로 Backlog에 보내는 것 필요"})
+                           "detail": f"마지막 활동 {last_activity.date().isoformat() if last_activity else '기록 없음'} 뒤 영업일 기준 {idle}일 경과(토요일과 일요일 제외)",
+                           "message": f"마지막 활동(사람 comment, In Progress 전환, task 생성 중 가장 늦은 것) 뒤 영업일(토요일과 일요일을 뺀 날) 기준 {idle}일 동안 활동 없음. 진행 상황 comment, 또는 멈춘 task면 stop 전환으로 Backlog에 보내는 것 필요"})
 
     out = {"key": s["key"], "type": itype, "status": status, "summary": s.get("summary"), "url": s.get("url"),
            "assignee": s.get("assignee"), "alerts": alerts, "clear": []}

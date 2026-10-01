@@ -68,7 +68,7 @@ CHECK_NAMES = {
     "R2": "1년 뒤에도 이해 가능한 기록",
     "R3": "개조식 작성",
     "R4": "stop 사유 comment",
-    "A1": "5영업일 이상 활동 없음",
+    "A1": "영업일 기준 5일 이상 활동 없음",
     "A2": "완료 기준의 사후 변경",
 }
 CHECK_ORDER = {cid: i for i, cid in enumerate(CHECK_NAMES)}
@@ -82,7 +82,7 @@ VERDICT_KEY_KO = {"issueKey": "task 키", "mode": "실행 모드", "verdict": "�
 VERDICT_FILE_KO = "CI agent(GitHub Actions에서 실행되는 문서화 Agent)의 판정 파일(verdict.json)"   # 실패 알림에 나가는 이름
 # 주간 점검(alerts) Slack 보고
 SLACK_USERS = Path(__file__).parent.parent / "config" / "slack-users.json"   # Jira accountId -> Slack member ID
-ALERT_SECTIONS = [("R4", "stop 사유 미기재"), ("A1", "5영업일 이상 활동 없음")]
+ALERT_SECTIONS = [("R4", "stop 사유 미기재"), ("A1", "영업일 기준 5일 이상 활동 없음")]
 ALERT_LIMIT = 15
 
 

@@ -50,7 +50,7 @@
 |---|---|---|---|
 | review | Jira F1(request 전환), Actions 수동 실행 | 결과 산출물 구역, TL;DR, 검수 comment, 문서화 리뷰 | 사용 |
 | digest | Jira F3(번개 버튼), Actions 수동 실행 | 그 task의 TL;DR과 결과 산출물 구역을 지금까지의 기록으로 다시 씀. comment와 검수 결과 없음 | 사용 |
-| alerts | 매주 수요일 09:00 KST cron, Actions 수동 실행 | stop 사유 미기재와 5영업일 무활동을 Slack 한 건으로 보고 | 미사용 |
+| alerts | 매주 수요일 09:00 KST cron, Actions 수동 실행 | stop 사유 미기재와 영업일 기준 5일 이상 무활동을 Slack 한 건으로 보고 | 미사용 |
 
 정리(digest)는 담당자가 필요할 때 F3으로 돌린다. 주기 실행은 alerts뿐이다.
 

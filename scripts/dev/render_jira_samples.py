@@ -240,7 +240,7 @@ TASK_FEEDBACK = [
     {
         "id": "T6",
         "points": [
-            "작업 기간(첫 in-progress 전환부터 마지막 request 전환(담당자의 완료 요청)까지) 8영업일 동안 "
+            "작업 기간(첫 in-progress 전환부터 마지막 request 전환(담당자의 완료 요청)까지) 영업일 기준 8일 동안 "
             "사람 comment 1건(request 전환 당일)뿐이라 중간 결과와 방향 변경 이유를 알 수 없음"
         ],
         "request": "진행 중 나온 중간 수치와 방향을 바꾼 이유 comment 필요",

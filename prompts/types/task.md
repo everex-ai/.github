@@ -79,14 +79,14 @@ rules.md의 "문서화 리뷰" 기준으로 T4–T7을 checks에 넣고, 항목�
   { "id": "T5", "points": ["1번 항목은 결과 하나로 잘 나뉨",
                            "3번 '데이터 정제 및 모델 재학습'은 따로 달성 여부가 갈리는 결과 두 개가 묶여 있음"],
     "request": "예상 산출물 3번을 '데이터 정제'와 '모델 재학습' 두 항목으로 나누고 각각 끝났을 때의 기준 작성 필요" },
-  { "id": "T6", "points": ["작업 기간(첫 in-progress 전환부터 마지막 request 전환(담당자의 완료 요청)까지) 8영업일 동안 사람 comment 1건(request 전환 당일)뿐이라 중간 결과와 방향 변경 이유를 알 수 없음"],
+  { "id": "T6", "points": ["작업 기간(첫 in-progress 전환부터 마지막 request 전환(담당자의 완료 요청)까지) 영업일 기준 8일 동안 사람 comment 1건(request 전환 당일)뿐이라 중간 결과와 방향 변경 이유를 알 수 없음"],
     "request": "진행 중 나온 중간 수치와 방향을 바꾼 이유 comment 필요" },
   { "id": "T7", "points": ["INNO-18은 결과 comment와 PR이 있음", "INNO-19는 description이 비어 있어 무엇을 했는지 알 수 없음"],
     "request": "INNO-19 description에 무엇을 왜 했는지 작성 필요" }
 ]
 ```
 - points는 comment 검사 표의 내용 칸에 들어가므로 항목당 1–3개로 짧게 쓴다.
-- points의 수치(영업일 수, comment 수)는 셈 기준(기간의 시작과 끝, 무엇을 셌는지)을 함께 적는다. docFacts의 키 이름은 적지 않는다.
+- points의 수치(영업일 수, comment 수)는 셈 기준(기간의 시작과 끝, 무엇을 셌는지)을 함께 적는다. 영업일 수는 "영업일 기준 N일"로 적는다("N영업일"로 쓰지 않는다). docFacts의 키 이름은 적지 않는다.
   request는 "필요"로 맺는다.
 - 문서화 리뷰의 요청 문장은 requests가 아니라 feedback[].request에만 쓴다. comment.wiki에도 넣지 않는다.
 
