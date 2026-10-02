@@ -189,7 +189,7 @@ def test_hold_moves_ready_task_back_and_mentions_assignee(render, ja, tmp_path, 
     assert "검수 결과: *보류*\n* 상태를 in-progress로 되돌림\n" in j.comments[0][1]
     assert slack[0].startswith(
         "<@U-ASSIGNEE> [INNO-17] 검수 결과: 보류. 상태를 in-progress로 되돌림\n"
-        f'<{ISSUE_URL}|INNO-17>\n보류 이유\n• 사유 없는 미달성: 예상 산출물 2번 "오류율 1% 미만"\n요청\n1. '
+        f'<{ISSUE_URL}|INNO-17>\n보류 이유\n    • 사유 없는 미달성: 예상 산출물 2번 "오류율 1% 미만"\n요청\n    1. '
     )
     assert slack[0].endswith(f"\n근거: <{ISSUE_URL}?focusedCommentId=10200|검수 comment>")
     assert not any(e in slack[0] for e in FORMAL_ENDINGS)
@@ -210,8 +210,8 @@ def test_request_keeps_status_and_mentions_lead(render, ja, tmp_path, slack):
     assert f"검수 결과: *검토 요청*\n* {HOLD_TO_REQUEST}\n* 상태를 바꾸지 않고 팀장 확인을 요청함\n" in j.comments[0][1]
     assert slack[0].startswith("<@U-LEAD> [INNO-17] 검수 결과: 검토 요청. 상태 변경 없음\n")
     assert (
-        '\n• 예상 산출물 2번 "오류율 1% 미만": 라벨 재수집이 다음 분기로 밀림(<https://example.com/c/1|comment 2026-09-15>)\n'
-        f"• {HOLD_TO_REQUEST}\n팀장이 task를 확인한 뒤 in-progress 또는 done으로 직접 전환 필요\n"
+        '\n    • 예상 산출물 2번 "오류율 1% 미만": 라벨 재수집이 다음 분기로 밀림(<https://example.com/c/1|comment 2026-09-15>)\n'
+        f"    • {HOLD_TO_REQUEST}\n팀장이 task를 확인한 뒤 in-progress 또는 done으로 직접 전환 필요\n"
     ) in slack[0]
     assert "\n요청\n" not in slack[0]
     assert not any(e in slack[0] for e in FORMAL_ENDINGS)
@@ -226,7 +226,7 @@ def test_pass_asks_lead_to_move_done(render, ja, tmp_path, slack):
     assert "검수 결과: *통과*\n* 상태를 바꾸지 않고 팀장 확인을 요청함\n" in j.comments[0][1]
     assert slack[0].startswith(
         "<@U-LEAD> [INNO-17] 검수 결과: 통과. 상태 변경 없음\n"
-        f"<{ISSUE_URL}|INNO-17>\n통과 이유\n• 예상 산출물 2개 중 2개 달성\n• 요약\n"
+        f"<{ISSUE_URL}|INNO-17>\n통과 이유\n    • 예상 산출물 2개 중 2개 달성\n    • 요약\n"
         "팀장이 task를 확인한 뒤 done으로 직접 전환 필요\n"
     )
     assert not any(e in slack[0] for e in FORMAL_ENDINGS)
@@ -262,7 +262,7 @@ def test_slack_text_escapes_title_and_requests(ja):
         "fix", "INNO-1", "지연 <50ms & 경량화", "https://e.com/INNO-1", "담당자", "", [], ["a > b 확인 필요"], ""
     )
     assert "<https://e.com/INNO-1|INNO-1 지연 &lt;50ms &amp; 경량화>" in text
-    assert "\n1. a &gt; b 확인 필요" in text
+    assert "\n    1. a &gt; b 확인 필요" in text
 
 
 def test_slack_post_reports_timeout(ja, monkeypatch):
@@ -705,6 +705,8 @@ def test_run_scan_skips_r4_alert_for_late_reason(ja, jp, tmp_path, late_reason, 
     assert [a["code"] for a in alerts] == want_codes
     lines, _ = ja.weekly_lines(tmp_path, {})  # 주간 점검 메시지의 R4 항목
     assert any(line.startswith("*stop 사유 미기재*") for line in lines) == bool(want_codes)
+    if want_codes:  # 항목 줄은 묶음 제목 아래로 들여 씀(검수 알림과 같은 공백 4칸)
+        assert any(line.startswith(f"{ja.SLACK_INDENT}• INNO-40 ") for line in lines)
 
 
 class ScanJira:
@@ -769,8 +771,10 @@ def test_r4_fail_adds_request_once_to_hold_slack(render, ja, jp, tmp_path, slack
     assert slack[0].count(R4_REQUEST) == 1
     requests = slack[0].split("\n요청\n")[1].split("\n근거:")[0].splitlines()
     want = given if R4_REQUEST in given else [*given, R4_REQUEST]
-    assert requests == [f"{i}. {r}" for i, r in enumerate(want, 1)]
+    assert requests == [f"    {i}. {r}" for i, r in enumerate(want, 1)]
     assert j.comments[0][1].count(R4_REQUEST) == 1  # 검수 comment의 요청에도 한 번만 들어감
+    r4_reason = "stop 전환(In Progress → Backlog)에 대한 사유를 담당자가 comment에 남기지 않음(stop 시점: 2026-09-08)"
+    assert "\n보류 이유\n" in slack[0] and f"\n    • {r4_reason}\n" in slack[0]
 
 
 def test_r4_request_not_added_when_a2_makes_review_request(render, ja, jp, tmp_path, slack):
@@ -813,3 +817,20 @@ def test_slack_reasons_hold_omits_late_r4(ja):
     late = [{"id": "R4", "result": "pass", "detail": R4_LATE_DETAIL, "late": True}]
     got = ja.review_slack_reasons("fix", "Task", EXPECTED, ITEMS, [], late, [], "* 요약")
     assert got == ['사유 없는 미달성: 예상 산출물 2번 "오류율 1% 미만"']
+
+
+def test_hold_reason_for_r4_is_a_sentence(ja, jp):
+    stops = jp.stop_events(
+        [
+            {"created": "2026-10-02T09:00:00.000+0900", "field": "status", "to": "Backlog"},
+            {"created": "2026-10-02T10:00:00.000+0900", "field": "status", "to": "In Progress"},
+        ],
+        [],
+        dt.datetime(2026, 10, 2, 12, 0, tzinfo=dt.timezone(dt.timedelta(hours=9))),
+    )
+    r4 = {"id": "R4", **jp.check_r4(stops)}
+    want = "stop 전환(In Progress → Backlog)에 대한 사유를 담당자가 comment에 남기지 않음(stop 시점: 2026-10-02)"
+    assert r4["result"] == "fail" and r4["detail"] == want
+    t1 = {"id": "T1", "result": "fail", "detail": "예상 산출물 구역에 항목 없음"}
+    got = ja.review_slack_reasons("fix", "Task", EXPECTED, ITEMS[:1], [], [t1, r4], [], "* 요약")
+    assert got == [f"{ja.check_label('T1')}: 예상 산출물 구역에 항목 없음", want]

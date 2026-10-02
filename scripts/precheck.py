@@ -185,7 +185,9 @@ def check_r4(stops: list[dict]) -> dict:
         return {"result": "n/a", "detail": "stop 이력 없음"}
     missing = [s for s in stops if not s["hasReason"]]
     if missing:
-        return {"result": "fail", "detail": "사유 comment 없는 stop: " + ", ".join(s["at"][:10] for s in missing)}
+        days = ", ".join(s["at"][:10] for s in missing)
+        return {"result": "fail",
+                "detail": f"stop 전환(In Progress → Backlog)에 대한 사유를 담당자가 comment에 남기지 않음(stop 시점: {days})"}
     detail = f"stop {len(stops)}회 모두 사유 comment 있음"
     late = [s for s in stops if s.get("late")]
     if not late:

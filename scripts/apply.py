@@ -35,6 +35,8 @@ from jira_api import AGENT_MARK, STOP_REASON_PREFIX, Jira, JiraError, set_sectio
 VERDICT_KO = {"pass": "통과", "fix": "보류", "escalate": "검토 요청", None: "정리"}
 # 검수 결과를 다시 정하는 규칙(recheck_verdict)과 상태 전환. 검사 이름은 CHECK_NAMES, prompts/rules.md와 같다
 OWNER_FIXABLE_CHECKS = ("T1", "T2", "R2", "R4", "B1", "B2", "B3", "B4", "I1", "I2", "I3")   # 담당자가 고칠 수 있는 검사. 실패하면 보류
+SENTENCE_DETAIL_CHECKS = ("R4",)                                              # detail이 이유 문장이라 Slack 보류 이유에 검사 이름 없이 적는 검사
+SLACK_INDENT = "    "                                                         # Slack 메시지의 묶음 항목 들여쓰기(공백 4칸). 검수 알림과 주간 점검에 사용
 NOT_A_REASON = "근거 부족으로 확인 불가"                             # CI agent가 why에 넣는 문구. 담당자가 남긴 사유로 세지 않는다
 READY_STATUS, IN_PROGRESS = "ready-to-done", "In Progress"           # Jira 상태 이름. READY_STATUS는 대소문자 무시로 비교
 SLACK_CLOSING = {"escalate": "팀장이 task를 확인한 뒤 in-progress 또는 done으로 직접 전환 필요",
@@ -749,6 +751,8 @@ def review_slack_reasons(v: str, itype: str, expected: list[dict], items: list[d
     """Slack 검수 알림의 이유 묶음에 적을 항목.
 
     보류: 사유 없는 미달성 항목, 실패한 담당자 검사(OWNER_FIXABLE_CHECKS), 검수 결과를 바꾼 이유.
+    담당자 검사는 "<검사 이름>: <detail>"로 적고, detail이 그 자체로 이유 문장인 검사(SENTENCE_DETAIL_CHECKS)는
+    detail만 적는다.
     검토 요청: 담당자가 남긴 미달성 사유, 검수 결과를 바꾼 이유. 통과: 달성 요약 줄(Task)과 결과 요약 줄.
     위 항목이 비면 결과 요약 줄을 적는다. 검토 요청과 통과에서 R4의 사유가 늦게 기록되었으면(late) 끝에 R4 줄을
     붙여 팀장이 확인하게 한다.
@@ -773,7 +777,8 @@ def review_slack_reasons(v: str, itype: str, expected: list[dict], items: list[d
     out: list[str] = []
     if v == "fix":
         out += [f"사유 없는 미달성: {n}" for n, it in zip(names, missed) if not owner_reason(it)]
-        out += [f"{check_label(c['id'])}: {wiki_to_slack(c.get('detail') or '')}" for c in owner_fails(checks)]
+        out += [wiki_to_slack(c.get("detail") or "") if c["id"] in SENTENCE_DETAIL_CHECKS
+                else f"{check_label(c['id'])}: {wiki_to_slack(c.get('detail') or '')}" for c in owner_fails(checks)]
         out += [wiki_to_slack(c) for c in changes]
     elif v == "escalate":
         out += [f"{n}: {wiki_to_slack(owner_reason(it))}" for n, it in zip(names, missed) if owner_reason(it)]
@@ -795,6 +800,7 @@ def review_slack_text(v: str, key: str, title: str, url: str, mention: str, stat
 
     첫 줄에 받는 사람 멘션, task 키, 검수 결과, 상태 처리를 적고, 둘째 줄에 task 링크를 적는다.
     보류에만 요청 묶음을 붙이고, 검토 요청과 통과에는 팀장이 직접 전환하도록 맺음 줄을 붙인다.
+    이유와 요청 항목은 묶음 제목 아래로 SLACK_INDENT만큼 들여 쓴다.
     task 제목과 요청 문장은 wiki_to_slack으로 바꿔 적는다(&, <, > escape 포함).
 
     Args:
@@ -816,9 +822,9 @@ def review_slack_text(v: str, key: str, title: str, url: str, mention: str, stat
     if url:
         lines.append(f"<{url}|{wiki_to_slack(f'{key} {title}'.strip())}>")
     if reasons:
-        lines += [f"{label} 이유"] + [f"• {r}" for r in reasons]
+        lines += [f"{label} 이유"] + [f"{SLACK_INDENT}• {r}" for r in reasons]
     if v == "fix" and requests:
-        lines += ["요청"] + [f"{i}. {wiki_to_slack(r)}" for i, r in enumerate(requests, 1)]
+        lines += ["요청"] + [f"{SLACK_INDENT}{i}. {wiki_to_slack(r)}" for i, r in enumerate(requests, 1)]
     if v in SLACK_CLOSING:
         lines.append(SLACK_CLOSING[v])
     if comment_link:
@@ -845,11 +851,11 @@ def weekly_lines(scan: Path, users: dict) -> tuple[list[str], list[str]]:
             who = slack_mention(it.get("assignee"), users)
             if who.startswith("<@") and who not in mentions:
                 mentions.append(who)
-            lines.append(f"• {it['key']} {it.get('summary') or ''} — 담당 {who}, {it['detail']}")
+            lines.append(f"{SLACK_INDENT}• {it['key']} {it.get('summary') or ''} — 담당 {who}, {it['detail']}")
             if it.get("url"):
-                lines.append(f"  {it['url']}")
+                lines.append(f"{SLACK_INDENT}  {it['url']}")
         if len(items) > ALERT_LIMIT:
-            lines.append(f"• 외 {len(items) - ALERT_LIMIT}건")
+            lines.append(f"{SLACK_INDENT}• 외 {len(items) - ALERT_LIMIT}건")
     return lines, mentions
 
 
