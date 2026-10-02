@@ -64,13 +64,13 @@ PYTEST_KO = {
     "none": "수집된 테스트 없음",
     "skipped": "건너뜀",
 }
-# 등급 0(Claude 단계 생략)의 뜻. agent 검사의 내용 칸과 꼬리말의 등급에 같은 문구로 나간다
-TIER0_NOTE = "판단할 심볼, 삭제된 심볼, 미사용 코드 후보가 없어 Claude 판단 단계를 실행하지 않음"
-# 꼬리말에 등급 숫자 대신 나가는 뜻. 등급 정의는 precheck.py의 compute_tier
+# 등급 0(Claude 단계 생략)일 때 agent 검사의 내용 칸. 등급의 뜻과 이유는 꼬리말에 한 번만 적는다
+TIER0_NOTE = "Claude 판단 단계 미실행(꼬리말 참고)"
+# 꼬리말에 등급 숫자와 함께 나가는 등급의 동작. 등급을 정하는 조건은 precheck.py의 compute_tier
 TIER_KO = {
-    0: f"0({TIER0_NOTE})",
-    1: "1(작은 변경이라 Claude 하나가 혼자 판단함)",
-    2: "2(큰 변경이라 Claude가 검사 항목별 subagent(하위 agent)에 나눠 맡김)",
+    0: "Claude 판단 단계를 실행하지 않음",
+    1: "Claude 하나가 검사 항목을 모두 혼자 판단함",
+    2: "검사 항목마다 subagent(검사 항목별로 따로 실행하는 Claude)에 나눠 맡김",
 }
 # 3-2(추가 코드), 4-1(수정 코드)이 판단하는 심볼의 변경 구분(classify.py의 change)
 NEEDS_TEST_CHANGE = {"3-2": "added", "4-1": "modified"}
@@ -251,16 +251,22 @@ def needs_test_flags(cid: str, ri: dict, verdict: dict | None) -> list[bool]:
 
     Args:
         cid: 검사 ID. 3-2는 추가된 심볼, 4-1은 수정된 심볼을 모은다.
-        ri: precheck가 만든 review-input. 심볼의 변경 구분(`symbols[].change`)을 여기서 찾는다.
+        ri: precheck가 만든 review-input. 판단 대상(`precheck.targets`)과 심볼의 변경 구분(`symbols[].change`)을
+            여기서 찾는다.
         verdict: agent 출력. 없으면 빈 목록을 돌려준다.
 
     Returns:
-        심볼별 `needs_test` 값. 3-2, 4-1이 아니거나 판단한 심볼이 없으면 빈 목록.
+        판단 대상이면서 변경 구분이 맞는 심볼별 `needs_test` 값. 3-2, 4-1이 아니거나 그런 심볼이 없으면 빈 목록.
     """
     change = NEEDS_TEST_CHANGE.get(cid)
     if change is None or verdict is None:
         return []
-    keys = {(s["file"], s["name"]) for s in ri.get("symbols", []) if s["change"] == change and not s["is_test"]}
+    targets = set(ri["precheck"].get("targets", []))
+    keys = {
+        (s["file"], s["name"])
+        for s in ri.get("symbols", [])
+        if s["change"] == change and not s["is_test"] and f"{s['file']}::{s['name']}" in targets
+    }
     return [s["needs_test"] for s in verdict.get("symbols", []) if (s["file"], s["name"]) in keys]
 
 
@@ -268,7 +274,7 @@ def result_mark(cid: str, result: str, needs_test: list[bool] | None = None) -> 
     """검사 표의 결과 칸 표시를 만든다.
 
     3-2, 4-1은 테스트 필요 여부를 판단하는 검사라, 판단한 심볼 중 하나라도 테스트가 필요하면 "필요함",
-    모두 필요 없으면 "필요없음"으로 적는다. 판단한 심볼이 없으면 다른 검사와 같은 표시를 쓴다.
+    모두 필요 없으면 "필요없음"으로 적는다. pass인데 판단한 심볼이 없으면 변경 심볼 표와 같은 말로 "미판단"이라 적는다.
     반려로 이어지지 않는 검사(3-2, 4-1, 6, 7)의 fail은 반려로 이어지는 "실패"와 구분해 "보완 필요"로 적는다.
 
     Args:
@@ -279,11 +285,21 @@ def result_mark(cid: str, result: str, needs_test: list[bool] | None = None) -> 
     Returns:
         결과 칸에 적을 표시.
     """
-    if cid in NEEDS_TEST_CHANGE and result == "pass" and needs_test:
+    if cid in NEEDS_TEST_CHANGE and result == "pass":
+        if not needs_test:
+            return "미판단"
         return "필요함" if any(needs_test) else "필요없음"
     if result == "fail" and cid not in REJECT_CHECKS:
         return NOTE_FAIL_MARK
     return RESULT_MARK.get(result, result)
+
+
+def _tier_text(tier: int, reason: str | None) -> str:
+    """꼬리말의 Claude 단계 실행 등급. 등급 숫자 뒤 괄호에 등급의 동작과 precheck가 적은 이유를 적는다."""
+    parts = [TIER_KO[tier]] if tier in TIER_KO else []
+    if reason:
+        parts.append(f"이유: {reason}")
+    return f"{tier}({'. '.join(parts)})" if parts else str(tier)
 
 
 def _cell(s: object) -> str:
@@ -447,7 +463,7 @@ def render_comment(
     tier = ri["precheck"].get("tier")
     foot = [f"{SCRIPT_STAGE} 판정: {PRECHECK_KO.get(pre, pre)}"]
     if pre == "continue" and tier is not None:  # 스크립트 검사 반려면 등급과 관계없이 Claude 단계를 실행하지 않는다
-        foot.append(f"PR 크기 등급: {TIER_KO.get(tier, tier)}")
+        foot.append(f"Claude 단계 실행 등급: {_tier_text(tier, ri['precheck'].get('tier_reason'))}")
     foot += [f"ruff 설정: {LINT_CONFIG_KO.get(lint, lint)}", f"pytest: {_pytest_text(ri['tests'])}"]
     if url := run_url():
         foot.append(f"실행 로그: {url}")

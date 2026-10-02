@@ -132,8 +132,8 @@ def cmd_handle_label(a: argparse.Namespace) -> None:
         remove_label(a.repo_slug, a.pr)
         who = ", ".join(f"@{r}" for r in sorted(reviewers)) or "없음"
         msg = (
-            f"@{a.sender} 님은 지정 리뷰어가 아니라 {LABEL} 라벨을 뗌. "
-            f"override(라벨로 검수 판정을 통과로 바꾸는 것)는 지정 리뷰어만 할 수 있음(지정 리뷰어: {who}). "
+            f"@{a.sender} 님이 붙인 {LABEL} 라벨을 everex-review가 뗌. "
+            f"지정 리뷰어만 override(라벨로 검수 판정을 통과로 바꾸는 것)를 할 수 있음(지정 리뷰어: {who}). "
             "판정에 이의가 있으면 검수 comment에 근거를 남기고 지정 리뷰어에게 요청 필요."
         )
         run(["gh", "pr", "comment", str(a.pr), "--repo", a.repo_slug, "--body", msg])
