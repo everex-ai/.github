@@ -439,15 +439,19 @@ def compute_tier(files: list[dict], symbols: list[dict], dead: dict) -> tuple[in
     has_dead = bool(dead.get("candidates"))
     lines = sum(f["additions"] + f["deletions"] for f in files if f["is_python"] and not f["is_test"])
     if not targets and not removed and not has_dead:
-        return 0, "판단 대상 심볼과 미사용 후보가 없음", names
+        return 0, "판단 대상 심볼, 삭제된 심볼, 미사용 코드 후보가 모두 없음", names
     sig = [s["name"] for s in targets if s["signature_changed"]]
-    if len(targets) <= TIER1_MAX_TARGETS and lines <= TIER1_MAX_LINES and not sig and not removed:
-        return 1, f"판단 대상 {len(targets)}개, 변경 {lines}줄", names
-    why = [f"판단 대상 {len(targets)}개", f"변경 {lines}줄"]
+    # 이유는 PR 검수 comment 꼬리말에도 나가므로 무엇을 셌는지와 등급 1 기준값을 함께 적는다
+    why = [
+        f"판단 대상 심볼 {len(targets)}개(등급 1 기준 {TIER1_MAX_TARGETS}개 이하)",
+        f"테스트 외 Python 파일의 추가·삭제 줄 합 {lines}줄(등급 1 기준 {TIER1_MAX_LINES}줄 이하)",
+    ]
     if sig:
-        why.append("signature 변경: " + ", ".join(sig))
+        why.append("signature(인자와 반환 형식) 변경: " + ", ".join(sig))
     if removed:
         why.append("삭제된 심볼: " + ", ".join(s["name"] for s in removed))
+    if len(targets) <= TIER1_MAX_TARGETS and lines <= TIER1_MAX_LINES and not sig and not removed:
+        return 1, ", ".join(why), names
     return 2, ", ".join(why), names
 
 

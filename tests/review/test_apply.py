@@ -320,7 +320,7 @@ def test_tier_zero_without_verdict_is_pass():
     pre = {**_pre(), "tier": 0}
     m = apply.merge(pre, None, None)
     assert m["final"] == "pass" and m["agent_error"] is None
-    assert m["checks"]["3-3"] == {"result": "n/a", "detail": "Claude 판단 단계 미실행(꼬리말 참고)"}
+    assert m["checks"]["3-3"] == {"result": "n/a", "detail": "Claude 단계 미실행(꼬리말 참고)"}
     assert apply.merge({**_pre(), "tier": 1}, None, None)["final"] == "error"  # 등급 1 이상은 verdict가 있어야 한다
 
 
@@ -394,12 +394,12 @@ def test_render_comment_note_fail_marks_for_6_and_7():
 
 
 def test_render_comment_footer_tier_meaning():
-    ri = _ri({**_pre(), "tier": 1, "tier_reason": "판단 대상 1개, 변경 3줄"})
-    body = apply.render_comment(ri["pr"], ri, apply.merge(ri["precheck"], GOOD, None), GOOD)
-    assert (
-        " · Claude 단계 실행 등급: 1(Claude 하나가 검사 항목을 모두 혼자 판단함. 이유: 판단 대상 1개, 변경 3줄) · "
-        in body
+    reason = (
+        "판단 대상 심볼 1개(등급 1 기준 3개 이하), 테스트 외 Python 파일의 추가·삭제 줄 합 3줄(등급 1 기준 50줄 이하)"
     )
+    ri = _ri({**_pre(), "tier": 1, "tier_reason": reason})
+    body = apply.render_comment(ri["pr"], ri, apply.merge(ri["precheck"], GOOD, None), GOOD)
+    assert f" · Claude 단계 실행 등급: 1(Claude 하나가 검사 항목을 모두 혼자 판단함. 이유: {reason}) · " in body
     ri = _ri({**_pre(), "tier": 1})  # tier_reason이 없으면 이유를 빼고 적음
     body = apply.render_comment(ri["pr"], ri, apply.merge(ri["precheck"], GOOD, None), GOOD)
     assert " · Claude 단계 실행 등급: 1(Claude 하나가 검사 항목을 모두 혼자 판단함) · " in body
@@ -410,24 +410,23 @@ def test_render_comment_footer_tier_meaning():
 
 
 def test_render_comment_footer_tier_two():
-    ri = _ri({**_pre(), "tier": 2, "tier_reason": "판단 대상 1개, 변경 3줄, signature 변경: scale"})
+    reason = "판단 대상 심볼 1개(등급 1 기준 3개 이하), 테스트 외 Python 파일의 추가·삭제 줄 합 3줄(등급 1 기준 50줄 이하), signature(인자와 반환 형식) 변경: scale"
+    ri = _ri({**_pre(), "tier": 2, "tier_reason": reason})
     body = apply.render_comment(ri["pr"], ri, apply.merge(ri["precheck"], GOOD, None), GOOD)
     assert (
-        " · Claude 단계 실행 등급: 2(검사 항목마다 subagent(검사 항목별로 따로 실행하는 Claude)에 나눠 맡김."
-        " 이유: 판단 대상 1개, 변경 3줄, signature 변경: scale) · "
+        " · Claude 단계 실행 등급: 2(검사 항목을 subagent 4개(검사 항목 묶음마다 따로 실행하는 Claude)에 나눠 맡김."
+        f" 미사용 코드 후보가 없으면 3개. 이유: {reason}) · "
     ) in body
 
 
 def test_render_comment_footer_tier_zero_once():
-    ri = _ri({**_pre(), "tier": 0, "tier_reason": "판단 대상 심볼과 미사용 후보가 없음"})
+    reason = "판단 대상 심볼, 삭제된 심볼, 미사용 코드 후보가 모두 없음"
+    ri = _ri({**_pre(), "tier": 0, "tier_reason": reason})
     body = apply.render_comment(ri["pr"], ri, apply.merge(ri["precheck"], None, None), None)
-    assert (
-        " · Claude 단계 실행 등급: 0(Claude 판단 단계를 실행하지 않음. 이유: 판단 대상 심볼과 미사용 후보가 없음) · "
-        in body
-    )
-    assert body.count("Claude 판단 단계를 실행하지 않음") == 1  # 등급의 뜻은 꼬리말에 한 번만
+    assert f" · Claude 단계 실행 등급: 0(Claude 단계를 실행하지 않음. 이유: {reason}) · " in body
+    assert body.count("Claude 단계를 실행하지 않음") == 1  # 등급의 뜻은 꼬리말에 한 번만
     for cid in ("3-2", "3-3", "4-1", "4-2", "6", "7"):
-        assert _row(cid, "➖ 해당 없음 | Claude 판단 단계 미실행(꼬리말 참고)") in body
+        assert _row(cid, "➖ 해당 없음 | Claude 단계 미실행(꼬리말 참고)") in body
 
 
 SUGG = {
@@ -484,7 +483,7 @@ def test_docstring_only_symbol_is_labelled():
     assert (
         "| `scale` | calc/ops.py:55 | 함수 | 추가 | 해당 없음 | 해당 없음 | docstring만 변경 (판단 대상 아님) |" in body
     )
-    assert _row("3-3", "➖ 해당 없음 | Claude 판단 단계 미실행(꼬리말 참고)") in body  # 등급 0은 "➖ 미실행"이 아님
+    assert _row("3-3", "➖ 해당 없음 | Claude 단계 미실행(꼬리말 참고)") in body  # 등급 0은 "➖ 미실행"이 아님
 
 
 def test_render_comment_dead_code_line_from_candidates():

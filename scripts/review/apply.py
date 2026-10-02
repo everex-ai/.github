@@ -65,12 +65,12 @@ PYTEST_KO = {
     "skipped": "건너뜀",
 }
 # 등급 0(Claude 단계 생략)일 때 agent 검사의 내용 칸. 등급의 뜻과 이유는 꼬리말에 한 번만 적는다
-TIER0_NOTE = "Claude 판단 단계 미실행(꼬리말 참고)"
+TIER0_NOTE = "Claude 단계 미실행(꼬리말 참고)"
 # 꼬리말에 등급 숫자와 함께 나가는 등급의 동작. 등급을 정하는 조건은 precheck.py의 compute_tier
 TIER_KO = {
-    0: "Claude 판단 단계를 실행하지 않음",
+    0: "Claude 단계를 실행하지 않음",
     1: "Claude 하나가 검사 항목을 모두 혼자 판단함",
-    2: "검사 항목마다 subagent(검사 항목별로 따로 실행하는 Claude)에 나눠 맡김",
+    2: "검사 항목을 subagent 4개(검사 항목 묶음마다 따로 실행하는 Claude)에 나눠 맡김. 미사용 코드 후보가 없으면 3개",
 }
 # 3-2(추가 코드), 4-1(수정 코드)이 판단하는 심볼의 변경 구분(classify.py의 change)
 NEEDS_TEST_CHANGE = {"3-2": "added", "4-1": "modified"}

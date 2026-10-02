@@ -312,21 +312,28 @@ NO_DEAD = {"candidates": []}
 def test_tier_zero_when_nothing_to_judge():
     syms = [_sym("f", docstring_only=True), _sym("test_x", "added", is_test=True)]
     tier, why, targets = precheck.compute_tier(_files(5), syms, NO_DEAD)
-    assert tier == 0 and targets == [] and why
+    assert tier == 0 and targets == [] and why == "판단 대상 심볼, 삭제된 심볼, 미사용 코드 후보가 모두 없음"
     assert (
         precheck.compute_tier(_files(5), syms, {"candidates": [{"name": "os"}]})[0] == 1
     )  # 미사용 후보가 있으면 판단 필요
-    assert precheck.compute_tier(_files(5), [_sym("g", "removed")], NO_DEAD)[0] == 2  # 삭제는 영향이 커 분할
+    tier, why, _ = precheck.compute_tier(_files(5), [_sym("g", "removed")], NO_DEAD)
+    assert tier == 2 and why.endswith(", 삭제된 심볼: g")  # 삭제는 영향이 커 분할
 
 
 def test_tier_one_and_two_boundaries():
     three = [_sym("a"), _sym("b", "added"), _sym("c")]
-    assert precheck.compute_tier(_files(50), three, NO_DEAD)[:1] == (1,)
+    assert precheck.compute_tier(_files(50), three, NO_DEAD)[:2] == (
+        1,
+        "판단 대상 심볼 3개(등급 1 기준 3개 이하), 테스트 외 Python 파일의 추가·삭제 줄 합 50줄(등급 1 기준 50줄 이하)",
+    )
     assert precheck.compute_tier(_files(50), three, NO_DEAD)[2] == ["a.py::a", "a.py::b", "a.py::c"]
     assert precheck.compute_tier(_files(51), three, NO_DEAD)[0] == 2  # 테스트 파일 줄 수는 세지 않는다
     assert precheck.compute_tier(_files(10), [*three, _sym("d")], NO_DEAD)[0] == 2
     tier, why, _ = precheck.compute_tier(_files(10), [_sym("a", signature_changed=True)], NO_DEAD)
-    assert tier == 2 and "signature" in why
+    assert tier == 2 and why == (
+        "판단 대상 심볼 1개(등급 1 기준 3개 이하), 테스트 외 Python 파일의 추가·삭제 줄 합 10줄(등급 1 기준 50줄 이하), "
+        "signature(인자와 반환 형식) 변경: a"
+    )
 
 
 def test_find_project_context(tmp_path: Path):
