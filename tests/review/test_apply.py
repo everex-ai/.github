@@ -316,6 +316,180 @@ def test_require_clean_turns_dirty_tree_into_error(fixture_repo: Path):
         stray.unlink()
 
 
+def test_tier_zero_without_verdict_is_pass():
+    pre = {**_pre(), "tier": 0}
+    m = apply.merge(pre, None, None)
+    assert m["final"] == "pass" and m["agent_error"] is None
+    assert m["checks"]["3-3"] == {"result": "n/a", "detail": "Claude 단계 미실행(꼬리말 참고)"}
+    assert apply.merge({**_pre(), "tier": 1}, None, None)["final"] == "error"  # 등급 1 이상은 verdict가 있어야 한다
+
+
+def test_result_marks():
+    assert apply.result_mark("3-2", "pass", [False, True]) == "필요함"
+    assert apply.result_mark("4-1", "pass", [False, False]) == "필요없음"
+    assert apply.result_mark("4-1", "n/a") == "➖ 해당 없음"
+    assert apply.result_mark("4-1", "pass") == "미판단"  # 판단 대상과 맞는 verdict 심볼이 없음
+    assert apply.result_mark("3-2", "fail", [True]) == apply.NOTE_FAIL_MARK  # fail은 needs_test보다 먼저 보지 않음
+    assert apply.result_mark("6", "fail") == "❌ 보완 필요"
+    assert apply.result_mark("7", "fail") == "❌ 보완 필요"
+    assert apply.result_mark("4-2", "fail") == "❌ 실패"
+    assert apply.result_mark("6", "pass") == "✅ 통과"
+
+
+def _row(cid: str, mark: str) -> str:
+    return f"| {cid} | {CHECK_NAMES[cid]} | {mark} |"
+
+
+def test_render_comment_needs_test_marks():
+    ri = _ri({**_pre(), "targets": ["calc/ops.py::scale", "calc/ops.py::helper"]})
+    ri["symbols"].append(
+        {"file": "calc/ops.py", "name": "helper", "kind": "function", "change": "modified", "is_test": False}
+    )
+    v = copy.deepcopy(GOOD)
+    v["symbols"].append({"name": "helper", "file": "calc/ops.py", "needs_test": False, "reason": "이름만 바뀜"})
+    body = apply.render_comment(ri["pr"], ri, apply.merge(ri["precheck"], v, None), v)
+    assert _row("3-2", "필요함") in body  # 추가된 scale의 needs_test가 참
+    assert _row("4-1", "필요없음") in body  # 수정된 helper의 needs_test가 거짓
+    v["checks"][0] = {"id": "3-2", "result": "n/a"}
+    v["symbols"][0]["needs_test"] = False
+    v["symbols"][-1]["needs_test"] = True
+    body = apply.render_comment(ri["pr"], ri, apply.merge(ri["precheck"], v, None), v)
+    assert _row("3-2", "➖ 해당 없음") in body and _row("4-1", "필요함") in body
+
+
+def test_needs_test_flags_only_judgment_targets():
+    ri = _ri({**_pre(), "targets": ["calc/ops.py::scale"]})
+    ri["symbols"].append(
+        {
+            "file": "calc/ops.py",
+            "name": "doc_only",
+            "kind": "function",
+            "change": "added",
+            "is_test": False,
+            "docstring_only": True,
+        }
+    )
+    v = copy.deepcopy(GOOD)
+    v["symbols"] = [
+        {"name": "scale", "file": "calc/ops.py", "needs_test": False},  # 판단 대상
+        {"name": "test_x", "file": "tests/test_ops.py", "needs_test": True},  # 테스트 심볼
+        {"name": "ghost", "file": "calc/ops.py", "needs_test": True},  # review-input에 없는 심볼
+        {"name": "doc_only", "file": "calc/ops.py", "needs_test": True},  # docstring만 바뀐 심볼
+    ]
+    flags = apply.needs_test_flags("3-2", ri, v)
+    assert flags == [False]
+    assert apply.result_mark("3-2", "pass", flags) == "필요없음"
+    assert apply.needs_test_flags("4-1", ri, v) == []  # 수정된 판단 대상 없음
+    assert apply.needs_test_flags("3-2", _ri(_pre()), v) == []  # targets가 없으면 판단 대상도 없음
+
+
+def test_render_comment_note_fail_marks_for_6_and_7():
+    ri = _ri(_pre())
+    v = copy.deepcopy(GOOD)
+    v["checks"][5] = {"id": "7", "result": "fail", "detail": "반올림 위치"}
+    body = apply.render_comment(ri["pr"], ri, apply.merge(ri["precheck"], v, None), v)
+    assert _row("6", "❌ 보완 필요") in body and _row("7", "❌ 보완 필요") in body
+    assert _row("3-3", "❌ 실패") in body  # 반려로 이어지는 검사는 그대로 "실패"
+    assert "💬" not in body
+
+
+def test_render_comment_footer_tier_meaning():
+    reason = (
+        "판단 대상 심볼(테스트 외 추가·수정 심볼 중 docstring만 바뀐 것을 뺀 심볼) 1개(등급 1 기준 3개 이하), "
+        "테스트 외 Python 파일의 추가·삭제 줄 합 3줄(등급 1 기준 50줄 이하)"
+    )
+    ri = _ri({**_pre(), "tier": 1, "tier_reason": reason})
+    body = apply.render_comment(ri["pr"], ri, apply.merge(ri["precheck"], GOOD, None), GOOD)
+    assert f" · Claude 단계 실행 등급: 1(Claude 하나가 검사 항목을 모두 혼자 판단함. 이유: {reason}) · " in body
+    ri = _ri({**_pre(), "tier": 1})  # tier_reason이 없으면 이유를 빼고 적음
+    body = apply.render_comment(ri["pr"], ri, apply.merge(ri["precheck"], GOOD, None), GOOD)
+    assert " · Claude 단계 실행 등급: 1(Claude 하나가 검사 항목을 모두 혼자 판단함) · " in body
+    pre = _pre("reject", {"1": "pass", "2": "pass", "3-1": "fail", "5": "pass"}, [{"check": "3-1", "message": "x"}])
+    ri = _ri({**pre, "tier": 2})
+    body = apply.render_comment(ri["pr"], ri, apply.merge(ri["precheck"], None, None), None)
+    assert "Claude 단계 실행 등급" not in body  # 스크립트 검사 반려면 Claude 단계를 실행하지 않으므로 등급을 적지 않음
+
+
+def test_render_comment_footer_tier_two():
+    reason = (
+        "판단 대상 심볼(테스트 외 추가·수정 심볼 중 docstring만 바뀐 것을 뺀 심볼) 1개(등급 1 기준 3개 이하), "
+        "테스트 외 Python 파일의 추가·삭제 줄 합 3줄(등급 1 기준 50줄 이하), signature(인자와 반환 형식) 변경: scale"
+    )
+    ri = _ri({**_pre(), "tier": 2, "tier_reason": reason})
+    body = apply.render_comment(ri["pr"], ri, apply.merge(ri["precheck"], GOOD, None), GOOD)
+    assert (
+        " · Claude 단계 실행 등급: 2(검사 항목을 subagent 4개(미사용 코드 후보가 없으면 3개)에 나눠 맡김."
+        f" 이유: {reason}) · "
+    ) in body
+
+
+def test_render_comment_footer_tier_zero_once():
+    reason = "판단 대상 심볼(테스트 외 추가·수정 심볼 중 docstring만 바뀐 것을 뺀 심볼), 삭제된 심볼, 미사용 코드 후보가 모두 없음"
+    ri = _ri({**_pre(), "tier": 0, "tier_reason": reason})
+    body = apply.render_comment(ri["pr"], ri, apply.merge(ri["precheck"], None, None), None)
+    assert f" · Claude 단계 실행 등급: 0(Claude 단계를 실행하지 않음. 이유: {reason}) · " in body
+    assert body.count("Claude 단계를 실행하지 않음") == 1  # 등급의 뜻은 꼬리말에 한 번만
+    for cid in ("3-2", "3-3", "4-1", "4-2", "6", "7"):
+        assert _row(cid, "➖ 해당 없음 | Claude 단계 미실행(꼬리말 참고)") in body
+
+
+SUGG = {
+    "file": "calc/ops.py",
+    "start_line": 55,
+    "line": 56,
+    "replacement": "def scale(x: float) -> float:\n    return x\n",
+    "comment": "타입 힌트",
+}
+
+
+def test_validate_suggestions():
+    assert apply.validate_verdict({**GOOD, "suggestions": [SUGG]}) is None
+    assert validate({**GOOD, "suggestions": [SUGG]}, SCHEMA) == []
+    schema_expressible = [{**SUGG, "line": 0}, {**SUGG, "x": 1}, {k: v for k, v in SUGG.items() if k != "comment"}]
+    for bad in [*schema_expressible, {**SUGG, "start_line": 57}]:  # start_line > line 은 스크립트만 잡는다
+        v = {**GOOD, "suggestions": [bad]}
+        assert apply.validate_verdict(v) is not None
+        if bad in schema_expressible:
+            assert validate(v, SCHEMA) != []
+    assert apply.validate_verdict({**GOOD, "suggestions": [SUGG] * 6}) is not None
+
+
+def test_select_and_format_suggestions():
+    files = [{"path": "calc/ops.py", "changed_lines": [[50, 56]]}]
+    outside = {**SUGG, "start_line": 40, "line": 41}
+    kept, dropped = apply.select_suggestions({**GOOD, "suggestions": [SUGG, outside]}, files)
+    assert kept == [SUGG] and dropped == [outside]
+    c = apply.suggestion_comment(SUGG)
+    assert c["path"] == "calc/ops.py" and c["line"] == 56 and c["start_line"] == 55 and c["side"] == "RIGHT"
+    assert "```suggestion\ndef scale(x: float) -> float:\n    return x\n```" in c["body"]
+    single = apply.suggestion_comment({**SUGG, "start_line": None, "line": 55})
+    assert "start_line" not in single
+    ri = _ri(_pre())
+    body = apply.render_comment(ri["pr"], ri, apply.merge(ri["precheck"], GOOD, None), GOOD, (kept, dropped))
+    assert "### 수정 제안 (1건" in body and "변경 줄 밖이라 달지 않은 제안 1건" in body
+
+
+def test_override_body_keeps_previous_result_once():
+    prev = COMMENT_MARKER + "\n## 코드 검수 결과: 반려\n\n| # | ...\n"
+    b1 = apply.override_body(prev, "kim", "abcdef1234")
+    assert b1.startswith(COMMENT_MARKER + "\n" + apply.OVERRIDE_MARK)
+    assert "@kim" in b1 and "`abcdef1`" in b1 and "## 코드 검수 결과: 반려" in b1
+    assert "아래는 override 전 검수 결과임." in b1 and "결과다" not in b1
+    b2 = apply.override_body(b1, "lee", "9999999999")
+    assert b2.count(apply.OVERRIDE_MARK) == 1 and "@lee" in b2 and "@kim" not in b2 and "## 코드 검수 결과: 반려" in b2
+    assert "(이전 검수 결과 없음)" in apply.override_body(None, "kim", "abcdef1234")
+
+
+def test_docstring_only_symbol_is_labelled():
+    ri = _ri(_pre())
+    ri["symbols"][0]["docstring_only"] = True
+    body = apply.render_comment(ri["pr"], ri, apply.merge({**_pre(), "tier": 0}, None, None), None)
+    assert (
+        "| `scale` | calc/ops.py:55 | 함수 | 추가 | 해당 없음 | 해당 없음 | docstring만 변경 (판단 대상 아님) |" in body
+    )
+    assert _row("3-3", "➖ 해당 없음 | Claude 단계 미실행(꼬리말 참고)") in body  # 등급 0은 "➖ 미실행"이 아님
+
+
 def test_render_comment_dead_code_line_from_candidates():
     ri = _ri(_pre())
     ri["dead_code_candidates"]["candidates"] = [

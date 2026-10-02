@@ -104,3 +104,22 @@ def test_classify_on_fixture(collected: Path):
     assert ("calc/ops.py", "Calculator.push") not in by  # 바뀌지 않음
     assert ("calc/compat.py", "old_add") not in by  # 이름만 바뀐 파일은 심볼 변경 없음
     assert data["summary"]["kind_of_change"] == "mixed" and data["parse_errors"] == []
+
+
+def test_docstring_only_change():
+    before = (
+        'def f(a):\n    """old."""\n    return a\n\nclass C:\n    def m(self):\n        """x."""\n        return 1\n'
+    )
+    after = 'def f(a):\n    """new, longer."""\n    return a\n\nclass C:\n    def m(self):\n        """y."""\n        return 1\n'
+    syms, _, _ = cmp(before, after)
+    assert syms["f"]["change"] == "modified" and syms["f"]["docstring_only"] is True
+    assert syms["C"]["docstring_only"] is True and syms["C.m"]["docstring_only"] is True
+
+
+def test_docstring_plus_body_change_is_not_docstring_only():
+    syms, _, _ = cmp('def f(a):\n    """old."""\n    return a\n', 'def f(a):\n    """new."""\n    return a + 1\n')
+    assert syms["f"]["docstring_only"] is False
+    syms, _, _ = cmp("def f(a):\n    return a\n", 'def f(a):\n    """added."""\n    return a\n')
+    assert syms["f"]["docstring_only"] is True  # docstring 추가만 한 것
+    syms, _, _ = cmp(None, "def g():\n    pass\n")
+    assert syms["g"]["docstring_only"] is False  # 추가된 심볼

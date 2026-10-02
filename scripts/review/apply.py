@@ -4,7 +4,11 @@
 - 스크립트 판정이 우선이다. 1, 2, 3-1, 5는 precheck 값만 쓰고 agent가 같은 번호를 쓰면 verdict 전체를 무효로 본다.
 - 최종 판정: precheck가 reject이거나 agent의 3-3/4-2가 fail이면 reject, 아니면 pass.
   precheck는 continue인데 verdict.json이 없거나 무효면 error (Claude 단계 실패). 조용히 통과시키지 않는다.
+  precheck가 등급 0(판단 대상 없음)으로 Claude를 생략했으면 verdict 없이 pass.
 - PR comment는 첫 줄의 표식(<!-- everex-review -->)으로 찾아 같은 comment를 갱신한다. 라벨은 review/pass, review/reject.
+- verdict의 suggestions 는 변경 줄 안에 있는 것만 PR review의 inline 수정 제안(suggestion 블록)으로 단다.
+- --override <login>: 지정 리뷰어가 review/override 라벨로 판정을 뒤집은 경우. review-input 없이 기존 comment 앞에
+  override 표시를 붙이고 라벨을 review/override 로 바꾼다. 게이트를 통과시킨다.
 - --gate true 이고 reject/error면 종료 코드 1로 check를 실패시킨다. --dry-run 이면 GitHub에 쓰지 않고 out/review-comment.md만 만든다.
 """
 
@@ -38,9 +42,16 @@ from common import (  # noqa: E402
     tree_state,
 )
 
-VERDICT_KO = {"pass": "통과", "reject": "반려", "error": "오류"}
-LABELS = {"pass": ("review/pass", "0E8A16"), "reject": ("review/reject", "B60205")}
-MAX_STR = {"detail": 500, "reason": 500, "evidence": 500, "comment": 1000, "request": 500}
+VERDICT_KO = {"pass": "통과", "reject": "반려", "error": "오류", "override": "통과 (리뷰어 override)"}
+LABELS = {
+    "pass": ("review/pass", "0E8A16"),
+    "reject": ("review/reject", "B60205"),
+    "override": ("review/override", "FBCA04"),
+}
+MAX_STR = {"detail": 500, "reason": 500, "evidence": 500, "comment": 1000, "request": 500, "replacement": 2000}
+MAX_SUGGESTIONS = 5
+OVERRIDE_MARK = "<!-- everex-review-override -->"
+SUGGESTION_MARK = "<!-- everex-review-suggestion -->"
 # 꼬리말에 나가는 검사 묶음 이름. 꼬리말은 검사 표 뒤에 있으므로 검사 ID가 검사 표의 # 칸임을 함께 적는다
 SCRIPT_STAGE = f"스크립트 검사(검사 표의 {', '.join(SCRIPT_CHECKS)}번)"
 # 꼬리말에 코드값 대신 나가는 표시 이름. precheck 판정, ruff 설정 출처, pytest 결과
@@ -53,6 +64,16 @@ PYTEST_KO = {
     "none": "수집된 테스트 없음",
     "skipped": "건너뜀",
 }
+# 등급 0(Claude 단계 생략)일 때 agent 검사의 내용 칸. 등급의 뜻과 이유는 꼬리말에 한 번만 적는다
+TIER0_NOTE = "Claude 단계 미실행(꼬리말 참고)"
+# 꼬리말에 등급 숫자와 함께 나가는 등급의 동작. 등급을 정하는 조건은 precheck.py의 compute_tier
+TIER_KO = {
+    0: "Claude 단계를 실행하지 않음",
+    1: "Claude 하나가 검사 항목을 모두 혼자 판단함",
+    2: "검사 항목을 subagent 4개(미사용 코드 후보가 없으면 3개)에 나눠 맡김",
+}
+# 3-2(추가 코드), 4-1(수정 코드)이 판단하는 심볼의 변경 구분(classify.py의 change)
+NEEDS_TEST_CHANGE = {"3-2": "added", "4-1": "modified"}
 
 
 # ---------- 검증 ----------
@@ -77,7 +98,7 @@ def validate_verdict(v: object) -> str | None:
     missing = required - set(v)
     if missing:
         return "필수 키 누락: " + ", ".join(sorted(missing))
-    extra = set(v) - required
+    extra = set(v) - required - {"suggestions"}
     if extra:
         return "허용되지 않는 키: " + ", ".join(sorted(extra))
     if v["verdict"] not in ("pass", "reject"):
@@ -144,6 +165,23 @@ def validate_verdict(v: object) -> str | None:
     for i, r in enumerate(v["requests"]):
         if not isinstance(r, str) or len(r) > MAX_STR["request"]:
             return f"requests[{i}] 는 {MAX_STR['request']}자 이하 문자열이어야 함"
+
+    sugg = v.get("suggestions", [])
+    if not isinstance(sugg, list) or len(sugg) > MAX_SUGGESTIONS:
+        return f"suggestions 는 {MAX_SUGGESTIONS}개 이하 배열이어야 함"
+    for i, g in enumerate(sugg):
+        where = f"suggestions[{i}]"
+        allowed = {"file", "start_line", "line", "replacement", "comment"}
+        if not isinstance(g, dict) or set(g) - allowed or not {"file", "line", "replacement", "comment"} <= set(g):
+            return f"{where} 형식 오류 (file, line, replacement, comment 필수, start_line 선택)"
+        if not isinstance(g["line"], int) or g["line"] < 1:
+            return f"{where}.line 은 1 이상의 정수여야 함"
+        start = g.get("start_line")
+        if start is not None and (not isinstance(start, int) or not 1 <= start <= g["line"]):
+            return f"{where}.start_line 은 1 이상 line 이하의 정수여야 함"
+        for k in ("replacement", "comment"):
+            if err := _check_str(g, k, MAX_STR[k], where, required=True):
+                return err
     return None
 
 
@@ -171,6 +209,10 @@ def merge(precheck: dict, verdict: dict | None, verdict_error: str | None) -> di
         final = "reject"
         if verdict is None:
             agent_error = "스크립트 검사 반려로 agent 검사를 실행하지 않음(아래 검사 표에서 ➖ 미실행으로 표시)"
+    elif precheck.get("tier") == 0 and verdict is None and not verdict_error:
+        final = "pass"
+        for cid in AGENT_CHECKS:
+            checks[cid]["detail"] = TIER0_NOTE
     elif verdict is None or verdict_error:
         final = "error"
         if verdict_error:
@@ -202,6 +244,62 @@ def merge(precheck: dict, verdict: dict | None, verdict_error: str | None) -> di
 
 
 # ---------- 렌더링 ----------
+
+
+def needs_test_flags(cid: str, ri: dict, verdict: dict | None) -> list[bool]:
+    """3-2, 4-1이 판단한 심볼마다 테스트가 필요한지(verdict.json의 `symbols[].needs_test`)를 모은다.
+
+    Args:
+        cid: 검사 ID. 3-2는 추가된 심볼, 4-1은 수정된 심볼을 모은다.
+        ri: precheck가 만든 review-input. 판단 대상(`precheck.targets`)과 심볼의 변경 구분(`symbols[].change`)을
+            여기서 찾는다.
+        verdict: agent 출력. 없으면 빈 목록을 돌려준다.
+
+    Returns:
+        판단 대상이면서 변경 구분이 맞는 심볼별 `needs_test` 값. 3-2, 4-1이 아니거나 그런 심볼이 없으면 빈 목록.
+    """
+    change = NEEDS_TEST_CHANGE.get(cid)
+    if change is None or verdict is None:
+        return []
+    targets = set(ri["precheck"].get("targets", []))
+    keys = {
+        (s["file"], s["name"])
+        for s in ri.get("symbols", [])
+        if s["change"] == change and not s["is_test"] and f"{s['file']}::{s['name']}" in targets
+    }
+    return [s["needs_test"] for s in verdict.get("symbols", []) if (s["file"], s["name"]) in keys]
+
+
+def result_mark(cid: str, result: str, needs_test: list[bool] | None = None) -> str:
+    """검사 표의 결과 칸 표시를 만든다.
+
+    3-2, 4-1은 테스트 필요 여부를 판단하는 검사라, 판단한 심볼 중 하나라도 테스트가 필요하면 "필요함",
+    모두 필요 없으면 "필요없음"으로 적는다. pass인데 판단한 심볼이 없으면 변경 심볼 표와 같은 말로 "미판단"이라 적는다.
+    반려로 이어지지 않는 검사(3-2, 4-1, 6, 7)의 fail은 반려로 이어지는 "실패"와 구분해 "보완 필요"로 적는다.
+
+    Args:
+        cid: 검사 ID.
+        result: 검사 결과(pass, fail, n/a).
+        needs_test: 3-2, 4-1이 판단한 심볼별 `needs_test` 값(`needs_test_flags`의 결과). 다른 검사는 비운다.
+
+    Returns:
+        결과 칸에 적을 표시.
+    """
+    if cid in NEEDS_TEST_CHANGE and result == "pass":
+        if not needs_test:
+            return "미판단"
+        return "필요함" if any(needs_test) else "필요없음"
+    if result == "fail" and cid not in REJECT_CHECKS:
+        return NOTE_FAIL_MARK
+    return RESULT_MARK.get(result, result)
+
+
+def _tier_text(tier: int, reason: str | None) -> str:
+    """꼬리말의 Claude 단계 실행 등급. 등급 숫자 뒤 괄호에 등급의 동작과 precheck가 적은 이유를 적는다."""
+    parts = [TIER_KO[tier]] if tier in TIER_KO else []
+    if reason:
+        parts.append(f"이유: {reason}")
+    return f"{tier}({'. '.join(parts)})" if parts else str(tier)
 
 
 def _cell(s: object) -> str:
@@ -270,7 +368,9 @@ def _dead_code_loc(d: dict, ri: dict) -> str:
     return d["file"]
 
 
-def render_comment(pr: dict, ri: dict, merged: dict, verdict: dict | None) -> str:
+def render_comment(
+    pr: dict, ri: dict, merged: dict, verdict: dict | None, suggestions: tuple[list, list] | None = None
+) -> str:
     """PR comment 본문(markdown)을 고정 구조로 만든다. 첫 줄은 갱신용 표식이다.
 
     판정 줄 다음에 판정의 이유(반려 사유, agent 검사 오류)를 먼저 적고, 검사 표와 세부 내용을 그 뒤에 적는다.
@@ -297,10 +397,9 @@ def render_comment(pr: dict, ri: dict, merged: dict, verdict: dict | None) -> st
     lines += ["| # | 검사 | 결과 | 내용 |", "|---|---|---|---|"]
     for cid, name in CHECK_NAMES.items():
         c = m["checks"][cid]
-        mark, detail = RESULT_MARK.get(c["result"], c["result"]), c["detail"]
-        if c["result"] == "fail" and cid not in REJECT_CHECKS:
-            mark = NOTE_FAIL_MARK
-        if verdict is None and cid in AGENT_CHECKS:  # 대상이 없어 해당 없음인 것과 구분한다
+        mark, detail = result_mark(cid, c["result"], needs_test_flags(cid, ri, verdict)), c["detail"]
+        # 대상이 없어 해당 없음인 것과 구분한다. 통과인데 verdict가 없으면 등급 0이라 Claude 단계를 생략한 경우다
+        if verdict is None and cid in AGENT_CHECKS and m["final"] != "pass":
             mark, detail = ("➖ 결과 없음", "") if m["final"] == "error" else ("➖ 미실행", "")
         elif cid in SCRIPT_CHECKS and c["result"] == "pass" and not detail:
             detail = _script_pass_detail(cid, ri)
@@ -320,6 +419,8 @@ def render_comment(pr: dict, ri: dict, merged: dict, verdict: dict | None) -> st
             a = agent_by_key.get((s["file"], s["name"]))
             need, found = _test_cells(a)
             evid = "" if a is None else _evidence_cell(a)
+            if a is None and s.get("docstring_only"):
+                need, found, evid = "해당 없음", "해당 없음", "docstring만 변경 (판단 대상 아님)"
             loc = f"{s['file']}:{s['lines'][0]}" if s.get("lines") else s["file"]
             kind = KIND_KO.get(s["kind"], s["kind"])
             change = CHANGE_KO.get(s["change"], s["change"])
@@ -341,6 +442,15 @@ def render_comment(pr: dict, ri: dict, merged: dict, verdict: dict | None) -> st
             lines.append(f"- {loc}: {d['comment']}")
         lines.append("")
 
+    kept, dropped = suggestions or ([], [])
+    if kept or dropped:
+        lines += [f"### 수정 제안 ({len(kept)}건, 코드 줄에 inline으로 달았음)"]
+        for g in kept:
+            lines.append(f"- {g['file']}:{g.get('start_line') or g['line']}-{g['line']}: {g['comment']}")
+        if dropped:
+            lines.append(f"- 변경 줄 밖이라 달지 않은 제안 {len(dropped)}건")
+        lines.append("")
+
     reqs = (verdict or {}).get("requests", [])
     if reqs:
         lines += ["### 요청"]
@@ -350,11 +460,11 @@ def render_comment(pr: dict, ri: dict, merged: dict, verdict: dict | None) -> st
 
     pre = ri["precheck"]["verdict"]
     lint = ri["lint"].get("config")
-    foot = [
-        f"{SCRIPT_STAGE} 판정: {PRECHECK_KO.get(pre, pre)}",
-        f"ruff 설정: {LINT_CONFIG_KO.get(lint, lint)}",
-        f"pytest: {_pytest_text(ri['tests'])}",
-    ]
+    tier = ri["precheck"].get("tier")
+    foot = [f"{SCRIPT_STAGE} 판정: {PRECHECK_KO.get(pre, pre)}"]
+    if pre == "continue" and tier is not None:  # 스크립트 검사 반려면 등급과 관계없이 Claude 단계를 실행하지 않는다
+        foot.append(f"Claude 단계 실행 등급: {_tier_text(tier, ri['precheck'].get('tier_reason'))}")
+    foot += [f"ruff 설정: {LINT_CONFIG_KO.get(lint, lint)}", f"pytest: {_pytest_text(ri['tests'])}"]
     if url := run_url():
         foot.append(f"실행 로그: {url}")
     lines += ["---", " · ".join(foot)]
@@ -399,7 +509,7 @@ def upsert_comment(slug: str, number: int, body: str, repo: Path) -> str:
 
 
 def set_labels(slug: str, number: int, final: str, repo: Path) -> None:
-    """review/pass, review/reject 라벨을 만들고(있으면 유지) 최종 판정에 맞게 붙이고 뗀다."""
+    """review/pass, review/reject, review/override 라벨을 만들고(있으면 유지) 최종 판정의 것만 남긴다."""
     if final not in LABELS:
         return
     for name, color in LABELS.values():
@@ -429,6 +539,80 @@ def set_labels(slug: str, number: int, final: str, repo: Path) -> None:
         log("apply", f"라벨 변경 실패: {r.err.strip()[:200]}")
 
 
+def select_suggestions(verdict: dict | None, files: list[dict]) -> tuple[list[dict], list[dict]]:
+    """변경 줄 안에 있는 제안만 남긴다. GitHub는 diff 밖 줄에 inline comment를 달 수 없다. (남긴 것, 버린 것)을 돌려준다."""
+    changed = {f["path"]: f["changed_lines"] for f in files}
+    kept: list[dict] = []
+    dropped: list[dict] = []
+    for g in (verdict or {}).get("suggestions", []):
+        start = g.get("start_line") or g["line"]
+        ranges = changed.get(g["file"], [])
+        inside = any(a <= start and g["line"] <= b for a, b in ranges)
+        (kept if inside else dropped).append(g)
+    return kept, dropped
+
+
+def suggestion_comment(g: dict) -> dict:
+    """PR review API의 inline comment 한 개."""
+    body = f"{g['comment']}\n\n```suggestion\n{g['replacement'].rstrip(chr(10))}\n```\n{SUGGESTION_MARK}"
+    c = {"path": g["file"], "line": g["line"], "side": "RIGHT", "body": body}
+    if g.get("start_line") and g["start_line"] < g["line"]:
+        c["start_line"] = g["start_line"]
+        c["start_side"] = "RIGHT"
+    return c
+
+
+def post_suggestions(slug: str, number: int, head_sha: str, kept: list[dict], repo: Path) -> int:
+    """수정 제안을 PR review(COMMENT) 하나로 단다. 같은 위치, 같은 내용은 다시 달지 않는다. 단 개수를 돌려준다."""
+    if not kept:
+        return 0
+    existing = gh_json(["api", f"repos/{slug}/pulls/{number}/comments", "--paginate"], cwd=repo) or []
+    seen = {(c.get("path"), c.get("line"), c.get("body")) for c in existing}
+    comments = [c for c in map(suggestion_comment, kept) if (c["path"], c["line"], c["body"]) not in seen]
+    if not comments:
+        return 0
+    payload = {"commit_id": head_sha, "event": "COMMENT", "body": "everex-review 수정 제안", "comments": comments}
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tf:
+        json.dump(payload, tf, ensure_ascii=False)
+        path = tf.name
+    try:
+        gh_json(["api", "-X", "POST", f"repos/{slug}/pulls/{number}/reviews", "--input", path], cwd=repo)
+    finally:
+        os.unlink(path)
+    return len(comments)
+
+
+def override_body(previous: str | None, login: str, head_sha: str) -> str:
+    """기존 검수 comment 앞에 override 표시를 붙인다. 이전 override 표시는 지운다 (여러 번 해도 하나만 남는다)."""
+    banner = [
+        OVERRIDE_MARK,
+        f"> ✋ 리뷰어 @{login} 이(가) commit `{head_sha[:7]}`의 검수 판정을 override함"
+        "(review/override 라벨로 판정을 통과로 바꿈). 아래는 override 전 검수 결과임.",
+        "",
+    ]
+    rest = (previous or "").split("\n")
+    if rest and rest[0] == COMMENT_MARKER:
+        rest = rest[1:]
+    if rest and rest[0] == OVERRIDE_MARK:
+        rest = rest[3:]
+    if not "".join(rest).strip():
+        rest = ["(이전 검수 결과 없음)"]
+    return "\n".join([COMMENT_MARKER, *banner, *rest]).rstrip("\n") + "\n"
+
+
+def find_review_comment(slug: str, number: int, repo: Path) -> dict | None:
+    """표식으로 시작하는 검수 comment. 없으면 None."""
+    comments = gh_json(["api", f"repos/{slug}/issues/{number}/comments", "--paginate"], cwd=repo) or []
+    return next((c for c in comments if (c.get("body") or "").startswith(COMMENT_MARKER)), None)
+
+
+def apply_override(slug: str, number: int, login: str, head_sha: str, repo: Path) -> None:
+    """override 표시를 comment에 붙이고 라벨을 review/override 로 바꾼다."""
+    prev = find_review_comment(slug, number, repo)
+    upsert_comment(slug, number, override_body(prev["body"] if prev else None, login, head_sha), repo)
+    set_labels(slug, number, "override", repo)
+
+
 def main() -> None:
     """CLI 진입점."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -445,6 +629,11 @@ def main() -> None:
         action="store_true",
         help="작업 트리에 변경이 있으면(agent가 repo 파일을 고쳤으면) verdict를 버리고 error 로 처리한다. CI에서 켠다",
     )
+    ap.add_argument(
+        "--override",
+        default="",
+        help="이 리뷰어의 override를 반영한다 (검수 대신). PR 정보는 GITHUB_EVENT_PATH 에서 읽는다",
+    )
     ap.add_argument("--summary", default=os.environ.get("GITHUB_STEP_SUMMARY", ""))
     a = ap.parse_args()
 
@@ -452,6 +641,20 @@ def main() -> None:
     work = resolve_work(repo, a.work)
     ctx, out = work / "ctx", work / "out"
     gate = str(a.gate).lower() == "true"
+
+    if a.override:
+        from collect import pr_meta_from_event
+
+        pr = pr_meta_from_event(Path(os.environ["GITHUB_EVENT_PATH"]))
+        slug = a.repo_slug or pr["repo_slug"]
+        apply_override(slug, pr["number"], a.override, pr["head_sha"], repo)
+        log("apply", f"override 반영: @{a.override}, commit {pr['head_sha'][:7]}, label review/override")
+        summ = Summary(a.summary)
+        summ.add("| PR | 판정 | 비고 |")
+        summ.add("|---|---|---|")
+        summ.add(f"| #{pr['number']} | {VERDICT_KO['override']} | @{a.override} |")
+        summ.flush()
+        return
 
     ri = load_json(ctx / "review-input.json")
     if not isinstance(ri, dict):
@@ -469,7 +672,8 @@ def main() -> None:
         log("apply", verdict_error)
         verdict = None
     merged = merge(ri["precheck"], verdict, verdict_error)
-    body = render_comment(pr, ri, merged, verdict)
+    sugg = select_suggestions(verdict, ri.get("files", []))
+    body = render_comment(pr, ri, merged, verdict, sugg)
     out.mkdir(parents=True, exist_ok=True)
     (out / "review-comment.md").write_text(body, encoding="utf-8")
     log("apply", f"최종 판정 {merged['final']} (반려 사유 {len(merged['reasons'])}건) -> {out / 'review-comment.md'}")
@@ -484,6 +688,12 @@ def main() -> None:
     else:
         posted = upsert_comment(slug, number, body, repo)
         set_labels(slug, number, merged["final"], repo)
+        try:
+            n = post_suggestions(slug, number, pr.get("head_sha") or "", sugg[0], repo)
+            if n:
+                log("apply", f"수정 제안 {n}건을 inline으로 닮")
+        except RuntimeError as e:  # 제안은 부가 기능이라 실패해도 판정 반영은 유지한다
+            log("apply", f"수정 제안 게시 실패: {e}")
         if gate and a.request_changes and merged["final"] == "reject":
             run(
                 [

@@ -74,6 +74,23 @@
       "description": "작성자에게 요청할 것. comment의 '요청' 번호 목록으로 들어간다.",
       "type": "array",
       "items": { "type": "string", "maxLength": 500 }
+    },
+    "suggestions": {
+      "description": "선택. 변경 줄 안의 작은 수정 제안 (최대 5개). apply.py가 PR review의 inline suggestion으로 단다. 변경 줄 밖이면 버린다.",
+      "type": "array",
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "required": ["file", "line", "replacement", "comment"],
+        "additionalProperties": false,
+        "properties": {
+          "file": { "type": "string" },
+          "start_line": { "type": "integer", "minimum": 1, "description": "여러 줄이면 시작 줄 (변경 후 파일 기준)" },
+          "line": { "type": "integer", "minimum": 1, "description": "끝 줄 (변경 후 파일 기준)" },
+          "replacement": { "type": "string", "maxLength": 2000, "description": "start_line~line 을 통째로 대신할 새 코드" },
+          "comment": { "type": "string", "maxLength": 1000 }
+        }
+      }
     }
   }
 }

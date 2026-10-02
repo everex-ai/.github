@@ -1,0 +1,6 @@
+{
+  "name": "Everex PR review override",
+  "description": "지정 리뷰어가 review/override 라벨로 PR 검수 판정을 뒤집을 때 처리한다. Everex PR review와 같이 설치한다.",
+  "iconName": "octicon-code-review",
+  "categories": ["Python"]
+}
