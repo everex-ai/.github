@@ -130,10 +130,11 @@ def cmd_handle_label(a: argparse.Namespace) -> None:
     reviewers = parse_reviewers(a.reviewers)
     if a.sender.lower() not in reviewers:
         remove_label(a.repo_slug, a.pr)
-        who = ", ".join(f"@{r}" for r in sorted(reviewers)) or "(지정된 리뷰어 없음)"
+        who = ", ".join(f"@{r}" for r in sorted(reviewers)) or "없음"
         msg = (
-            f"@{a.sender} 님은 {LABEL} 권한이 없어 라벨을 뗐습니다. override는 지정 리뷰어만 할 수 있습니다: {who}. "
-            "판정에 이의가 있으면 검수 comment에 근거를 남기고 리뷰어에게 요청해 주세요."
+            f"@{a.sender} 님은 지정 리뷰어가 아니라 {LABEL} 라벨을 뗌. "
+            f"override(라벨로 검수 판정을 통과로 바꾸는 것)는 지정 리뷰어만 할 수 있음(지정 리뷰어: {who}). "
+            "판정에 이의가 있으면 검수 comment에 근거를 남기고 지정 리뷰어에게 요청 필요."
         )
         run(["gh", "pr", "comment", str(a.pr), "--repo", a.repo_slug, "--body", msg])
         log("override", f"@{a.sender} 는 지정 리뷰어가 아니라 라벨을 뗌")

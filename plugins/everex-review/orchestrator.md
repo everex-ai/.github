@@ -10,7 +10,7 @@
 
 ## 작성 규칙
 
-verdict.json의 문장(`checks[].detail`, `symbols[].reason`, `symbols[].evidence`, `dead_code[].reason`, `design[].comment`, `requests[]`)은 PR 검수 comment에 그대로 들어간다. subagent 결과를 옮길 때도 아래 규칙에 맞춘다.
+verdict.json의 문장(`checks[].detail`, `symbols[].reason`, `symbols[].evidence`, `dead_code[].reason`, `design[].comment`, `suggestions[].comment`, `requests[]`)은 PR 검수 comment에 그대로 들어간다. `suggestions[].comment`는 inline 수정 제안에도 들어간다. subagent 결과를 옮길 때도 아래 규칙에 맞춘다.
 - 사실에는 근거를 붙인다. 근거는 파일:줄(예: `calc/ops.py:55`) 또는 실행한 검사(ruff 규칙 코드, pytest 테스트 ID)다.
 - 코드를 읽고 추론한 문장은 앞에 "추정:"을 붙인다. 예: "추정: 공개 API임(`calc/__init__.py:3`에서 export)"
 - 측정하거나 계산한 수치에는 무엇의 값인지(대상), 데이터, 계산 방법을 함께 적는다. 근거에 없는 수치는 만들지 않는다.
@@ -68,7 +68,7 @@ subagent 출력이 JSON이 아니거나 심볼이 빠져 있으면 그 subagent�
 - 4-2 (수정 코드): 수정 심볼에 대해 같은 방식.
 - 6: `dead_code[]`에 확인 결과 (`line`, `added_in_pr` 같은 추가 필드는 뺀다). `confirmed`가 true인 것이 있으면 `fail`, 없으면 `pass`. detail에 "미사용: a, b"처럼 confirmed 이름. 줄 번호는 apply.py가 후보 목록에서 찾아 comment에 붙인다.
 - 7: `design[]`에 의견 (`severity`는 comment 앞에 `[중요도 높음] `, `[중요도 보통] `, `[중요도 낮음] `처럼 한국어로 붙이고 필드는 뺀다). 있으면 `fail`, 없으면 `pass`.
-- `suggestions[]` (선택, 최대 5개): 변경 줄 안의 작고 구체적인 수정만. `{file, start_line, line, replacement, comment}`. `replacement`는 변경 후 파일의 `start_line`~`line` 줄을 통째로 대신할 새 코드이고 들여쓰기까지 정확해야 한다. 확신이 없으면 넣지 않는다. 반려 사유(테스트 추가)는 제안으로 만들지 않는다.
+- `suggestions[]` (선택, 최대 5개): 변경 줄 안의 작고 구체적인 수정만. `{file, start_line, line, replacement, comment}`. `replacement`는 변경 후 파일의 `start_line`부터 `line`까지의 줄을 통째로 대신할 새 코드이고 들여쓰기까지 정확해야 한다. 확신이 없으면 넣지 않는다. 반려 사유(테스트 추가)는 제안으로 만들지 않는다.
 - `checks`에는 3-2, 3-3, 4-1, 4-2, 6, 7 여섯 개만 넣는다. 1, 2, 3-1, 5는 스크립트가 판정하므로 넣으면 안 된다.
 - `verdict`: 3-3 또는 4-2가 `fail`이면 `reject`, 아니면 `pass`. 6과 7은 판정에 영향을 주지 않는다.
 - `requests[]`: 작성자가 해야 할 일을 항목당 한 줄로, "필요"로 맺고 파일:줄을 붙인다. 반려 사유(테스트 추가)를 먼저, 그다음 미사용 코드 제거, 설계 의견 순.

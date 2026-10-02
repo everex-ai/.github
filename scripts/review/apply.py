@@ -64,6 +64,16 @@ PYTEST_KO = {
     "none": "수집된 테스트 없음",
     "skipped": "건너뜀",
 }
+# 등급 0(Claude 단계 생략)의 뜻. agent 검사의 내용 칸과 꼬리말의 등급에 같은 문구로 나간다
+TIER0_NOTE = "판단할 심볼, 삭제된 심볼, 미사용 코드 후보가 없어 Claude 판단 단계를 실행하지 않음"
+# 꼬리말에 등급 숫자 대신 나가는 뜻. 등급 정의는 precheck.py의 compute_tier
+TIER_KO = {
+    0: f"0({TIER0_NOTE})",
+    1: "1(작은 변경이라 Claude 하나가 혼자 판단함)",
+    2: "2(큰 변경이라 Claude가 검사 항목별 subagent(하위 agent)에 나눠 맡김)",
+}
+# 3-2(추가 코드), 4-1(수정 코드)이 판단하는 심볼의 변경 구분(classify.py의 change)
+NEEDS_TEST_CHANGE = {"3-2": "added", "4-1": "modified"}
 
 
 # ---------- 검증 ----------
@@ -202,7 +212,7 @@ def merge(precheck: dict, verdict: dict | None, verdict_error: str | None) -> di
     elif precheck.get("tier") == 0 and verdict is None and not verdict_error:
         final = "pass"
         for cid in AGENT_CHECKS:
-            checks[cid]["detail"] = "판단 대상 없음 (Claude 단계 생략)"
+            checks[cid]["detail"] = TIER0_NOTE
     elif verdict is None or verdict_error:
         final = "error"
         if verdict_error:
@@ -236,10 +246,41 @@ def merge(precheck: dict, verdict: dict | None, verdict_error: str | None) -> di
 # ---------- 렌더링 ----------
 
 
-def result_mark(cid: str, result: str) -> str:
-    """검사 표의 결과 칸. 3-2/4-1은 판단 결과라 '판단 완료', 반려로 이어지지 않는 검사의 fail은 '보완 필요'로 쓴다."""
-    if cid in ("3-2", "4-1") and result == "pass":
-        return "✅ 판단 완료"
+def needs_test_flags(cid: str, ri: dict, verdict: dict | None) -> list[bool]:
+    """3-2, 4-1이 판단한 심볼마다 테스트가 필요한지(verdict.json의 `symbols[].needs_test`)를 모은다.
+
+    Args:
+        cid: 검사 ID. 3-2는 추가된 심볼, 4-1은 수정된 심볼을 모은다.
+        ri: precheck가 만든 review-input. 심볼의 변경 구분(`symbols[].change`)을 여기서 찾는다.
+        verdict: agent 출력. 없으면 빈 목록을 돌려준다.
+
+    Returns:
+        심볼별 `needs_test` 값. 3-2, 4-1이 아니거나 판단한 심볼이 없으면 빈 목록.
+    """
+    change = NEEDS_TEST_CHANGE.get(cid)
+    if change is None or verdict is None:
+        return []
+    keys = {(s["file"], s["name"]) for s in ri.get("symbols", []) if s["change"] == change and not s["is_test"]}
+    return [s["needs_test"] for s in verdict.get("symbols", []) if (s["file"], s["name"]) in keys]
+
+
+def result_mark(cid: str, result: str, needs_test: list[bool] | None = None) -> str:
+    """검사 표의 결과 칸 표시를 만든다.
+
+    3-2, 4-1은 테스트 필요 여부를 판단하는 검사라, 판단한 심볼 중 하나라도 테스트가 필요하면 "필요함",
+    모두 필요 없으면 "필요없음"으로 적는다. 판단한 심볼이 없으면 다른 검사와 같은 표시를 쓴다.
+    반려로 이어지지 않는 검사(3-2, 4-1, 6, 7)의 fail은 반려로 이어지는 "실패"와 구분해 "보완 필요"로 적는다.
+
+    Args:
+        cid: 검사 ID.
+        result: 검사 결과(pass, fail, n/a).
+        needs_test: 3-2, 4-1이 판단한 심볼별 `needs_test` 값(`needs_test_flags`의 결과). 다른 검사는 비운다.
+
+    Returns:
+        결과 칸에 적을 표시.
+    """
+    if cid in NEEDS_TEST_CHANGE and result == "pass" and needs_test:
+        return "필요함" if any(needs_test) else "필요없음"
     if result == "fail" and cid not in REJECT_CHECKS:
         return NOTE_FAIL_MARK
     return RESULT_MARK.get(result, result)
@@ -340,7 +381,7 @@ def render_comment(
     lines += ["| # | 검사 | 결과 | 내용 |", "|---|---|---|---|"]
     for cid, name in CHECK_NAMES.items():
         c = m["checks"][cid]
-        mark, detail = result_mark(cid, c["result"]), c["detail"]
+        mark, detail = result_mark(cid, c["result"], needs_test_flags(cid, ri, verdict)), c["detail"]
         # 대상이 없어 해당 없음인 것과 구분한다. 통과인데 verdict가 없으면 등급 0이라 Claude 단계를 생략한 경우다
         if verdict is None and cid in AGENT_CHECKS and m["final"] != "pass":
             mark, detail = ("➖ 결과 없음", "") if m["final"] == "error" else ("➖ 미실행", "")
@@ -363,7 +404,7 @@ def render_comment(
             need, found = _test_cells(a)
             evid = "" if a is None else _evidence_cell(a)
             if a is None and s.get("docstring_only"):
-                need, evid = "-", "docstring만 변경 (판단 대상 아님)"
+                need, found, evid = "해당 없음", "해당 없음", "docstring만 변경 (판단 대상 아님)"
             loc = f"{s['file']}:{s['lines'][0]}" if s.get("lines") else s["file"]
             kind = KIND_KO.get(s["kind"], s["kind"])
             change = CHANGE_KO.get(s["change"], s["change"])
@@ -403,9 +444,10 @@ def render_comment(
 
     pre = ri["precheck"]["verdict"]
     lint = ri["lint"].get("config")
+    tier = ri["precheck"].get("tier")
     foot = [f"{SCRIPT_STAGE} 판정: {PRECHECK_KO.get(pre, pre)}"]
-    if "tier" in ri["precheck"]:
-        foot.append(f"등급: {ri['precheck']['tier']}")
+    if pre == "continue" and tier is not None:  # 스크립트 검사 반려면 등급과 관계없이 Claude 단계를 실행하지 않는다
+        foot.append(f"PR 크기 등급: {TIER_KO.get(tier, tier)}")
     foot += [f"ruff 설정: {LINT_CONFIG_KO.get(lint, lint)}", f"pytest: {_pytest_text(ri['tests'])}"]
     if url := run_url():
         foot.append(f"실행 로그: {url}")
@@ -528,7 +570,8 @@ def override_body(previous: str | None, login: str, head_sha: str) -> str:
     """기존 검수 comment 앞에 override 표시를 붙인다. 이전 override 표시는 지운다 (여러 번 해도 하나만 남는다)."""
     banner = [
         OVERRIDE_MARK,
-        f"> ✋ 리뷰어 @{login} 이(가) commit `{head_sha[:7]}` 의 판정을 override함. 아래는 override 전 검수 결과다.",
+        f"> ✋ 리뷰어 @{login} 이(가) commit `{head_sha[:7]}`의 검수 판정을 override함"
+        "(review/override 라벨로 판정을 통과로 바꿈). 아래는 override 전 검수 결과임.",
         "",
     ]
     rest = (previous or "").split("\n")

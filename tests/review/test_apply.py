@@ -320,15 +320,63 @@ def test_tier_zero_without_verdict_is_pass():
     pre = {**_pre(), "tier": 0}
     m = apply.merge(pre, None, None)
     assert m["final"] == "pass" and m["agent_error"] is None
-    assert m["checks"]["3-3"] == {"result": "n/a", "detail": "판단 대상 없음 (Claude 단계 생략)"}
+    assert m["checks"]["3-3"] == {
+        "result": "n/a",
+        "detail": "판단할 심볼, 삭제된 심볼, 미사용 코드 후보가 없어 Claude 판단 단계를 실행하지 않음",
+    }
     assert apply.merge({**_pre(), "tier": 1}, None, None)["final"] == "error"  # 등급 1 이상은 verdict가 있어야 한다
 
 
 def test_result_marks():
-    assert apply.result_mark("4-1", "pass") == "✅ 판단 완료"
+    assert apply.result_mark("3-2", "pass", [False, True]) == "필요함"
+    assert apply.result_mark("4-1", "pass", [False, False]) == "필요없음"
+    assert apply.result_mark("4-1", "n/a") == "➖ 해당 없음"
+    assert apply.result_mark("4-1", "pass") == "✅ 통과"  # 판단한 심볼이 없으면 다른 검사와 같은 표시
+    assert apply.result_mark("6", "fail") == "❌ 보완 필요"
     assert apply.result_mark("7", "fail") == "❌ 보완 필요"
     assert apply.result_mark("4-2", "fail") == "❌ 실패"
     assert apply.result_mark("6", "pass") == "✅ 통과"
+
+
+def _row(cid: str, mark: str) -> str:
+    return f"| {cid} | {CHECK_NAMES[cid]} | {mark} |"
+
+
+def test_render_comment_needs_test_marks():
+    ri = _ri(_pre())
+    ri["symbols"].append(
+        {"file": "calc/ops.py", "name": "helper", "kind": "function", "change": "modified", "is_test": False}
+    )
+    v = copy.deepcopy(GOOD)
+    v["symbols"].append({"name": "helper", "file": "calc/ops.py", "needs_test": False, "reason": "이름만 바뀜"})
+    body = apply.render_comment(ri["pr"], ri, apply.merge(ri["precheck"], v, None), v)
+    assert _row("3-2", "필요함") in body  # 추가된 scale의 needs_test가 참
+    assert _row("4-1", "필요없음") in body  # 수정된 helper의 needs_test가 거짓
+    v["checks"][0] = {"id": "3-2", "result": "n/a"}
+    v["symbols"][0]["needs_test"] = False
+    v["symbols"][-1]["needs_test"] = True
+    body = apply.render_comment(ri["pr"], ri, apply.merge(ri["precheck"], v, None), v)
+    assert _row("3-2", "➖ 해당 없음") in body and _row("4-1", "필요함") in body
+
+
+def test_render_comment_note_fail_marks_for_6_and_7():
+    ri = _ri(_pre())
+    v = copy.deepcopy(GOOD)
+    v["checks"][5] = {"id": "7", "result": "fail", "detail": "반올림 위치"}
+    body = apply.render_comment(ri["pr"], ri, apply.merge(ri["precheck"], v, None), v)
+    assert _row("6", "❌ 보완 필요") in body and _row("7", "❌ 보완 필요") in body
+    assert _row("3-3", "❌ 실패") in body  # 반려로 이어지는 검사는 그대로 "실패"
+    assert "💬" not in body
+
+
+def test_render_comment_footer_tier_meaning():
+    ri = _ri({**_pre(), "tier": 1})
+    body = apply.render_comment(ri["pr"], ri, apply.merge(ri["precheck"], GOOD, None), GOOD)
+    assert " · PR 크기 등급: 1(작은 변경이라 Claude 하나가 혼자 판단함) · " in body
+    pre = _pre("reject", {"1": "pass", "2": "pass", "3-1": "fail", "5": "pass"}, [{"check": "3-1", "message": "x"}])
+    ri = _ri({**pre, "tier": 2})
+    body = apply.render_comment(ri["pr"], ri, apply.merge(ri["precheck"], None, None), None)
+    assert "PR 크기 등급" not in body  # 스크립트 검사 반려면 Claude 단계를 실행하지 않으므로 등급을 적지 않음
 
 
 SUGG = {
@@ -372,6 +420,7 @@ def test_override_body_keeps_previous_result_once():
     b1 = apply.override_body(prev, "kim", "abcdef1234")
     assert b1.startswith(COMMENT_MARKER + "\n" + apply.OVERRIDE_MARK)
     assert "@kim" in b1 and "`abcdef1`" in b1 and "## 코드 검수 결과: 반려" in b1
+    assert "아래는 override 전 검수 결과임." in b1 and "결과다" not in b1
     b2 = apply.override_body(b1, "lee", "9999999999")
     assert b2.count(apply.OVERRIDE_MARK) == 1 and "@lee" in b2 and "@kim" not in b2 and "## 코드 검수 결과: 반려" in b2
     assert "(이전 검수 결과 없음)" in apply.override_body(None, "kim", "abcdef1234")
@@ -381,7 +430,11 @@ def test_docstring_only_symbol_is_labelled():
     ri = _ri(_pre())
     ri["symbols"][0]["docstring_only"] = True
     body = apply.render_comment(ri["pr"], ri, apply.merge({**_pre(), "tier": 0}, None, None), None)
-    assert "| `scale` | calc/ops.py:55 | 함수 | 추가 | - | 미판단 | docstring만 변경 (판단 대상 아님) |" in body
+    assert (
+        "| `scale` | calc/ops.py:55 | 함수 | 추가 | 해당 없음 | 해당 없음 | docstring만 변경 (판단 대상 아님) |" in body
+    )
+    tier0 = "판단할 심볼, 삭제된 심볼, 미사용 코드 후보가 없어 Claude 판단 단계를 실행하지 않음"
+    assert _row("3-3", f"➖ 해당 없음 | {tier0}") in body  # 등급 0은 "미실행"이 아니라 해당 없음
 
 
 def test_render_comment_dead_code_line_from_candidates():
