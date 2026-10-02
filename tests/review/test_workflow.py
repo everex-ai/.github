@@ -24,7 +24,7 @@ def step(name_part: str) -> dict:
 def test_workflow_call_interface():
     call = WF[ON]["workflow_call"]
     assert call["inputs"]["gate"]["default"] is False  # 관찰 모드로 시작
-    assert call["inputs"]["claude_version"]["default"] == "2.1.272"
+    assert "claude_version" not in call["inputs"]  # claude-code-action이 CLI를 설치한다
     assert call["secrets"]["CLAUDE_CODE_OAUTH_TOKEN"]["required"] is True
 
 
@@ -58,7 +58,19 @@ def test_stage_order_and_conditions():
     assert "--event" in pre["run"]
     assert claude["if"] == "steps.precheck.outputs.precheck == 'continue'"  # 반려면 Claude를 부르지 않는다
     assert claude["continue-on-error"] is True
-    assert "run_claude.sh" in claude["run"]
+    assert claude["uses"] == "anthropics/claude-code-action@v1"
+    w = claude["with"]
+    assert "secrets.CLAUDE_CODE_OAUTH_TOKEN" in w["claude_code_oauth_token"]  # 구독 토큰. API 키가 아니다
+    assert "anthropic_api_key" not in w
+    assert w["github_token"] == "${{ github.token }}"
+    assert w["prompt"] == "${{ steps.prompt.outputs.text }}"
+    args = w["claude_args"]
+    assert "--plugin-dir ${{ env.TOOLS }}/plugins/everex-review" in args
+    assert '--allowedTools "Read,Grep,Glob,Agent,Write"' in args
+    assert "mcp__github" not in args and "Bash" not in args  # GitHub 도구와 명령 실행을 주지 않는다
+    prompt = step("orchestrator 프롬프트 읽기")
+    assert prompt["id"] == "prompt" and "plugins/everex-review/orchestrator.md" in prompt["run"]
+    assert not any("npm install" in s.get("run", "") for s in steps())
     assert apply_["if"].startswith("always()")
     assert "--require-clean" in apply_["run"] and "--gate" in apply_["run"]
 
@@ -67,11 +79,11 @@ def test_secrets_are_step_scoped():
     job = WF["jobs"]["review"]
     assert "secrets." not in json.dumps(job.get("env", {}))
     for s in steps():
-        env = json.dumps(s.get("env", {}))
-        if "CLAUDE_CODE_OAUTH_TOKEN" in env:
-            assert "2. Claude" in s["name"] and "github.token" not in env
-        if "github.token" in env:
-            assert "3. PR 반영" in s["name"]
+        scoped = json.dumps({**s.get("env", {}), **s.get("with", {})})
+        if "CLAUDE_CODE_OAUTH_TOKEN" in scoped:
+            assert "2. Claude" in s["name"]
+        if "github.token" in scoped:
+            assert "2. Claude" in s["name"] or "3. PR 반영" in s["name"]
 
 
 def test_scripts_referenced_by_workflow_exist():
@@ -86,5 +98,5 @@ def test_scripts_referenced_by_workflow_exist():
     ):
         assert (ROOT / rel).exists(), rel
     text = (ROOT / ".github" / "workflows" / "pr-review.yml").read_text()
-    for rel in ("scripts/review/collect.py", "scripts/review/run_claude.sh", "scripts/review/apply.py"):
+    for rel in ("scripts/review/collect.py", "scripts/review/claude_summary.py", "scripts/review/apply.py"):
         assert rel in text
