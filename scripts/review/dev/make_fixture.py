@@ -14,7 +14,8 @@ feature 브랜치:
   (g) requirements.txt 변경                                     -> 비 python 파일
   --failing-test: test_multiply 가 실패하게 만든다                -> 5번 실패
   --clean: scale 에 docstring/타입 힌트/서식을 갖춘다 (테스트는 여전히 없음) -> 3-1 통과, precheck continue.
-           Claude 단계 검증용. 기대 verdict: 3-3 fail(scale), 6 confirmed(unused_helper, os), 4-2 pass(multiply)
+           Claude 단계 검증용. 기대 verdict: 3-3 실패(scale), 6번 미사용 확인(unused_helper, os),
+           4-2 실패(multiply: TEST_BASE 의 test_multiply 가 반올림 여부로 결과가 달라지지 않는 입력만 확인함)
 """
 
 from __future__ import annotations

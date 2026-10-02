@@ -38,6 +38,19 @@ SCRIPT_CHECKS = ("1", "2", "3-1", "5")  # 스크립트가 판정. agent 출력�
 AGENT_CHECKS = ("3-2", "3-3", "4-1", "4-2", "6", "7")
 REJECT_CHECKS = ("1", "2", "3-1", "3-3", "4-2", "5")  # 실패하면 반려. 6, 7은 comment만
 RESULT_MARK = {"pass": "✅ 통과", "fail": "❌ 실패", "n/a": "➖ 해당 없음"}
+# 판정에 영향이 없는 검사(REJECT_CHECKS 밖: 3-2, 4-1, 6, 7)의 fail 표시. 반려로 이어지는 "실패"와 구분한다.
+# 3-2, 4-1은 plugin 규칙상 pass 또는 n/a만 나오므로 실제로는 6, 7에 쓰인다
+NOTE_FAIL_MARK = "❌ 보완 필요"
+# PR comment에 코드값 대신 나가는 표시 이름. 심볼 종류(classify.py의 kind), 변경 구분(change)
+KIND_KO = {
+    "function": "함수",
+    "async_function": "비동기 함수",
+    "method": "메서드",
+    "class": "클래스",
+    "variable": "변수",
+    "attribute": "클래스 속성",
+}
+CHANGE_KO = {"added": "추가", "modified": "수정", "removed": "삭제"}
 
 
 @dataclass

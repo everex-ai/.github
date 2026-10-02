@@ -70,6 +70,7 @@ AI Engineer가 Python repo에 올린 PR을 팀의 검수 절차(아래 7단계)�
 - **3-3/4-2 후보**: 추가/수정된 비테스트 심볼마다 테스트 파일에서 이름(단어 경계)과 모듈 import를 찾아 `test_candidates`에 넣는다. 그 테스트가 실제로 그 심볼을 검증하는지는 agent가 판단한다. 이 PR에서 `test_<모듈>.py`가 함께 바뀌었으면 `direct: true`.
 - **6 후보**: `vulture --min-confidence 60` 결과 중 PR의 변경 줄이나 변경 심볼에 해당하는 것 + ruff 미사용 진단. agent가 동적 참조 등 오탐을 거른다. vulture가 없으면 ruff 결과만 쓴다.
 - **apply**: 최종 판정은 `precheck.verdict == reject` 이거나 agent의 3-3/4-2가 fail이면 **반려**, 아니면 **통과**. precheck가 continue인데 `verdict.json`이 없거나 스키마에 어긋나면 **오류**로 표시하고 게이트 모드에서는 check를 실패시킨다 (Claude 장애를 조용한 통과로 만들지 않는다). agent가 1, 2, 3-1, 5 번호를 쓰면 verdict 전체를 무효로 본다. comment는 첫 줄 `<!-- everex-review -->` 표식으로 찾아 같은 comment를 갱신한다.
+  - PR comment 검사 표에서 반려로 이어지는 검사(1, 2, 3-1, 3-3, 4-2, 5)의 fail은 "❌ 실패"로, 판정에 영향이 없는 검사(6, 7. 3-2, 4-1은 fail이 나오지 않음)의 fail은 "❌ 보완 필요"로 표시함(`scripts/review/common.py`의 REJECT_CHECKS, NOTE_FAIL_MARK)
 
 ## 로컬 실행
 
@@ -103,7 +104,17 @@ pytest && ruff check . && ruff format --check .
 
 fixture PR의 기대 결과: `scale` 함수에서 D103, ANN001×2, ANN201과 format 위반이 나와 3-1 실패로 **반려**. pytest 4개 통과. `divide`/`multiply`는 테스트 후보가 있고 `scale`은 없음. 미사용 후보로 `os`(ruff F401, vulture), `scale`, `unused_helper`(vulture).
 
-`--clean` fixture의 기대 결과 (2026-09-16 opus orchestrator + sonnet subagent 실측): precheck continue → agent가 `scale`은 테스트 필요하나 없음(3-3 fail)으로 **반려**, `multiply`/`divide`는 테스트 있음, 미사용 `os`/`scale`/`unused_helper` 확인, 설계 의견으로 multiply의 반올림 고정과 미사용 numpy 의존성. 한 번에 API 환산 약 0.7~1.3 USD 규모, 1~2분 (실측 2회). 구독 토큰으로 돌리므로 실제 과금이 아니라 요금제 한도를 소모한다.
+`--clean` fixture의 기대 결과와 실측
+
+- 2026-09-16 실측(opus orchestrator + sonnet subagent, 2회): precheck continue → agent가 `scale`은 테스트 필요하나 없음(3-3 fail)으로 **반려**, `multiply`/`divide`는 테스트 있음, 미사용 `os`/`scale`/`unused_helper` 확인, 설계 의견으로 multiply의 반올림 고정과 미사용 numpy 의존성.
+  - 비용과 시간: 한 번에 API 환산 약 0.7–1.3 USD, 1–2분. 추정: `claude-result.json`의 `total_cost_usd`, `duration_ms` 값임(이 실측 기록에 출처 필드가 적혀 있지 않음)
+- 2026-09-30 실측(subagent 작성 규칙(근거 파일:줄, "추정:", 요청 문장)을 추가한 뒤, 1회): 1.71 USD, 226초임(`claude-result.json`의 `total_cost_usd`, `duration_ms`).
+  - 모델별로는 orchestrator claude-opus-5 1.03 USD, subagent claude-sonnet-5 0.68 USD임(`claude-result.json`의 `modelUsage.<모델>.costUSD`)
+- test-coverage 판단 기준을 강화한 뒤(2026-09-30) 1회 실측: `multiply`가 테스트 없음으로 판단되어 4-2(테스트 존재 여부, 수정 코드)가 fail이 됨. 1.64 USD, 168초임(`claude-result.json`의 `total_cost_usd`, `duration_ms`)
+  - 이유: `test_multiply`는 `multiply(2, 3) == 6`만 확인해, 반올림이 있든 없든 통과함(`scripts/review/dev/make_fixture.py`의 TEST_BASE)
+  - 강화한 기준: 수정된 심볼은 바뀐 동작 때문에 결과가 달라지는 입력으로 assert 하는 테스트가 있어야 테스트 있음으로 판단함(`plugins/everex-review/agents/test-coverage.md` "판단 기준" 절 3번)
+- 위 USD 값은 모두 같은 사용량을 API 종량제로 썼을 때의 환산값임
+  - 구독 토큰으로 실행하므로 실제 과금이 아니라 요금제 한도를 소모함
 
 ## 2단(Claude) 구조
 
@@ -179,7 +190,12 @@ design-review(등급 1은 orchestrator)가 변경 줄 안에서 몇 줄로 고�
 알아 둘 것:
 - `pull_request` 이벤트는 PR 브랜치의 워크플로 파일로 돈다. 작성자가 호출 yml의 `with:` 값을 바꿀 수는 있지만 재사용 워크플로와 스크립트, 프롬프트는 `everex-ai/.github@main`에서 오므로 PR로 바꿀 수 없다.
 - pytest는 PR의 코드를 실행한다 (일반 CI와 같다). Claude 단계에는 Bash 도구가 없어 PR 내용이 agent를 속여도 명령 실행이나 토큰 유출로 이어지지 않는다.
-- Claude 사용량은 구독 토큰 소유자의 요금제 한도를 소모한다 (별도 과금 없음). 로그의 `api_equiv_usd`는 같은 사용량을 API 종량제로 썼을 때의 환산값이며, PR push 한 번에 0.2~1.3 USD 규모다 (precheck 반려면 Claude를 부르지 않는다). `concurrency`로 같은 PR의 이전 실행은 취소된다.
+- Claude 사용량은 구독 토큰(`CLAUDE_CODE_OAUTH_TOKEN`) 소유자의 요금제 한도를 소모하고, 별도로 과금되지 않음
+- 로그의 `api_equiv_usd`는 같은 사용량을 API 종량제로 썼을 때의 환산값임(`scripts/review/claude_summary.py`가 `total_cost_usd`를 소수 둘째 자리로 반올림해 찍음)
+  - PR push 한 번에 0.2–1.3 USD 규모였고, subagent 작성 규칙을 추가한 뒤(2026-09-30) 1회 실측한 값은 1.71 USD임
+  - 1.71 USD는 `--clean` fixture를 opus orchestrator와 sonnet subagent로 실행한 `claude-result.json`의 `total_cost_usd`임
+  - precheck가 반려이면 Claude를 부르지 않으므로 0임
+- `concurrency`로 같은 PR의 이전 실행은 취소된다.
 
 ## 다음 단계
 

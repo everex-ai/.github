@@ -57,3 +57,11 @@ def test_orchestrator_tiers_and_targets():
         assert "precheck.targets" in (PLUGIN / "agents" / f"{name}.md").read_text()
     design = (PLUGIN / "agents" / "design-review.md").read_text()
     assert "project_context" in design and '"suggestions"' in design
+
+
+def test_plugin_files_have_writing_rules():
+    # PR 검수 comment에 들어가는 문장(detail, reason, evidence, comment, requests)의 작성 규칙
+    for p in [PLUGIN / "orchestrator.md", *sorted((PLUGIN / "agents").glob("*.md"))]:
+        text = p.read_text()
+        assert "\n## 작성 규칙\n" in text, p.name
+        assert "추정:" in text and "필요" in text, p.name

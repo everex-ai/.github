@@ -24,8 +24,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from common import (  # noqa: E402
     AGENT_CHECKS,
+    CHANGE_KO,
     CHECK_NAMES,
     COMMENT_MARKER,
+    KIND_KO,
+    NOTE_FAIL_MARK,
+    REJECT_CHECKS,
     RESULT_MARK,
     SCRIPT_CHECKS,
     WORK_DIR_NAME,
@@ -48,6 +52,18 @@ MAX_STR = {"detail": 500, "reason": 500, "evidence": 500, "comment": 1000, "requ
 MAX_SUGGESTIONS = 5
 OVERRIDE_MARK = "<!-- everex-review-override -->"
 SUGGESTION_MARK = "<!-- everex-review-suggestion -->"
+# 꼬리말에 나가는 검사 묶음 이름. 꼬리말은 검사 표 뒤에 있으므로 검사 ID가 검사 표의 # 칸임을 함께 적는다
+SCRIPT_STAGE = f"스크립트 검사(검사 표의 {', '.join(SCRIPT_CHECKS)}번)"
+# 꼬리말에 코드값 대신 나가는 표시 이름. precheck 판정, ruff 설정 출처, pytest 결과
+PRECHECK_KO = {"continue": "통과", "reject": "반려"}
+LINT_CONFIG_KO = {"target": "대상 repo의 ruff 설정", "default": "기본 규칙(everex-ai/.github의 ruff-default.toml)"}
+PYTEST_KO = {
+    "passed": "통과",
+    "failed": "실패",
+    "error": "실행 오류",
+    "none": "수집된 테스트 없음",
+    "skipped": "건너뜀",
+}
 
 
 # ---------- 검증 ----------
@@ -176,20 +192,26 @@ def merge(precheck: dict, verdict: dict | None, verdict_error: str | None) -> di
     for cid in SCRIPT_CHECKS:
         n = sum(1 for r in reasons if r["check"] == cid)
         if n:
-            checks[cid]["detail"] = f"{n}건"
+            checks[cid]["detail"] = f"반려 사유의 {cid} 항목 {n}건"
 
     agent_error = None
     if precheck.get("verdict") == "reject":
         final = "reject"
         if verdict is None:
-            agent_error = "precheck 반려로 agent 단계를 실행하지 않음"
+            agent_error = "스크립트 검사 반려로 agent 검사를 실행하지 않음(아래 검사 표에서 ➖ 미실행으로 표시)"
     elif precheck.get("tier") == 0 and verdict is None and not verdict_error:
         final = "pass"
         for cid in AGENT_CHECKS:
             checks[cid]["detail"] = "판단 대상 없음 (Claude 단계 생략)"
     elif verdict is None or verdict_error:
         final = "error"
-        agent_error = verdict_error or "verdict.json 이 없음 (agent 단계가 실행되지 않았거나 실패함)"
+        if verdict_error:
+            agent_error = f"agent 검사 결과를 사용할 수 없음(아래 검사 표에서 ➖ 결과 없음으로 표시): {verdict_error}"
+        else:
+            agent_error = (
+                "agent 검사 결과 파일(verdict.json)이 없음(아래 검사 표에서 ➖ 결과 없음으로 표시). "
+                "agent 검사가 실행되지 않았거나 실패함"
+            )
     else:
         final = "pass"
 
@@ -205,7 +227,7 @@ def merge(precheck: dict, verdict: dict | None, verdict_error: str | None) -> di
             reasons.append(
                 {
                     "check": "-",
-                    "message": "agent가 reject를 냈지만 3-3/4-2 실패가 없어 pass로 기록 (스크립트 규칙 우선)",
+                    "message": "agent 판정은 반려였지만 반려 조건(3-3 또는 4-2 실패)이 없어 통과로 판정함. 판정 규칙은 스크립트가 적용함",
                 }
             )
     return {"final": final, "checks": checks, "reasons": reasons, "agent_error": agent_error}
@@ -215,11 +237,11 @@ def merge(precheck: dict, verdict: dict | None, verdict_error: str | None) -> di
 
 
 def result_mark(cid: str, result: str) -> str:
-    """검사 표의 결과 칸. 3-2/4-1은 판단 결과라 '판단 완료', 6/7은 comment 항목이라 '의견 있음'으로 쓴다."""
+    """검사 표의 결과 칸. 3-2/4-1은 판단 결과라 '판단 완료', 반려로 이어지지 않는 검사의 fail은 '보완 필요'로 쓴다."""
     if cid in ("3-2", "4-1") and result == "pass":
         return "✅ 판단 완료"
-    if cid in ("6", "7") and result == "fail":
-        return "💬 의견 있음"
+    if result == "fail" and cid not in REJECT_CHECKS:
+        return NOTE_FAIL_MARK
     return RESULT_MARK.get(result, result)
 
 
@@ -227,59 +249,137 @@ def _cell(s: object) -> str:
     return str(s if s is not None else "").replace("|", "\\|").replace("\n", " ")
 
 
+def _test_cells(a: dict | None) -> tuple[str, str]:
+    """변경 심볼 표의 "테스트 필요", "테스트 있음" 칸. agent 판단이 없으면 빈칸 대신 "미판단"으로 적는다."""
+    if a is None:
+        return "미판단", "미판단"
+    need = "예" if a["needs_test"] else "아니오"
+    if a.get("test_found") is None:
+        found = "미확인" if a["needs_test"] else "해당 없음"
+    else:
+        found = "예" if a["test_found"] else "아니오"
+    return need, found
+
+
+def _evidence_cell(a: dict) -> str:
+    """변경 심볼 표의 "근거" 칸. 테스트 필요 판단(reason)과 테스트 존재 확인(evidence)을 줄을 나눠 적는다.
+
+    표 칸 문자 처리(`|`, 줄바꿈)는 호출부의 `_cell`이 한 번만 한다.
+    """
+    parts = []
+    if a.get("reason"):
+        parts.append(f"필요 판단: {a['reason']}")
+    if a.get("evidence"):
+        parts.append(f"존재 확인: {a['evidence']}")
+    return "<br>".join(parts)
+
+
+def _pytest_text(tests: dict) -> str:
+    """꼬리말의 pytest 결과. 테스트를 실행했으면 개수를 함께 적는다."""
+    outcome = tests.get("outcome")
+    text = PYTEST_KO.get(outcome, str(outcome))
+    if outcome in ("passed", "failed", "error") and "tests" in tests:
+        text += (
+            f"(테스트 {tests.get('tests', 0)}개 중 통과 {tests.get('passed', 0)}개, "
+            f"실패 {tests.get('failed', 0)}개, 오류 {tests.get('errors', 0)}개, 건너뜀 {tests.get('skipped', 0)}개)"
+        )
+    return text
+
+
+def _script_pass_detail(cid: str, ri: dict) -> str:
+    """통과한 스크립트 검사의 내용 칸. 무엇을 검사했는지 근거가 되는 개수를 적는다."""
+    files = ri.get("files", [])
+    if cid == "1":
+        py = sum(1 for f in files if f.get("is_python"))
+        return f"변경 파일 {len(files)}개(Python 파일 {py}개) 수집"
+    if cid == "2":
+        return f"변경 심볼 {len(ri.get('symbols', []))}개(테스트 파일 포함) 분류, 파싱 오류 0건"
+    if cid == "3-1":
+        if not ri.get("lint", {}).get("ran", True):
+            return "검사할 Python 파일 없음"
+        return "변경 줄의 ruff check 위반 0건, ruff format 차이 0건"
+    if cid == "5":
+        return f"pytest {_pytest_text(ri.get('tests', {}))}"
+    return ""
+
+
+def _dead_code_loc(d: dict, ri: dict) -> str:
+    """미사용 코드 항목의 파일:줄. 줄 번호는 스크립트가 찾은 후보(dead_code_candidates)에서 가져온다."""
+    for c in ri.get("dead_code_candidates", {}).get("candidates", []):
+        if c.get("file") == d["file"] and c.get("source") == "vulture" and c.get("name") == d["name"] and c.get("line"):
+            return f"{d['file']}:{c['line']}"
+    return d["file"]
+
+
 def render_comment(
     pr: dict, ri: dict, merged: dict, verdict: dict | None, suggestions: tuple[list, list] | None = None
 ) -> str:
-    """PR comment 본문(markdown)을 고정 구조로 만든다. 첫 줄은 갱신용 표식이다."""
+    """PR comment 본문(markdown)을 고정 구조로 만든다. 첫 줄은 갱신용 표식이다.
+
+    판정 줄 다음에 판정의 이유(반려 사유, agent 검사 오류)를 먼저 적고, 검사 표와 세부 내용을 그 뒤에 적는다.
+    """
     m = merged
     lines = [COMMENT_MARKER, f"## 코드 검수 결과: {VERDICT_KO[m['final']]}", ""]
+    if m["reasons"]:
+        lines += ["### 반려 사유" if m["final"] == "reject" else "### 판정 참고"]
+        by_check: dict[str, list[str]] = {}
+        for r in m["reasons"]:
+            by_check.setdefault(r["check"], []).append(r["message"])
+        for cid, messages in by_check.items():  # 검사 표보다 먼저 나오므로 검사 ID에 검사 이름을 붙인다
+            if cid in CHECK_NAMES:
+                lines.append(f"- {cid} {CHECK_NAMES[cid]}")
+                lines += [f"  - {msg}" for msg in messages]
+            else:
+                lines += [f"- {msg}" for msg in messages]
+        lines.append("")
     if m["agent_error"]:
         lines += [f"> {m['agent_error']}", ""]
     if ri["precheck"].get("escalate"):
-        lines += ["> ⚠️ 크기 초과로 검사하지 못한 파일이 있어 사람의 확인이 필요함", ""]
+        lines += ["> ⚠️ 크기 초과로 검사하지 못한 파일이 있어 사람의 확인 필요", ""]
 
     lines += ["| # | 검사 | 결과 | 내용 |", "|---|---|---|---|"]
     for cid, name in CHECK_NAMES.items():
         c = m["checks"][cid]
-        lines.append(f"| {cid} | {name} | {result_mark(cid, c['result'])} | {_cell(c['detail'])} |")
+        mark, detail = result_mark(cid, c["result"]), c["detail"]
+        # 대상이 없어 해당 없음인 것과 구분한다. 통과인데 verdict가 없으면 등급 0이라 Claude 단계를 생략한 경우다
+        if verdict is None and cid in AGENT_CHECKS and m["final"] != "pass":
+            mark, detail = ("➖ 결과 없음", "") if m["final"] == "error" else ("➖ 미실행", "")
+        elif cid in SCRIPT_CHECKS and c["result"] == "pass" and not detail:
+            detail = _script_pass_detail(cid, ri)
+        lines.append(f"| {cid} | {name} | {mark} | {_cell(detail)} |")
     lines.append("")
 
-    if m["reasons"]:
-        lines += ["### 반려 사유"]
-        for r in m["reasons"]:
-            lines.append(f"- [{r['check']}] {r['message']}")
-        lines.append("")
-
-    ss = ri.get("symbol_summary", {})
     syms = [s for s in ri.get("symbols", []) if not s["is_test"]]
     if syms:
         agent_by_key = {(s["file"], s["name"]): s for s in (verdict or {}).get("symbols", [])}
+        counts = ", ".join(f"{ko} {sum(1 for s in syms if s['change'] == code)}개" for code, ko in CHANGE_KO.items())
         lines += [
-            f"### 변경 심볼 (추가 {ss.get('added', 0)}, 수정 {ss.get('modified', 0)}, 삭제 {ss.get('removed', 0)})",
+            f"### 변경 심볼(테스트 파일 제외): {counts}",
             "| 심볼 | 파일 | 종류 | 변경 | 테스트 필요 | 테스트 있음 | 근거 |",
             "|---|---|---|---|---|---|---|",
         ]
         for s in syms:
             a = agent_by_key.get((s["file"], s["name"]))
-            need = "" if a is None else ("예" if a["needs_test"] else "아니오")
-            found = "" if a is None or a.get("test_found") is None else ("예" if a["test_found"] else "아니오")
-            evid = "" if a is None else (a.get("evidence") or a.get("reason") or "")
+            need, found = _test_cells(a)
+            evid = "" if a is None else _evidence_cell(a)
             if a is None and s.get("docstring_only"):
                 need, evid = "-", "docstring만 변경 (판단 대상 아님)"
             loc = f"{s['file']}:{s['lines'][0]}" if s.get("lines") else s["file"]
-            lines.append(f"| `{s['name']}` | {loc} | {s['kind']} | {s['change']} | {need} | {found} | {_cell(evid)} |")
+            kind = KIND_KO.get(s["kind"], s["kind"])
+            change = CHANGE_KO.get(s["change"], s["change"])
+            lines.append(f"| `{s['name']}` | {loc} | {kind} | {change} | {need} | {found} | {_cell(evid)} |")
         lines.append("")
 
     dead = [d for d in (verdict or {}).get("dead_code", []) if d["confirmed"]]
     if dead:
-        lines += ["### 미사용 코드 (comment)"]
+        lines += ["### 미사용 코드 (판정에 영향 없음)"]
         for d in dead:
-            lines.append(f"- `{d['name']}` ({d['file']}): {d.get('reason', '')}")
+            lines.append(f"- `{d['name']}` ({_dead_code_loc(d, ri)}): {d.get('reason', '')}")
         lines.append("")
 
     design = (verdict or {}).get("design", [])
     if design:
-        lines += ["### 설계 의견 (comment)"]
+        lines += ["### 설계 의견 (판정에 영향 없음)"]
         for d in design:
             loc = f"{d['file']}:{d['line']}" if d.get("line") else d["file"]
             lines.append(f"- {loc}: {d['comment']}")
@@ -301,14 +401,15 @@ def render_comment(
             lines.append(f"{i}. {r}")
         lines.append("")
 
-    foot = [
-        "---",
-        f"precheck: {ri['precheck']['verdict']} · 등급: {ri['precheck'].get('tier', '-')} · "
-        f"lint 설정: {ri['lint'].get('config')} · pytest: {ri['tests'].get('outcome')}",
-    ]
+    pre = ri["precheck"]["verdict"]
+    lint = ri["lint"].get("config")
+    foot = [f"{SCRIPT_STAGE} 판정: {PRECHECK_KO.get(pre, pre)}"]
+    if "tier" in ri["precheck"]:
+        foot.append(f"등급: {ri['precheck']['tier']}")
+    foot += [f"ruff 설정: {LINT_CONFIG_KO.get(lint, lint)}", f"pytest: {_pytest_text(ri['tests'])}"]
     if url := run_url():
         foot.append(f"실행 로그: {url}")
-    lines += [" · ".join(foot)]
+    lines += ["---", " · ".join(foot)]
     return "\n".join(lines) + "\n"
 
 

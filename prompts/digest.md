@@ -8,7 +8,7 @@ TL;DR과 결과 산출물 구역을 다시 쓰는 것이 이 모드의 일이다
    다음 task로 넘어간다. 처리하지 못한 task는 out/_failed.txt에 "<KEY>\t<이유>" 한 줄로 적는다.
 2. 쓰는 것은 out/<KEY>/tldr.wiki와 out/<KEY>/verdict.json뿐이다. comment.wiki는 쓰지 않는다(comment를 달지 않는다).
 3. verdict.json의 verdict는 null로 두고, checks에는 precheck.json의 checks를 그대로 옮긴다.
-   문서화 리뷰(T4~T7)는 하지 않으며 feedback은 쓰지 않는다.
+   문서화 리뷰(T4–T7)는 하지 않으며 feedback은 쓰지 않는다.
 4. Task는 items와 extra를 review.md와 같은 규칙으로 채운다(rules.md의 "예상 산출물과 결과 산출물의 대응",
    types/task.md의 items와 extra). apply.py가 이것으로 결과 산출물 구역을 다시 쓴다.
    - 지금까지의 기록으로 항목마다 달성(done: true) 또는 미달성(done: false)을 정한다. "진행 중" 같은 다른 상태는 없다.
@@ -16,6 +16,7 @@ TL;DR과 결과 산출물 구역을 다시 쓰는 것이 이 모드의 일이다
    - why는 기록에 사유가 있을 때만 쓴다(중단, 범위 변경 등). 아직 진행 중이라 사유가 없으면 빈 문자열로 둔다.
    - Bug와 Issue는 items와 extra를 빈 배열로 둔다.
 5. requests에는 정정 comment를 반영했는지와 사람 구역에 추가를 권장할 링크만 적는다.
+   정정 comment 반영은 요청이 아니므로 "반영함"으로 맺고, 링크 추가는 review.md처럼 "필요"로 맺는다.
 6. TL;DR은 "지금까지의 진행 결과"를 쓴다. 완료되지 않은 task이므로 결과 수치가 없으면 무엇을 시도했고 어디까지
    왔는지를 쓰고, 다음 항목이나 막힌 것을 한 줄 넣는다.
 
@@ -26,7 +27,7 @@ TL;DR과 결과 산출물 구역을 다시 쓰는 것이 이 모드의 일이다
    그 내용을 우선 반영한다.
 4. Task면 precheck.json의 expected 항목마다 실제 결과를 대응시켜 items를 만들고, 예상에 없던 결과는 extra에 적는다.
 5. types/<type>.md의 TL;DR 형식대로 out/<KEY>/tldr.wiki를 쓴다. 마지막 항목의 상태는 issue.json의 status를
-   쓰고, Backlog면 "중단(stop), 사유: <stop 뒤 사람 comment의 요지>"로 쓴다. 사유 comment가 없으면
+   쓰고, Backlog면 "중단(stop), 사유: <stop 뒤 사람 comment의 요지> [comment 날짜|URL]"로 쓴다. 사유 comment가 없으면
    "중단(stop), 사유 미기재"로 쓴다.
 6. out/<KEY>/verdict.json을 쓴다.
 
@@ -39,15 +40,15 @@ TL;DR과 결과 산출물 구역을 다시 쓰는 것이 이 모드의 일이다
   "checks": [ { "id": "T1", "result": "pass", "detail": "예상 산출물 4개" } ],
   "items": [
     { "id": "1", "done": true,
-      "result": "엣지 장비 지연 측정 스크립트 작성, 기준 모델 p50 121ms 재현",
+      "result": "엣지 장비(Jetson Orin) 지연 측정 스크립트 작성, 기준 모델 pose-v3의 추론 지연 중앙값(p50: 요청 1,000회 중 50번째 백분위수) 121ms 재현",
       "evidence": "[측정 결과|https://example.com/reports/edge-latency-baseline]" },
     { "id": "2", "done": false,
-      "result": "프루닝 20%·30% 완료(30%: p50 84ms, PCK@0.2 0.824), 40%는 학습 중",
+      "result": "pose-v3 프루닝(가중치 제거) 20%, 30% 완료, 40%는 학습 중. 30% 모델은 Jetson Orin에서 p50 84ms(요청 1,000회), 검증 데이터(val set, 1,200장) PCK@0.2(관절 위치 오차가 몸통 크기의 0.2배 이내인 비율) 0.824",
       "evidence": "[comment 2026-09-17|https://<site>/browse/INNO-29?focusedCommentId=56987]",
       "why": "",
-      "reason": "40% 결과를 포함한 비교표를 comment로 남길 것" }
+      "reason": "40% 결과를 포함한 비교표 comment 필요" }
   ],
   "extra": [],
-  "requests": [ "정정 comment(2026-09-17) 반영: 프루닝 30% PCK@0.2를 0.819에서 0.824로 수정" ]
+  "requests": [ "[정정 comment 2026-09-17|https://<site>/browse/INNO-29?focusedCommentId=56990]대로 프루닝 30% 모델의 PCK@0.2를 0.819에서 0.824로 수정해 반영함" ]
 }
 ```
