@@ -43,8 +43,8 @@ jira-doc(AI팀 업무 문서화 agent)은 Jira task의 기록을 근거로 결�
   - F1: request 전환 때 repository_dispatch(종류 `jira-doc-review`)를 보내 Actions 워크플로를 검수 모드로 실행한다.
     - 근거: INNO-29의 request 전환으로 repository_dispatch 실행 `36821640590`이 생겼다(`gh run list --repo everex-ai/.github --workflow jira-doc.yml`)
   - F2(stop 사유 요청): stop 전환(In Progress에서 Backlog로 상태 변경) 때 실행된다. Jira 안에서 담당자를 멘션한 아래 안내 comment를 단다.
-    - `이 task가 stop 전환으로 Backlog로 이동함. 무엇을 기다리는지와 언제 다시 진행할지 comment 필요`
-    - `다시 In Progress로 바꾼 뒤에 사유를 남길 때는 comment를 "stop 사유:"로 시작해야 사유로 인정됨`
+    - `현재 티켓을 Backlog로 이동시킴(stop 전환). 이유와 재시작 시점에 대한 사유를 아래 comment에 남겨야 함.`
+    - `다시 In Progress로 상태를 변경한 이후에 사유를 남길 때는 "stop 사유:"로 시작하는 comment를 남겨야 사유로 인정됨`
     - GitHub와는 관계없다.
     - stop 뒤 24시간 안에 사유 comment가 없으면 그 task는 stop 사유 comment (R4) 누락 항목이 되어 주간 점검 메시지에 올라간다(`scripts/precheck.py`의 `run_scan`). task 키 없이 실행한 정리 모드에서는 누락 알림 comment도 달린다.
     - F2의 안내 comment는 사유로 세지 않는다(`prompts/rules.md`의 "검사 항목" 표의 R4).
