@@ -45,6 +45,8 @@ CRITERIA_DIR = Path(__file__).resolve().parents[2] / "plugins" / "everex-review"
 # 등급 1(orchestrator 단독)의 상한. 넘으면 등급 2(subagent 분할)
 TIER1_MAX_TARGETS = 3
 TIER1_MAX_LINES = 50
+# 등급 이유(tier_reason)에서 판단 대상 심볼을 처음 부를 때의 이름. 이유는 PR 검수 comment 꼬리말에도 나간다
+TARGET_TERM = "판단 대상 심볼(테스트 외 추가·수정 심볼 중 docstring만 바뀐 것을 뺀 심볼)"
 MAX_CONTEXT_DOCS = 20
 DEAD_CODE_RUFF_CODES = {"F401", "F841", "F811"}
 MAX_DIFF_BYTES = 64 * 1024
@@ -439,11 +441,11 @@ def compute_tier(files: list[dict], symbols: list[dict], dead: dict) -> tuple[in
     has_dead = bool(dead.get("candidates"))
     lines = sum(f["additions"] + f["deletions"] for f in files if f["is_python"] and not f["is_test"])
     if not targets and not removed and not has_dead:
-        return 0, "판단 대상 심볼, 삭제된 심볼, 미사용 코드 후보가 모두 없음", names
+        return 0, f"{TARGET_TERM}, 삭제된 심볼, 미사용 코드 후보가 모두 없음", names
     sig = [s["name"] for s in targets if s["signature_changed"]]
     # 이유는 PR 검수 comment 꼬리말에도 나가므로 무엇을 셌는지와 등급 1 기준값을 함께 적는다
     why = [
-        f"판단 대상 심볼 {len(targets)}개(등급 1 기준 {TIER1_MAX_TARGETS}개 이하)",
+        f"{TARGET_TERM} {len(targets)}개(등급 1 기준 {TIER1_MAX_TARGETS}개 이하)",
         f"테스트 외 Python 파일의 추가·삭제 줄 합 {lines}줄(등급 1 기준 {TIER1_MAX_LINES}줄 이하)",
     ]
     if sig:

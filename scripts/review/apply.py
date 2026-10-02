@@ -70,7 +70,7 @@ TIER0_NOTE = "Claude 단계 미실행(꼬리말 참고)"
 TIER_KO = {
     0: "Claude 단계를 실행하지 않음",
     1: "Claude 하나가 검사 항목을 모두 혼자 판단함",
-    2: "검사 항목을 subagent 4개(검사 항목 묶음마다 따로 실행하는 Claude)에 나눠 맡김. 미사용 코드 후보가 없으면 3개",
+    2: "검사 항목을 subagent 4개(미사용 코드 후보가 없으면 3개)에 나눠 맡김",
 }
 # 3-2(추가 코드), 4-1(수정 코드)이 판단하는 심볼의 변경 구분(classify.py의 change)
 NEEDS_TEST_CHANGE = {"3-2": "added", "4-1": "modified"}

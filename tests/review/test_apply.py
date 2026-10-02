@@ -395,7 +395,8 @@ def test_render_comment_note_fail_marks_for_6_and_7():
 
 def test_render_comment_footer_tier_meaning():
     reason = (
-        "판단 대상 심볼 1개(등급 1 기준 3개 이하), 테스트 외 Python 파일의 추가·삭제 줄 합 3줄(등급 1 기준 50줄 이하)"
+        "판단 대상 심볼(테스트 외 추가·수정 심볼 중 docstring만 바뀐 것을 뺀 심볼) 1개(등급 1 기준 3개 이하), "
+        "테스트 외 Python 파일의 추가·삭제 줄 합 3줄(등급 1 기준 50줄 이하)"
     )
     ri = _ri({**_pre(), "tier": 1, "tier_reason": reason})
     body = apply.render_comment(ri["pr"], ri, apply.merge(ri["precheck"], GOOD, None), GOOD)
@@ -410,17 +411,20 @@ def test_render_comment_footer_tier_meaning():
 
 
 def test_render_comment_footer_tier_two():
-    reason = "판단 대상 심볼 1개(등급 1 기준 3개 이하), 테스트 외 Python 파일의 추가·삭제 줄 합 3줄(등급 1 기준 50줄 이하), signature(인자와 반환 형식) 변경: scale"
+    reason = (
+        "판단 대상 심볼(테스트 외 추가·수정 심볼 중 docstring만 바뀐 것을 뺀 심볼) 1개(등급 1 기준 3개 이하), "
+        "테스트 외 Python 파일의 추가·삭제 줄 합 3줄(등급 1 기준 50줄 이하), signature(인자와 반환 형식) 변경: scale"
+    )
     ri = _ri({**_pre(), "tier": 2, "tier_reason": reason})
     body = apply.render_comment(ri["pr"], ri, apply.merge(ri["precheck"], GOOD, None), GOOD)
     assert (
-        " · Claude 단계 실행 등급: 2(검사 항목을 subagent 4개(검사 항목 묶음마다 따로 실행하는 Claude)에 나눠 맡김."
-        f" 미사용 코드 후보가 없으면 3개. 이유: {reason}) · "
+        " · Claude 단계 실행 등급: 2(검사 항목을 subagent 4개(미사용 코드 후보가 없으면 3개)에 나눠 맡김."
+        f" 이유: {reason}) · "
     ) in body
 
 
 def test_render_comment_footer_tier_zero_once():
-    reason = "판단 대상 심볼, 삭제된 심볼, 미사용 코드 후보가 모두 없음"
+    reason = "판단 대상 심볼(테스트 외 추가·수정 심볼 중 docstring만 바뀐 것을 뺀 심볼), 삭제된 심볼, 미사용 코드 후보가 모두 없음"
     ri = _ri({**_pre(), "tier": 0, "tier_reason": reason})
     body = apply.render_comment(ri["pr"], ri, apply.merge(ri["precheck"], None, None), None)
     assert f" · Claude 단계 실행 등급: 0(Claude 단계를 실행하지 않음. 이유: {reason}) · " in body
