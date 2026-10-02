@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from jira_api import section_body, strip_placeholders  # noqa: E402
+from jira_api import STOP_REASON_PREFIX, section_body, strip_placeholders  # noqa: E402
 
 LIST_ITEM_RE = re.compile(r"^\s*(?:([*#\-]+)|(\d+)[.)])\s+(.*)$")   # 글머리표(*, #, -), 번호(1. 1))
 LEGACY_AC_RE = re.compile(r"^AC-\d+\s*[:：]\s*")                       # 예전 형식 'AC-1:'은 접두어만 떼고 본문을 쓴다
@@ -22,6 +22,8 @@ BUG_ASIS_FIELDS = ["발생 기기", "발생 일자", "발생 장비", "발생 �
 CHECKBOX_CHECKED = re.compile(r"\[\s*[xX✓✔]\s*\]|\(\s*[xX]\s*\)|☑|✅")
 CHECKBOX_ANY = re.compile(r"\[\s*[xX✓✔ ]?\s*\]|\(\s*[xX ]?\s*\)|☐|☑")
 STOP_TO, WORK_STATUS, RTD = "Backlog", "In Progress", "ready-to-done"     # Jira 상태 이름. 비교는 is_status로 대소문자 무시
+REQUEST_KO = "request 전환(담당자가 완료를 요청해 task를 ready-to-done 상태로 보내는 Jira 전환)"   # 검사 표에 나가는 전환 이름. 프롬프트의 "request 전환"과 같은 이름
+LINES_NOTE = "(안내문과 빈 줄을 뺀 줄 수)"
 
 
 def is_status(name: str | None, target: str) -> bool:
@@ -40,6 +42,11 @@ def parse_ts(s: str | None) -> dt.datetime | None:
         return dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def fmt_ts(t: dt.datetime) -> str:
+    """사람이 읽는 문구의 시각 꼴. 결과 산출물 구역의 갱신 시각(apply.py now_stamp)과 같은 YYYY-MM-DD HH:MM."""
+    return t.strftime("%Y-%m-%d %H:%M")
 
 
 def business_days_since(t: dt.datetime | None, now: dt.datetime) -> int:
@@ -91,7 +98,7 @@ def check_task_template(desc: str) -> dict:
     t1_detail = f"예상 산출물 {len(expected)}개" if expected else "예상 산출물 항목 없음"
     bg = strip_placeholders(section_body(desc, "진행 배경"))
     t2 = "pass" if len(bg) >= 2 else "fail"
-    return {"expected": expected, "T1": {"result": t1, "detail": t1_detail}, "T2": {"result": t2, "detail": f"진행 배경 내용 {len(bg)}줄"}}
+    return {"expected": expected, "T1": {"result": t1, "detail": t1_detail}, "T2": {"result": t2, "detail": f"진행 배경 내용 {len(bg)}줄{LINES_NOTE}"}}
 
 
 def check_bug_template(desc: str, attachment_count: int) -> dict:
@@ -102,10 +109,11 @@ def check_bug_template(desc: str, attachment_count: int) -> dict:
         if not m or not strip_placeholders(m.group(1)):
             missing.append(label)
     b1_ok = not missing and attachment_count >= 1
-    b1_detail = ("모두 채워짐" if not missing else "비어 있음: " + ", ".join(missing)) + f", 첨부 {attachment_count}개"
+    filled = f"현황 항목 {len(BUG_ASIS_FIELDS)}개({', '.join(BUG_ASIS_FIELDS)}) 모두 채워짐"
+    b1_detail = (filled if not missing else "비어 있는 현황 항목: " + ", ".join(missing)) + f", 첨부 {attachment_count}개"
     tobe = strip_placeholders(section_body(desc, "개선"))
     return {"B1": {"result": "pass" if b1_ok else "fail", "detail": b1_detail},
-            "B2": {"result": "pass" if tobe else "fail", "detail": f"개선(To-be) 내용 {len(tobe)}줄"}}
+            "B2": {"result": "pass" if tobe else "fail", "detail": f"개선(To-be) 내용 {len(tobe)}줄{LINES_NOTE}"}}
 
 
 def check_issue_template(desc: str) -> dict:
@@ -118,11 +126,27 @@ def check_issue_template(desc: str) -> dict:
         i1 = ("unknown", "체크박스 상태를 텍스트로 확인할 수 없음. agent가 판단")
     body = strip_placeholders(section_body(desc, "이슈 내용"))
     i2_ok = len(body) >= 2 or (len(body) == 1 and len(body[0]) >= 40)
-    return {"I1": {"result": i1[0], "detail": i1[1]}, "I2": {"result": "pass" if i2_ok else "fail", "detail": f"이슈 내용 {len(body)}줄"}}
+    return {"I1": {"result": i1[0], "detail": i1[1]}, "I2": {"result": "pass" if i2_ok else "fail", "detail": f"이슈 내용 {len(body)}줄{LINES_NOTE}"}}
 
 
 def stop_events(status_changes: list[dict], human_comments: list[dict], now: dt.datetime) -> list[dict]:
-    """stop(Backlog 진입)마다 그 뒤 다음 상태 변경 전까지 사람 comment가 있었는지."""
+    """stop(Backlog 진입)마다 사유 comment가 있었는지 확인한다.
+
+    stop 뒤 다음 상태 변경 전까지 사람 comment가 있으면 사유로 센다. 없으면 stop 뒤에 작성된 사람 comment 중
+    본문이 STOP_REASON_PREFIX("stop 사유:")로 시작하는 첫 comment를 늦은 사유로 센다. 비교는 본문 앞 공백을 빼고
+    대소문자를 무시하며, 작성 시각(created)이 없는 comment는 뺀다.
+    늦은 사유 comment 하나가 그 앞의 사유 없는 stop 여러 개를 함께 인정할 수 있다.
+
+    Args:
+        status_changes: 상태 변경 이력(시간순).
+        human_comments: 사람 comment 목록. 항목마다 created, url, body(없을 수 있음).
+        now: 지금 시각. 마지막 stop 뒤에 상태 변경이 없으면 사유를 찾는 구간의 끝으로 쓴다.
+
+    Returns:
+        stop마다 at(stop 시각), hasReason, hoursOpen, reasonUrl, late(늦은 사유 여부)를 담은 목록.
+        늦은 사유가 있으면 lateReasonAt(그 comment의 작성 시각)도 담는다.
+    """
+    prefix = STOP_REASON_PREFIX.lower()
     out = []
     for i, ch in enumerate(status_changes):
         if not is_status(ch.get("to"), STOP_TO):
@@ -130,18 +154,48 @@ def stop_events(status_changes: list[dict], human_comments: list[dict], now: dt.
         t0 = parse_ts(ch["created"])
         t1 = parse_ts(status_changes[i + 1]["created"]) if i + 1 < len(status_changes) else now
         reasons = [c for c in human_comments if (parse_ts(c["created"]) or now) > t0 and (parse_ts(c["created"]) or now) <= t1]
-        out.append({"at": ch["created"], "hasReason": bool(reasons), "hoursOpen": round((t1 - t0).total_seconds() / 3600, 1),
-                    "reasonUrl": reasons[0].get("url", "") if reasons else ""})
+        late = None
+        if not reasons:
+            marked = [c for c in human_comments if (parse_ts(c.get("created")) or t0) > t0   # created가 없으면 뺀다
+                      and (c.get("body") or "").lstrip().lower().startswith(prefix)]
+            late = min(marked, key=lambda c: parse_ts(c["created"])) if marked else None
+        reason = reasons[0] if reasons else late
+        st = {"at": ch["created"], "hasReason": reason is not None, "hoursOpen": round((t1 - t0).total_seconds() / 3600, 1),
+              "reasonUrl": reason.get("url", "") if reason else "", "late": late is not None}
+        if late is not None:
+            st["lateReasonAt"] = late["created"]
+        out.append(st)
     return out
 
 
 def check_r4(stops: list[dict]) -> dict:
+    """stop마다 사유 comment가 있는지로 R4(stop 사유 comment) 결과를 정한다.
+
+    사유 없는 stop이 있으면 fail이다. 모두 사유가 있고 그중 늦은 사유가 있으면 pass이고, detail 끝에
+    "늦게 기록: stop <날짜> 뒤 다음 상태 변경 이후에 남긴 [stop 사유 comment <날짜>|<URL>]"를 붙이고 late를 True로 둔다.
+    늦은 사유가 여러 개면 "; "로 잇고, comment URL이 비면 링크 없이 "stop 사유 comment <날짜>"로 적는다.
+
+    Args:
+        stops: stop_events의 결과.
+
+    Returns:
+        검사 결과(result, detail, 늦은 사유가 있으면 late).
+    """
     if not stops:
         return {"result": "n/a", "detail": "stop 이력 없음"}
     missing = [s for s in stops if not s["hasReason"]]
-    if not missing:
-        return {"result": "pass", "detail": f"stop {len(stops)}회 모두 사유 comment 있음"}
-    return {"result": "fail", "detail": "사유 comment 없는 stop: " + ", ".join(s["at"][:10] for s in missing)}
+    if missing:
+        return {"result": "fail", "detail": "사유 comment 없는 stop: " + ", ".join(s["at"][:10] for s in missing)}
+    detail = f"stop {len(stops)}회 모두 사유 comment 있음"
+    late = [s for s in stops if s.get("late")]
+    if not late:
+        return {"result": "pass", "detail": detail}
+    marks = []
+    for s in late:
+        name = f"stop 사유 comment {s['lateReasonAt'][:10]}"
+        link = f"[{name}|{s['reasonUrl']}]" if s.get("reasonUrl") else name
+        marks.append(f"stop {s['at'][:10]} 뒤 다음 상태 변경 이후에 남긴 {link}")
+    return {"result": "pass", "detail": f"{detail}. 늦게 기록: {'; '.join(marks)}", "late": True}
 
 
 def check_a2(itype: str, changelog: list[dict], desc_section: str) -> dict:
@@ -150,16 +204,17 @@ def check_a2(itype: str, changelog: list[dict], desc_section: str) -> dict:
         return {"result": "n/a", "detail": "Issue는 해당 없음"}
     rtd_times = [parse_ts(c["created"]) for c in changelog if c["field"] == "status" and is_status(c.get("to"), RTD)]
     if not rtd_times:
-        return {"result": "n/a", "detail": "Ready-to-Done 이력 없음"}
+        return {"result": "n/a", "detail": f"{REQUEST_KO} 이력 없음"}
     last = max(rtd_times)
     for c in changelog:
-        if c["field"] != "description" or (parse_ts(c["created"]) or last) <= last:
+        changed = parse_ts(c["created"])
+        if c["field"] != "description" or (changed or last) <= last:
             continue
         before = section_body(c.get("from") or "", desc_section)
         after = section_body(c.get("to") or "", desc_section)
         if before.strip() != after.strip():
-            return {"result": "fail", "detail": f"{c['created'][:16]}에 '{desc_section}' 구역이 바뀜 (Ready-to-Done 전환 {last.isoformat()[:16]} 이후)"}
-    return {"result": "pass", "detail": "Ready-to-Done 이후 완료 기준 변경 없음"}
+            return {"result": "fail", "detail": f"{fmt_ts(changed)}에 '{desc_section}' 구역이 바뀜 (마지막 {REQUEST_KO} {fmt_ts(last)} 이후)"}
+    return {"result": "pass", "detail": f"마지막 {REQUEST_KO} 이후 완료 기준 변경 없음"}
 
 
 def doc_facts(d: Path, desc: str, changelog: list[dict], human: list[dict], now: dt.datetime) -> dict:
@@ -243,8 +298,8 @@ def run_scan(p: Path, now: dt.datetime) -> None:
             continue
         if is_status(status, STOP_TO) and st["hoursOpen"] >= 24:
             alerts.append({"code": f"HOLD_REASON_MISSING:{st['at'][:10]}", "check": "R4",
-                           "detail": f"{st['at'][:10]} stop 후 {int(st['hoursOpen'] // 24)}일 경과",
-                           "message": f"{st['at'][:10]}에 stop으로 Backlog에 보냈지만 사유 comment가 없습니다. 무엇을 기다리는지, 언제 다시 볼지를 comment로 남겨 주세요."})
+                           "detail": f"{st['at'][:10]} stop 뒤 {int(st['hoursOpen'] // 24)}일 경과(지난 시간을 24시간 단위로 셈, 나머지 버림)",
+                           "message": f"{st['at'][:10]}에 stop 전환으로 Backlog에 보낸 뒤 사유 comment 없음. 무엇을 기다리는지와 언제 다시 진행할지 comment 필요"})
 
     # A1: In Progress에서 5영업일 이상 사람의 활동이 없으면 알림
     if is_status(status, WORK_STATUS):
@@ -252,8 +307,8 @@ def run_scan(p: Path, now: dt.datetime) -> None:
         idle = business_days_since(last_activity, now)
         if idle >= 5:
             alerts.append({"code": f"STALE:{(last_activity.date() if last_activity else now.date()).isoformat()}", "check": "A1",
-                           "detail": f"마지막 활동 {last_activity.date().isoformat() if last_activity else '기록 없음'}({idle}영업일 경과)",
-                           "message": f"{idle}영업일 동안 comment, sub-task 변경, PR이 없습니다. 진행 상황을 comment로 남기거나, 멈춘 상태라면 stop으로 Backlog에 보내 주세요."})
+                           "detail": f"마지막 활동 {last_activity.date().isoformat() if last_activity else '기록 없음'} 뒤 영업일 기준 {idle}일 경과(토요일과 일요일 제외)",
+                           "message": f"마지막 활동(사람 comment, In Progress 전환, task 생성 중 가장 늦은 것) 뒤 영업일(토요일과 일요일을 뺀 날) 기준 {idle}일 동안 활동 없음. 진행 상황 comment, 또는 멈춘 task면 stop 전환으로 Backlog에 보내는 것 필요"})
 
     out = {"key": s["key"], "type": itype, "status": status, "summary": s.get("summary"), "url": s.get("url"),
            "assignee": s.get("assignee"), "alerts": alerts, "clear": []}
