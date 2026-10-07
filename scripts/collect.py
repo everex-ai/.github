@@ -34,7 +34,7 @@ ISSUE_FIELDS = ["summary", "status", "assignee", "reporter", "created", "updated
 # 사람 구역(해시와 검사에 쓰는 구역). agent 구역은 제외한다.
 HUMAN_SECTIONS = {
     "Task": ["진행 배경", "예상 산출물"],
-    "Bug": ["현황", "개선", "첨부"],
+    "Bug": ["기본 정보", "문제", "개선", "첨부"],
     "Issue": ["이슈 유형", "이슈 내용"],
 }
 
@@ -226,7 +226,7 @@ def collect_scan(j: Jira, project: str, site: str) -> None:
             "created": f.get("created"), "updated": f.get("updated"),
             "assignee": {"accountId": (f.get("assignee") or {}).get("accountId"), "displayName": (f.get("assignee") or {}).get("displayName")},
             "attachmentCount": len(f.get("attachment") or []),
-            "sections": {t: section_body(desc, t) for t in ["진행 배경", "예상 산출물", "현황", "개선", "첨부", "이슈 유형", "이슈 내용"]},
+            "sections": {t: section_body(desc, t) for t in ["진행 배경", "예상 산출물", "기본 정보", "문제", "개선", "첨부", "이슈 유형", "이슈 내용"]},
             # body: 본문 앞 100자. 늦게 남긴 stop 사유("stop 사유:"로 시작하는 comment)를 precheck가 찾는 데 쓴다
             "humanComments": [{"created": c["created"], "url": c["url"], "body": c["body"][:100]}
                               for c in comments if c["kind"] == "human"],

@@ -209,7 +209,7 @@ TASK_ITEMS = [
     {
         "id": "3",
         "done": False,
-        "result": "ONNX 변환 스크립트 초안까지 작성",
+        "result": "ONNX(신경망 모델 교환 형식) 변환 스크립트 초안까지 작성",
         "why": f"배포 대상 기기 사양이 확정되지 않아 변환 옵션을 정하지 못함([comment 2026-09-13|{comment_url('INNO-17', 10140)}])",
         "evidence": f"[comment 2026-09-13|{comment_url('INNO-17', 10140)}]",
         "reason": "기기 사양 확정 뒤 후속 task 키 comment 필요",
@@ -240,12 +240,18 @@ TASK_FEEDBACK = [
     {
         "id": "T6",
         "points": [
-            "작업 기간(첫 in-progress 전환부터 마지막 request 전환(담당자의 완료 요청)까지) 영업일 기준 8일 동안 "
+            "작업 기간(첫 in-progress(진행 중 상태) 전환부터 마지막 request 전환(담당자의 완료 요청)까지) 영업일 기준 8일 동안 "
             "사람 comment 1건(request 전환 당일)뿐이라 중간 결과와 방향 변경 이유를 알 수 없음"
         ],
         "request": "진행 중 나온 중간 수치와 방향을 바꾼 이유 comment 필요",
     },
-    {"id": "T7", "points": ["INNO-18은 결과 comment와 PR이 있음"]},
+    {
+        "id": "T7",
+        "points": [
+            f"INNO-18은 결과 comment([comment 2026-09-14|{comment_url('INNO-18', 10150)}])와 "
+            "PR([PR #47 export 테스트 추가|https://github.com/everex-ai/repo/pull/47])이 있음"
+        ],
+    },
 ]
 TASK_CHECKS = [
     {"id": "R2", "result": "pass", "detail": "결과마다 PR 또는 comment 링크 있음"},
@@ -277,7 +283,7 @@ REQUEST_ITEMS = [
     {
         "id": "3",
         "done": False,
-        "result": "ONNX 변환 스크립트 초안까지 작성",
+        "result": "ONNX(신경망 모델 교환 형식) 변환 스크립트 초안까지 작성",
         "why": f"배포 대상 기기 사양이 확정되지 않아 변환 옵션을 정하지 못함([comment 2026-09-13|{comment_url('INNO-21', 10140)}])",
         "evidence": f"[comment 2026-09-13|{comment_url('INNO-21', 10140)}]",
         "reason": "기기 사양 확정 뒤 후속 task 키 comment 필요",
@@ -299,7 +305,7 @@ PASS_ITEMS = [
     {
         "id": "3",
         "done": True,
-        "result": "Galaxy S24용 ONNX 변환 스크립트 추가, 2026-09-16 병합",
+        "result": "Galaxy S24용 ONNX(신경망 모델 교환 형식) 변환 스크립트 추가, 2026-09-16 병합",
         "evidence": "[PR #48 ONNX 변환|https://github.com/everex-ai/repo/pull/48]",
     },
 ]
@@ -321,21 +327,28 @@ LATE_REASON = {
 }
 BUG_CHECKS = [
     {"id": "B3", "result": "pass", "detail": "원인과 해결에 PR 링크 있음"},
-    {"id": "B4", "result": "fail", "detail": "해결 뒤 To-be 동작 확인 comment 없음"},
+    {"id": "B4", "result": "fail", "detail": "해결 뒤 To-Be 동작 확인 comment 없음"},
     {"id": "R2", "result": "pass", "detail": "원인과 해결마다 링크 있음"},
     {"id": "R3", "result": "pass", "detail": "agent 구역(TL;DR)을 개조식으로 작성함"},
 ]
-BUG_DESC_OLD = """h2. 현황
+BUG_DESC_OLD = """h2. 기본 정보
 * 발생 기기/서비스: 포즈 추정 앱
 * 발생 일자: 2026-09-15
 * 발생 장비: Galaxy S24
 * 발생 계정: qa01
-* 발생 내용: export 실패
 
-h2. 개선
+h2. 문제(As-Is)
+* 결과 파일 export가 오류로 실패함
+
+h2. 개선(To-Be)
 * export가 오류 없이 끝남
+
+h2. 첨부 자료(필수)
+* export-error.mp4
 """
-BUG_DESC = BUG_DESC_OLD + "* 결과 파일이 1분 안에 생성됨\n"
+BUG_DESC = BUG_DESC_OLD.replace(
+    "* export가 오류 없이 끝남\n", "* export가 오류 없이 끝남\n* 결과 파일이 1분 안에 생성됨\n"
+)
 BUG_CHANGELOG = [
     {"field": "status", "to": "Ready-to-Done", "created": "2026-09-19T17:40:00.000+0900"},
     {"field": "description", "from": BUG_DESC_OLD, "to": BUG_DESC, "created": "2026-09-20T10:12:00.000+0900"},
@@ -359,7 +372,7 @@ def precheck_checks(jp: types.ModuleType, itype: str, stops: list[dict] | None =
         checks["A2"] = jp.check_a2("Task", [], "예상 산출물")
     else:
         checks = jp.check_bug_template(BUG_DESC, 2)
-        checks["A2"] = jp.check_a2("Bug", BUG_CHANGELOG, "개선")
+        checks["A2"] = jp.check_a2("Bug", BUG_CHANGELOG, "개선", "개선(To-Be)")
     checks["R4"] = jp.check_r4(stops or [])
     return checks
 
@@ -553,14 +566,14 @@ def render(out_dir: Path) -> list[Path]:
         # Bug 검수: A2 실패로 보류
         write_issue(ctx, "INNO-30", "Bug", [], precheck_checks(jp, "Bug"))
         bug = {"issueKey": "INNO-30", "mode": "review", "verdict": "fix", "checks": BUG_CHECKS}
-        bug |= {"items": [], "extra": [], "requests": ["해결 뒤 To-be 동작을 확인한 comment 필요"]}
+        bug |= {"items": [], "extra": [], "requests": ["해결 뒤 To-Be 동작을 확인한 comment 필요"]}
         write_out(
             out,
             "INNO-30",
             bug,
             "* 원인은 입력 해상도 검사 누락, 해결은 검사 추가로 2026-09-18 병합됨"
             "([PR #51 해상도 검사 추가|https://github.com/everex-ai/repo/pull/51])\n"
-            "* 해결 뒤 To-be 동작을 확인한 사람 comment 없음",
+            "* 해결 뒤 To-Be 동작을 확인한 사람 comment 없음",
         )
         j = FakeJira({"INNO-30": BUG_DESC})
         with contextlib.redirect_stdout(io.StringIO()):

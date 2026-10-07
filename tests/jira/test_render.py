@@ -433,6 +433,98 @@ def test_a2_detail(jp):
     assert jp.check_a2("Bug", [], "개선")["detail"].startswith("request 전환(")
 
 
+BUG_INFO = {
+    "발생 기기/서비스": "포즈 추정 앱",
+    "발생 일자": "2026-09-15",
+    "발생 장비": "Galaxy S24",
+    "발생 계정": "qa01",
+}
+PROBLEM, TOBE = "결과 파일 export가 오류로 실패함", "export가 오류 없이 끝남"
+LINES_NOTE = "(안내문과 빈 줄을 뺀 줄 수)"
+
+
+def bug_desc(info: dict[str, str], problem: str, tobe: str) -> str:
+    """Bug의 description field 구성(기본 정보, 문제(As-Is), 개선(To-Be), 첨부 자료(필수))으로 description을 만든다.
+
+    빈 값은 템플릿처럼 "발생 일자: "로 남긴다.
+    """
+    lines = ["h2. 기본 정보", *(f"* {k}: {v}" for k, v in info.items()), ""]
+    lines += ["h2. 문제(As-Is)", f"* {problem}", "", "h2. 개선(To-Be)", f"* {tobe}", ""]
+    lines += ["h2. 첨부 자료(필수)", "* (사진 및 영상 첨부)"]
+    return "\n".join(lines)
+
+
+def test_bug_template_filled_passes(jp):
+    checks = jp.check_bug_template(bug_desc(BUG_INFO, PROBLEM, TOBE), 1)
+    assert checks["B1"] == {
+        "result": "pass",
+        "detail": f"기본 정보 항목 4개(발생 기기/서비스, 발생 일자, 발생 장비, 발생 계정) 모두 채워짐, "
+        f"문제(As-Is) 내용 1줄{LINES_NOTE}, 첨부 파일 1개",
+    }
+    assert checks["B2"] == {"result": "pass", "detail": f"개선(To-Be) 내용 1줄{LINES_NOTE}"}
+
+
+@pytest.mark.parametrize(
+    ("desc", "attachments", "want_in_detail"),
+    [
+        (bug_desc(BUG_INFO | {"발생 장비": ""}, PROBLEM, TOBE), 1, "기본 정보 중 비어 있는 항목 1개(발생 장비),"),
+        (bug_desc(BUG_INFO, "(오류 동작에 대한 설명)", TOBE), 1, f"문제(As-Is) 내용 0줄{LINES_NOTE}"),
+        (bug_desc(BUG_INFO, PROBLEM, TOBE), 0, "첨부 파일 0개"),
+        (
+            "h2. 현황\n* 발생 기기/서비스: 포즈 추정 앱\n* 발생 일자: 2026-09-15\n* 발생 장비: Galaxy S24\n"
+            "* 발생 계정: qa01\n* 발생 내용: export 실패\n\nh2. 개선\n* export가 오류 없이 끝남",
+            1,
+            "기본 정보 중 비어 있는 항목 4개(발생 기기/서비스, 발생 일자, 발생 장비, 발생 계정),",
+        ),
+    ],
+    ids=["기본 정보 항목 비어 있음", "문제(As-Is) 안내문만 있음", "첨부 없음", "이전 description field 구성"],
+)
+def test_bug_template_b1_fails(jp, desc, attachments, want_in_detail):
+    b1 = jp.check_bug_template(desc, attachments)["B1"]
+    assert b1["result"] == "fail"
+    assert want_in_detail in b1["detail"]
+
+
+def test_bug_template_b2_fails_with_placeholder_only(jp):
+    b2 = jp.check_bug_template(bug_desc(BUG_INFO, PROBLEM, "(정상 동작에 대한 설명)"), 1)["B2"]
+    assert b2 == {"result": "fail", "detail": f"개선(To-Be) 내용 0줄{LINES_NOTE}"}
+
+
+def test_bug_sample_passes_template_and_fails_a2(render, jp):
+    """INNO-30 샘플(scripts/dev/render_jira_samples.py)은 B1, B2를 통과하고, 개선(To-Be)이 바뀌어 A2가 fail이다."""
+    checks = render.precheck_checks(jp, "Bug")
+    assert (checks["B1"]["result"], checks["B2"]["result"], checks["A2"]["result"]) == ("pass", "pass", "fail")
+    assert "에 '개선(To-Be)' 구역이 바뀜" in checks["A2"]["detail"]
+
+
+def test_bug_run_issue_dir_names_tobe_section_in_a2(render, jp, tmp_path):
+    """운영 경로(run_issue_dir)의 Bug A2 내용 칸도 구역 이름을 "개선(To-Be)"로 적는다."""
+    d = tmp_path / "INNO-30"
+    d.mkdir()
+    issue = {"key": "INNO-30", "type": "Bug", "status": "Ready-to-Done", "attachments": [{}, {}]}
+    for name, data in [("issue.json", issue), ("comments.json", []), ("changelog.json", render.BUG_CHANGELOG)]:
+        (d / name).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    (d / "description.wiki").write_text(render.BUG_DESC, encoding="utf-8")
+    jp.run_issue_dir(d, render.FIXED_NOW)
+    checks = json.loads((d / "precheck.json").read_text(encoding="utf-8"))["checks"]
+    assert checks["B1"]["result"] == "pass"
+    assert "에 '개선(To-Be)' 구역이 바뀜" in checks["A2"]["detail"]
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        bug_desc(BUG_INFO | {"발생 장비": "Galaxy S25"}, PROBLEM, TOBE),
+        bug_desc(BUG_INFO, "결과 파일 export가 멈춤", TOBE),
+    ],
+    ids=["기본 정보 값", "문제(As-Is) 내용"],
+)
+def test_bug_human_input_hash_covers_new_sections(jc, changed):
+    """정리 모드가 Bug를 건너뛸지 정하는 해시가 기본 정보와 문제(As-Is)의 변경을 반영한다."""
+    base = jc.human_input_hash("Bug", bug_desc(BUG_INFO, PROBLEM, TOBE), [], [], [], [])
+    assert jc.human_input_hash("Bug", changed, [], [], [], []) != base
+
+
 def test_stale_alert_message_and_stop_detail(jp, tmp_path):
     now = dt.datetime(2026, 9, 29, 9, 0, tzinfo=dt.timezone(dt.timedelta(hours=9)))
     scans = {

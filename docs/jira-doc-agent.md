@@ -71,7 +71,7 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
 
 - 스크립트 검사 9개는 아래와 같다(`scripts/precheck.py`의 `run_issue_dir`, `run_scan`).
   - 예상 산출물 작성 (T1), 진행 배경 작성 (T2)
-  - 현황(AS-IS) 작성과 첨부 (B1), 개선(To-be) 작성 (B2)
+  - 기본 정보와 문제(As-Is) 작성, 첨부 파일 (B1), 개선(To-Be) 작성 (B2)
   - 이슈 유형 선택 (I1), 이슈 내용 작성 (I2)
   - stop 사유 comment (R4), 완료 기준의 사후 변경 (A2)
   - 영업일 기준 5일 이상 활동 없음 (A1). 주간 점검 모드와, task 키 없이 실행한 정리 모드에서만 계산한다.
@@ -142,7 +142,7 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
 |---|---|---|---|
 | 통과 | 예상 산출물이 모두 달성이고, 필수 검사(`prompts/rules.md` 검사 항목 표에서 실패 시 보류나 검토 요청으로 이어지는 검사)가 모두 만족 | ready-to-done 유지 | 팀장 멘션. task 링크와 통과 이유. 팀장이 확인한 뒤 done으로 직접 전환 |
 | 검토 요청 | 미달성 항목마다 담당자가 comment로 남긴 사유가 있음, 또는 팀장 판단이 필요함(예상 산출물이 모호함, ready-to-done 뒤 예상 산출물이 바뀜, CI agent 출력 오류, 근거끼리 모순) | ready-to-done 유지 | 팀장 멘션. task 링크와 검토 요청 이유. 팀장이 확인한 뒤 In Progress 또는 done으로 직접 전환 |
-| 보류 | 사유 없는 미달성 항목이 있음, 또는 담당자가 고칠 수 있는 누락이 있음(예상 산출물·진행 배경·Bug 현황과 개선·Issue 유형과 내용의 템플릿 누락, stop 사유 comment 없음, 근거 링크 없음, Bug의 To-be 동작 확인 comment 없음) | In Progress로 자동 전환 | 담당자 멘션. task 링크, 보류 이유, 요청 |
+| 보류 | 사유 없는 미달성 항목이 있음, 또는 담당자가 고칠 수 있는 누락이 있음(예상 산출물·진행 배경·Bug의 기본 정보와 문제(As-Is)와 개선(To-Be)·Issue 유형과 내용의 템플릿 누락, stop 사유 comment 없음, 근거 링크 없음, Bug의 To-Be 동작 확인 comment 없음) | In Progress로 자동 전환 | 담당자 멘션. task 링크, 보류 이유, 요청 |
 
 - apply.py는 CI agent가 정한 검수 결과를 아래 경우에 다시 정한다(`scripts/apply.py`의 `apply_issue`, `recheck_verdict`).
   - 완료 기준의 사후 변경 (A2)이 실패이면 검토 요청으로 바꾼다.
@@ -151,7 +151,7 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
   - Task의 미달성 항목마다 담당자의 사유가 있으면 검토 요청으로 바꾼다. 통과인데 미달성 항목이 있으면 보류로 바꾼다.
   - 게이트 모드에서 문서화 리뷰에 보완 필요 항목이 있으면 통과를 보류로 바꾼다.
   - 아래 검사의 실패와 Bug, Issue의 미달성 항목은 다시 확인하지 않는다. 아래 검사는 CI agent가 판단한다.
-    - 원인과 해결의 근거 링크 (B3), To-be 동작 확인 comment (B4)
+    - 원인과 해결의 근거 링크 (B3), To-Be 동작 확인 comment (B4)
     - 대응 결과의 근거 (I3), 1년 뒤에도 이해 가능한 기록 (R2)
   - 바꾼 이유는 검수 comment의 검수 결과 줄 아래에 적힌다.
 - verdict.json이 없거나 형식이 틀리면 결과를 "실패"로 처리한다(`scripts/apply.py`의 `apply_issue`, `failure_comment`).
@@ -234,7 +234,7 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
   - 사람의 입력은 아래와 같다(`scripts/collect.py`의 `HUMAN_SECTIONS`, `human_input_hash`).
     - 사람이 작성하는 description 구역
       - Task: 진행 배경, 예상 산출물
-      - Bug: 현황, 개선, 첨부
+      - Bug: 기본 정보, 문제(As-Is), 개선(To-Be), 첨부 자료(필수)
       - Issue: 이슈 유형, 이슈 내용
     - 사람 comment, sub-task, PR, 상태 전환
 - 팀장용 문서화 리뷰 comment의 팀장 멘션은 jira-doc이 팀장 계정으로 작성한다.
