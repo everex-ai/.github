@@ -1,4 +1,7 @@
 {
-  "_설명": "Jira accountId -> Slack 멤버 ID. 주간 점검 메시지(alerts 모드)와 검수 뒤 Slack 알림(review 모드)의 멘션에 사용함. 파일에 없는 사람은 멘션하지 않고, 담당자는 Jira 표시 이름으로, 팀장은 \"팀장\"으로 표시함.",
-  "712020:7a1ca75e-02bb-4be8-aa40-c85607c29e8b": "U05LM3QJBA8"
+  "_설명": [
+    "SLACK_USERS_JSON이 비어 있을 때 apply.py가 읽는 Jira accountId -> Slack 멤버 ID 대응표 파일임(scripts/apply.py의 load_slack_users)",
+    "Actions 실행에서는 apply.py가 secret SLACK_USERS_JSON을 읽음",
+    "이 repo는 public이라(https://github.com/everex-ai/.github) 이 파일에 Jira accountId와 Slack 멤버 ID를 넣지 않음"
+  ]
 }
