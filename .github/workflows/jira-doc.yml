@@ -85,4 +85,5 @@ jobs:
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_USERS_JSON: ${{ secrets.SLACK_USERS_JSON }}   # Jira accountId -> Slack 멤버 ID 대응표(JSON). 비어 있으면 apply.py가 config/slack-users.json을 읽음(load_slack_users)
         run: python3 scripts/apply.py --ctx ctx/ --out out/ --mode "$MODE" --gate "$GATE" --summary "$GITHUB_STEP_SUMMARY"

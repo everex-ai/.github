@@ -401,6 +401,33 @@ def load_json(p: Path, default=None):
         return default
 
 
+def load_slack_users() -> tuple[dict[str, str], str | None]:
+    """Slack 멘션 대응표(Jira accountId -> Slack 멤버 ID)를 읽는다.
+
+    환경 변수 SLACK_USERS_JSON(GitHub Actions secret)이 비어 있지 않으면 그 값을 JSON으로 읽고, 비어 있거나 없으면
+    config/slack-users.json(SLACK_USERS)을 읽는다. 키가 "_"로 시작하는 항목(설명)과 값이 문자열이 아닌 항목은 뺀다.
+    secret 값은 로그와 Actions Summary에 나가지 않게 경고 문구에도 넣지 않는다.
+
+    Returns:
+        (대응표, 경고 문구). SLACK_USERS_JSON이 JSON 객체가 아니면 빈 대응표와 형식 오류 경고를 돌려준다.
+        그 밖에 대응표가 비면(파일이 없거나 설명만 있을 때 포함) 빈 대응표 경고를, 비지 않으면 경고 자리에 None을 돌려준다.
+    """
+    raw = os.environ.get("SLACK_USERS_JSON", "").strip()
+    if raw:
+        try:
+            users = json.loads(raw)
+        except json.JSONDecodeError:
+            users = None
+        if not isinstance(users, dict):
+            return {}, "SLACK_USERS_JSON 형식이 틀려 Slack 멘션 없이 이름으로 보냄"
+    else:
+        users = load_json(SLACK_USERS, {})
+        if not isinstance(users, dict):  # 파일이 없거나 읽을 수 없으면 빈 대응표로 간주한다
+            users = {}
+    users = {k: v for k, v in users.items() if not k.startswith("_") and isinstance(v, str)}
+    return users, (None if users else "Slack 멘션 대응표가 비어 멘션 없이 이름으로 보냄")
+
+
 def validate_verdict(v, mode: str, key: str) -> str | None:
     """schemas/verdict.json의 핵심 제약만 검사한다. 문제가 있으면 이유를 돌려준다."""
     if not isinstance(v, dict):
@@ -671,7 +698,9 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
 
     # 5) Slack 알림 (검수 모드만). 보류는 담당자, 검토 요청과 통과는 팀장에게 보낸다
     if mode == "review":
-        users = load_json(SLACK_USERS, {}) or {}
+        users, warning = load_slack_users()
+        if warning:
+            notes.append(warning)
         if v == "fix":
             mention, who = slack_mention(issue.get("assignee"), users), "담당자"
         else:
@@ -874,18 +903,32 @@ def slack_post(text: str) -> str:
 
 
 def slack_weekly(ctx: Path, summ: Summary) -> None:
-    """주간 점검 결과를 Slack 한 건으로 보낸다. 첫 줄이 스레드 제목이고 담당자를 멘션한다."""
-    users = load_json(SLACK_USERS, {}) or {}
-    lines, mentions = weekly_lines(ctx / "_scan", users)
-    head = f"[{dt.datetime.now().strftime('%Y-%m-%d')} 전달사항] " + (" ".join(mentions) if mentions else "")
-    if lines:
-        text = "\n".join([head.rstrip(), "아래 task마다 사유 또는 진행 상황 comment 필요", *lines])
-    else:
-        text = "\n".join([f"[{dt.datetime.now().strftime('%Y-%m-%d')} 전달사항]", "점검 결과 이상 없음"])
+    """주간 점검 결과를 Slack 한 건으로 보낸다. 첫 줄이 스레드 제목이고 담당자를 멘션한다.
+
+    Actions Summary는 GitHub에 로그인한 누구나 볼 수 있어, Summary에는 빈 대응표로 다시 만든 본문을 남긴다.
+    이 본문에는 Slack 멤버 ID(멘션) 대신 담당자의 Jira 표시 이름이 들어가고 머리줄의 멘션 목록이 빠진다.
+
+    Args:
+        ctx: 수집 단계가 만든 ctx 폴더. ctx/_scan/*.alerts.json을 읽는다.
+        summ: Actions 요약.
+    """
+    day = dt.datetime.now().strftime("%Y-%m-%d")
+
+    def weekly_text(users: dict[str, str]) -> tuple[str, list[str], bool]:
+        """(본문, 멘션 목록, 알림 유무)."""
+        lines, mentions = weekly_lines(ctx / "_scan", users)
+        if not lines:
+            return "\n".join([f"[{day} 전달사항]", "점검 결과 이상 없음"]), mentions, False
+        head = f"[{day} 전달사항] " + " ".join(mentions)
+        return "\n".join([head.rstrip(), "아래 task마다 사유 또는 진행 상황 comment 필요", *lines]), mentions, True
+
+    users, warning = load_slack_users()
+    text, mentions, alerted = weekly_text(users)
     result = slack_post(text)
-    note = f"알림 대상 {len(mentions)}명" if lines else "알림 없음"
-    summ.row("-", "-", "alerts", result, note)
-    summ.extra += [f"### 주간 점검 (Slack {result})", "", "```", text, "```", ""]
+    note = f"Slack 멘션 {len(mentions)}명(대응표에 있는 담당자만 셈)" if alerted else "알림 없음"
+    summ.row("-", "-", "alerts", result, f"{note}; {warning}" if warning else note)
+    summary_text, _, _ = weekly_text({})
+    summ.extra += [f"### 주간 점검 (Slack {result})", "", "```", summary_text, "```", ""]
 
 
 def main() -> None:
