@@ -22,6 +22,8 @@ LEGACY_AC_RE = re.compile(r"^AC-\d+\s*[:：]\s*")                       # 예전
 BUG_INFO_FIELDS = {"발생 기기": "발생 기기/서비스", "발생 일자": "발생 일자", "발생 장비": "발생 장비", "발생 계정": "발생 계정"}
 CHECKBOX_CHECKED = re.compile(r"\[\s*[xX✓✔]\s*\]|\(\s*[xX]\s*\)|☑|✅")
 CHECKBOX_ANY = re.compile(r"\[\s*[xX✓✔ ]?\s*\]|\(\s*[xX ]?\s*\)|☐|☑")
+# Jira 체크 목록(ADF taskList)에서 선택한 항목은 REST API v2의 wiki markup에 취소선 "-제안-"으로 나온다(INNO-36 검수, 2026-10-08)
+STRUCK_ITEM = re.compile(r"^\s*(?:[*#-]+\s+)?-(?=[^\s-])[^\n]*[^\s-]-\s*$", re.M)
 STOP_TO, WORK_STATUS, RTD = "Backlog", "In Progress", "ready-to-done"     # Jira 상태 이름. 비교는 is_status로 대소문자 무시
 REQUEST_KO = "request 전환(담당자가 완료를 요청해 task를 ready-to-done 상태로 보내는 Jira 전환)"   # 검사 표에 나가는 전환 이름. 프롬프트의 "request 전환"과 같은 이름
 LINES_NOTE = "(안내문과 빈 줄을 뺀 줄 수)"
@@ -137,8 +139,18 @@ def check_bug_template(desc: str, attachment_count: int) -> dict:
 
 
 def check_issue_template(desc: str) -> dict:
+    """Issue의 description 구역(이슈 유형, 이슈 내용)을 검사한다.
+
+    이슈 유형은 체크 글자(CHECKBOX_CHECKED)나 Jira 체크 목록의 선택 항목(취소선 줄, STRUCK_ITEM)이 있으면 선택됨으로 본다.
+
+    Args:
+        desc: description(wiki markup).
+
+    Returns:
+        이슈 유형 선택(I1)과 이슈 내용 작성(I2)의 결과와 내용 칸 문구. I1은 체크 상태를 글자로 알 수 없으면 unknown이다.
+    """
     kind = section_body(desc, "이슈 유형")
-    if CHECKBOX_CHECKED.search(kind):
+    if CHECKBOX_CHECKED.search(kind) or STRUCK_ITEM.search(kind):
         i1 = ("pass", "유형 선택됨")
     elif CHECKBOX_ANY.search(kind):
         i1 = ("fail", "체크된 유형 없음")

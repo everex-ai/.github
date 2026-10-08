@@ -13,6 +13,7 @@
 - 근거는 결정을 적은 comment의 링크, 또는 이관해서 만든 task의 키다.
 - precheck.json(`scripts/precheck.py`가 계산한 검사 결과 파일)의 이슈 유형 선택 (I1) 결과가 unknown이면, description.wiki의 이슈 유형 구역을 직접 읽어 선택된 항목이 있는지 판단한다.
   - unknown은 스크립트가 체크박스 상태를 텍스트로 확인할 수 없을 때의 결과다(`scripts/precheck.py`의 `check_issue_template`).
+  - 이슈 유형 체크박스에서 선택한 항목은 description.wiki에 취소선(예: `-제안-`)으로 나온다(INNO-36 시험 실행, 2026-10-08). 취소선 항목이 있으면 선택된 것으로 판단한다.
 
 ## 검사 항목
 | ID | 이름 | 검사 내용 | 계산 주체 | 검수 모드 영향 |

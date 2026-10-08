@@ -76,14 +76,17 @@ To-Be 동작 확인 comment (B4)는 확인 comment가 있는지를, B7은 그 �
 ## tldr.wiki 형식
 ```
 h2. Summary
+
 h3. 원인
 * (발생 원인을 구체적으로. 근거: [PR 또는 comment 링크]. 기록이나 코드를 해석해 추론한 원인이면 앞에 "추정:")
+
 h3. 해결
 * (해결 내용을 구체적으로. 근거: [PR 링크], 배포: 버전 또는 날짜)
 * (To-Be 동작 확인: YYYY-MM-DD 누가 확인, [comment 링크])
 * {color:#6b778c}상태: <issue.json의 status>, 검수 결과: <통과|검토 요청|보류>, 갱신: <meta.json의 collectedAt, YYYY-MM-DD HH:MM>{color}
 ```
 - 원인이나 해결을 아직 모르면 그 항목에 "(미확인)"이라고 적는다.
+- h3. 소제목 앞에는 빈 줄을 둔다. 빈 줄이 없으면 Jira가 소제목을 앞 목록 항목에 붙여 표시한다(INNO-34 시험 실행의 TL;DR, 2026-10-08).
 
 ## comment.wiki (검수 모드, 결과 요약 부분만)
 검수 모드(review 실행 모드)에서는 원인과 해결이 무엇이었고 To-Be 확인이 있었는지를 개조식 2–4줄로 적는다.

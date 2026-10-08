@@ -1152,6 +1152,25 @@ def test_bug_and_issue_review_do_not_compute_t8(render, ja, tmp_path, itype, pre
     assert all("(T8)" not in body for _, body in j.comments)
 
 
+@pytest.mark.parametrize(
+    ("kind", "want"),
+    [
+        ("* -제안-\n* 이슈\n* 기타\n", "pass"),
+        ("-제안-\n이슈\n-기타(: 일정 공유)-\n", "pass"),
+        ("* 제안\n* 이슈\n* 기타(: )\n", "unknown"),
+        ("* 제안\n----\n* 기타\n", "unknown"),
+        ("* [ ] 제안\n* [ ] 이슈\n", "fail"),
+        ("- -제안-\n- 이슈\n", "pass"),
+        ("* [x] 제안\n* [ ] 이슈\n", "pass"),
+    ],
+    ids=["취소선 글머리표", "취소선 줄", "선택 없음", "가로줄", "빈 체크박스", "취소선 대시 글머리표", "체크 글자"],
+)
+def test_issue_type_counts_struck_item_as_selected(jp, kind, want):
+    # Jira 체크 목록에서 선택한 항목은 API v2 wiki markup에 취소선으로 나온다(INNO-36 검수, 2026-10-08)
+    desc = f"h2. 이슈 유형\n\n{kind}\nh2. 이슈 내용\n\n* a\n* b\n"
+    assert jp.check_issue_template(desc)["I1"]["result"] == want
+
+
 def test_issue_run_issue_dir_has_no_a2(jp, tmp_path):
     d = tmp_path / "INNO-35"
     d.mkdir()
