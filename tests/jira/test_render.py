@@ -56,6 +56,7 @@ def slack(ja, monkeypatch, tmp_path_factory):
     users = tmp_path_factory.mktemp("slack") / "slack-users.json"
     users.write_text(json.dumps({"acc-assignee": "U-ASSIGNEE", "acc-lead": "U-LEAD"}), encoding="utf-8")
     monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("SLACK_USERS_JSON", raising=False)  # 대응표를 secret이 아니라 아래 임시 파일에서 읽게 한다
     monkeypatch.setattr(ja, "SLACK_USERS", users)
     monkeypatch.setattr(ja, "slack_post", lambda text: sent.append(text) or "전송 완료")
     return sent
@@ -236,6 +237,122 @@ def test_slack_failure_stays_in_summary(render, ja, tmp_path, monkeypatch):
     monkeypatch.setattr(ja, "slack_post", lambda text: "전송 실패: HTTP Error 500")
     _, summ = run_review(render, ja, tmp_path, "fix", ITEMS)
     assert "Slack 보류 알림: 전송 실패: HTTP Error 500" in summ.rows[0]
+
+
+SLACK_USERS_FORMAT_WARNING = "SLACK_USERS_JSON 형식이 틀려 Slack 멘션 없이 이름으로 보냄"
+SLACK_USERS_EMPTY_WARNING = "Slack 멘션 대응표가 비어 멘션 없이 이름으로 보냄"
+
+
+def write_weekly_scan(ctx):
+    """ctx/_scan/에 주간 점검 알림 하나(INNO-40, 담당자 이름 담당자A, stop 사유 미기재)를 쓴다."""
+    scan = ctx / "_scan"
+    scan.mkdir(parents=True)
+    alerts = {
+        "key": "INNO-40",
+        "summary": "라벨 재수집",
+        "url": "https://example.atlassian.net/browse/INNO-40",
+        "assignee": {"accountId": "acc-assignee", "displayName": "담당자A"},
+        "alerts": [{"check": "R4", "code": "HOLD_REASON_MISSING:2026-09-08", "detail": "stop 사유 comment 필요"}],
+    }
+    (scan / "INNO-40.alerts.json").write_text(json.dumps(alerts, ensure_ascii=False), encoding="utf-8")
+
+
+def run_weekly(ja, work):
+    """주간 점검을 실행하고 Actions Summary 파일에 쓴 글을 돌려준다."""
+    write_weekly_scan(work / "ctx")
+    summ = ja.Summary(str(work / "summary.md"))
+    ja.slack_weekly(work / "ctx", summ)
+    summ.flush()
+    return (work / "summary.md").read_text(encoding="utf-8")
+
+
+def test_slack_users_env_comes_before_file(render, ja, tmp_path, monkeypatch, slack, capsys):
+    monkeypatch.setenv("SLACK_USERS_JSON", json.dumps({"acc-assignee": "U-ENV", "acc-lead": "U-ENV-LEAD"}))
+    assert ja.load_slack_users() == ({"acc-assignee": "U-ENV", "acc-lead": "U-ENV-LEAD"}, None)
+    _, summ = run_review(render, ja, tmp_path, "fix", ITEMS)
+    assert slack[0].startswith("<@U-ENV> [INNO-17] 검수 결과: 보류. ")
+    summ.flush()
+    summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
+    # secret의 Slack 멤버 ID는 Slack 본문에만 들어가고 print, Summary 행, Summary 파일에는 나가지 않음
+    assert "U-ENV" not in capsys.readouterr().out + "".join(summ.rows) + summary
+
+
+@pytest.mark.parametrize("value", ["", "  \n", None], ids=["빈 문자열", "공백만", "설정 안 됨"])
+def test_slack_users_empty_env_uses_file(render, ja, tmp_path, monkeypatch, slack, value):
+    if value is None:
+        monkeypatch.delenv("SLACK_USERS_JSON", raising=False)
+    else:
+        monkeypatch.setenv("SLACK_USERS_JSON", value)
+    assert ja.load_slack_users() == ({"acc-assignee": "U-ASSIGNEE", "acc-lead": "U-LEAD"}, None)
+    run_review(render, ja, tmp_path, "fix", ITEMS)
+    assert slack[0].startswith("<@U-ASSIGNEE> [INNO-17] 검수 결과: 보류. ")
+
+
+@pytest.mark.parametrize(
+    "value", ['{"acc-assignee": "U-SECRET"', '["U-SECRET"]'], ids=["JSON 형식 오류", "객체가 아님"]
+)
+def test_slack_users_invalid_env_sends_names_and_warns(render, ja, tmp_path, monkeypatch, slack, capsys, value):
+    monkeypatch.setenv("SLACK_USERS_JSON", value)
+    assert ja.load_slack_users() == ({}, SLACK_USERS_FORMAT_WARNING)
+    # 검수 모드: 파일에 담당자 ID가 있어도 사용하지 않고, 담당자 이름 자리(이름이 없으면 "담당자 미지정")로 보냄
+    _, summ = run_review(render, ja, tmp_path / "review", "fix", ITEMS)
+    assert slack[0].startswith("담당자 미지정 [INNO-17] 검수 결과: 보류. ")
+    assert SLACK_USERS_FORMAT_WARNING in summ.rows[0]
+    # 주간 점검: Slack 본문에 멘션이 없고 담당자 이름이 있으며, 경고가 Summary에 남음
+    summary = run_weekly(ja, tmp_path / "weekly")
+    assert "<@" not in slack[-1] and "담당 담당자A, " in slack[-1]
+    assert SLACK_USERS_FORMAT_WARNING in summary
+    assert "U-SECRET" not in summary + "".join(summ.rows) + capsys.readouterr().out  # secret 값을 출력하지 않음
+
+
+def test_weekly_summary_copy_has_names_not_mentions(ja, tmp_path, monkeypatch, slack, capsys):
+    monkeypatch.delenv("SLACK_USERS_JSON", raising=False)
+    summary = run_weekly(ja, tmp_path)
+    head = slack[-1].splitlines()[0]
+    assert head.endswith("전달사항] <@U-ASSIGNEE>")  # Slack 머리줄의 멘션 목록
+    assert "<@U" in slack[-1] and "담당 <@U-ASSIGNEE>, " in slack[-1]
+    copy = summary.split("### 주간 점검 (Slack 전송 완료)\n\n```\n")[1].split("\n```")[0]
+    assert copy.splitlines()[0] == head.split("] ")[0] + "]"  # Summary 사본의 머리줄에는 멘션 목록이 없음
+    assert "<@" not in summary and "담당 담당자A, " in copy
+    # 파일 대응표의 Slack 멤버 ID는 print와 Summary 파일(행과 사본)에 나가지 않음
+    assert "U-ASSIGNEE" not in capsys.readouterr().out + summary
+
+
+@pytest.mark.parametrize(
+    ("env", "file_table"),
+    [("{}", "fixture"), ('{"_설명": "설명만 있음"}', "fixture"), ("", {"_설명": "설명만 있음"}), (None, None)],
+    ids=["secret이 빈 객체", "secret에 설명만 있음", "secret이 비고 파일에 설명만 있음", "secret과 파일이 모두 없음"],
+)
+def test_slack_users_empty_table_warns(render, ja, tmp_path, monkeypatch, slack, env, file_table):
+    if env is None:
+        monkeypatch.delenv("SLACK_USERS_JSON", raising=False)
+    else:
+        monkeypatch.setenv("SLACK_USERS_JSON", env)
+    if file_table != "fixture":  # "fixture"는 fixture slack의 임시 파일(항목 2개)을 그대로 둠
+        users = tmp_path / "slack-users.json"
+        if file_table is not None:
+            users.write_text(json.dumps(file_table, ensure_ascii=False), encoding="utf-8")
+        monkeypatch.setattr(ja, "SLACK_USERS", users)
+    assert ja.load_slack_users() == ({}, SLACK_USERS_EMPTY_WARNING)
+    _, summ = run_review(render, ja, tmp_path / "review", "fix", ITEMS)
+    assert slack[0].startswith("담당자 미지정 [INNO-17] 검수 결과: 보류. ")
+    assert SLACK_USERS_EMPTY_WARNING in summ.rows[0]
+    summary = run_weekly(ja, tmp_path / "weekly")
+    assert "<@" not in slack[-1] and "담당 담당자A, " in slack[-1]
+    assert SLACK_USERS_EMPTY_WARNING in summary
+
+
+@pytest.mark.parametrize("source", ["env", "file"])
+def test_slack_users_skips_description_and_non_string_values(ja, tmp_path, monkeypatch, source):
+    table = {"_설명": "Jira accountId -> Slack 멤버 ID", "acc-assignee": "U-ASSIGNEE", "acc-num": 7, "acc-list": ["U1"]}
+    table["acc-null"] = None
+    if source == "env":
+        monkeypatch.setenv("SLACK_USERS_JSON", json.dumps(table, ensure_ascii=False))
+    else:
+        monkeypatch.delenv("SLACK_USERS_JSON", raising=False)
+        (tmp_path / "slack-users.json").write_text(json.dumps(table, ensure_ascii=False), encoding="utf-8")
+        monkeypatch.setattr(ja, "SLACK_USERS", tmp_path / "slack-users.json")
+    assert ja.load_slack_users() == ({"acc-assignee": "U-ASSIGNEE"}, None)
 
 
 @pytest.mark.parametrize("prefix", ["검수 결과: ", "판정: "], ids=["새 접두어", "이전 접두어"])

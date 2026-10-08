@@ -515,6 +515,8 @@ def render(out_dir: Path) -> list[Path]:
             "GITHUB_SERVER_URL": "https://github.com",
             "GITHUB_REPOSITORY": "everex-ai/.github",
             "GITHUB_RUN_ID": "123456",
+            # 비워 두어 load_slack_users가 secret 대신 아래에서 바꾼 SLACK_USERS(임시 파일)를 읽게 한다
+            "SLACK_USERS_JSON": "",
         }
         stack.enter_context(mock.patch.dict(os.environ, run_env))
         stack.enter_context(mock.patch.object(ja, "now_stamp", lambda: FIXED_NOW.strftime("%Y-%m-%d %H:%M")))
@@ -640,9 +642,13 @@ def render(out_dir: Path) -> list[Path]:
             ja.apply_alerts(j, ctx, LEAD, ja.Summary(str(work / "summary.md")))
         save("missing-alert-comment.wiki", "\n\n".join(body for _, body in j.comments))
 
+        weekly_summ = ja.Summary(str(work / "weekly-summary.md"))
         with contextlib.redirect_stdout(io.StringIO()):
-            ja.slack_weekly(ctx, ja.Summary(str(work / "summary.md")))
+            ja.slack_weekly(ctx, weekly_summ)
+        weekly_summ.flush()
         save("weekly-slack.txt", sent[-1])  # 검수 알림도 sent에 쌓이므로 마지막에 보낸 주간 점검 본문을 쓴다
+        # Actions Summary 탭에 남기는 주간 점검 사본. Slack 멤버 ID 대신 Jira 표시 이름이 들어간다
+        save("weekly-summary.md", (work / "weekly-summary.md").read_text(encoding="utf-8"))
     return saved
 
 

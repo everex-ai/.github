@@ -67,7 +67,7 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
 | `prompts/review.md`, `prompts/digest.md` | 검수 모드, 정리 모드에서 CI agent가 읽는 지시 |
 | `prompts/types/{task,bug,issue}.md` | work type별 구역, 출력 형식, 검수 결과 기준 |
 | `schemas/verdict.json` | verdict.json의 스키마 |
-| `config/slack-users.json` | Jira accountId와 Slack 멤버 ID 짝. 주간 점검 메시지와 검수 뒤 Slack 알림의 멘션에 사용 |
+| `config/slack-users.json` | `SLACK_USERS_JSON`이 비어 있을 때 apply.py가 읽는 Jira accountId와 Slack 멤버 ID 대응표 파일(`scripts/apply.py`의 `load_slack_users`). Actions 실행에서 사용하는 대응표는 secret `SLACK_USERS_JSON`에 있어 이 파일에는 설명만 둠 |
 
 - 스크립트 검사 9개는 아래와 같다(`scripts/precheck.py`의 `run_issue_dir`, `run_scan`).
   - 예상 산출물 작성 (T1), 진행 배경 작성 (T2)
@@ -88,7 +88,7 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
    - F1과 F3의 repository_dispatch 실행은 기본 브랜치의 코드를 사용한다(INNO-29의 request 전환으로 생긴 실행 `36821640590`의 브랜치가 main, `gh run list --repo everex-ai/.github --workflow jira-doc.yml`).
    - 다른 브랜치의 코드는 Actions 수동 실행에서 브랜치를 골라 시험한다(`gh workflow run jira-doc.yml --ref <브랜치>`).
 2. repo의 Settings > Secrets and variables > Actions에 아래 표의 값을 등록한다.
-   - Actions 워크플로가 읽는 secret 6개와 variable 5개가 모두 표에 있다(Actions 워크플로의 `env`).
+   - Actions 워크플로가 읽는 secret 7개와 variable 5개가 모두 표에 있다(Actions 워크플로의 `env`).
 
 | 이름 | 종류 | 값 |
 |---|---|---|
@@ -98,9 +98,10 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
 | `ORG_READ_TOKEN` | secret | Organization 전체 repo의 Pull requests 읽기 권한이 있는 GitHub fine-grained PAT(권한과 대상 repo를 골라 발급하는 personal access token). 없으면 PR 수집을 건너뜀(`scripts/collect.py`의 `gh`) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | secret | `claude setup-token`으로 발급한 Claude 구독 토큰 |
 | `SLACK_WEBHOOK_URL` | secret | 주간 점검 메시지와 검수 뒤 Slack 알림을 받을 Slack 채널의 Incoming Webhook URL |
+| `SLACK_USERS_JSON` | secret | Jira accountId를 키로, Slack 멤버 ID를 값으로 둔 JSON 문자열. 주간 점검 메시지와 검수 뒤 Slack 알림의 멘션에 사용(`scripts/apply.py`의 `load_slack_users`) |
 | `JIRA_DOC_GATE` | variable | `false`(관찰 모드). 게이트 모드에서는 `true` |
 | `JIRA_PROJECT_KEY` | variable | `INNO` |
-| `JIRA_LEAD_ACCOUNT_ID` | variable | 팀장의 Atlassian accountId |
+| `JIRA_LEAD_ACCOUNT_ID` | variable | 팀장의 Jira accountId |
 | `JIRA_TLDR_FIELD_ID` | variable | `customfield_10650` |
 | `JIRA_SITE_URL` | variable (선택) | `https://<site>.atlassian.net`. 비우면 Jira serverInfo API로 알아냄(`scripts/jira_api.py`의 `site_url`) |
 
@@ -111,8 +112,10 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
      - 검수 결과가 보류이면 apply.py가 이 전환을 실행한다(`scripts/apply.py`의 `review_transition`, `scripts/jira_api.py`의 `transition_to`).
    - `end` 전환에 Administrator 제한을 건다. 통과와 검토 요청 task는 팀장이 확인한 뒤 done으로 직접 전환하기 때문이다("검수 뒤 흐름" 절).
      - apply.py는 `end` 전환을 실행하지 않는다(`scripts/apply.py`의 `review_transition`).
-5. `config/slack-users.json`에 담당자들과 팀장의 Jira accountId와 Slack 멤버 ID를 넣는다.
-   - 파일에 없는 사람은 멘션되지 않는다. Slack 메시지에는 담당자의 Jira 표시 이름 또는 "팀장"이 표시된다(`scripts/apply.py`의 `slack_mention`, `apply_issue`).
+5. 담당자들과 팀장의 Jira accountId와 Slack 멤버 ID 대응표를 secret `SLACK_USERS_JSON`에 등록한다.
+   - 값은 `{"<Jira accountId>": "<Slack 멤버 ID>", …}` 꼴의 JSON 문자열이다(`scripts/apply.py`의 `load_slack_users`). 등록 명령: `gh secret set SLACK_USERS_JSON --repo everex-ai/.github < <JSON 파일>`
+   - 이 repo는 public이라(https://github.com/everex-ai/.github) 대응표를 `config/slack-users.json`에 넣지 않는다. 파일에는 설명만 있고, secret이 비어 있을 때만 apply.py가 이 파일을 읽는다(`scripts/apply.py`의 `load_slack_users`).
+   - 대응표에 없는 사람은 멘션되지 않는다. Slack 메시지에는 담당자의 Jira 표시 이름 또는 "팀장"이 표시된다(`scripts/apply.py`의 `slack_mention`, `apply_issue`).
 
 ## 실행 모드
 
@@ -204,7 +207,8 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
 8. "검수 뒤 흐름" 절의 표대로 상태가 바뀌거나 유지되고 Slack 알림이 가는지 확인한다.
 9. mode를 `digest`, issueKey에 task 키를 넣어 실행하면 TL;DR과 결과 산출물 구역만 갱신되고 comment는 달리지 않는다(F3과 같은 동작).
    - 결과 산출물 구역의 회색 안내 줄 끝에 `(F3 정리: Jira task 화면의 문서 정리 버튼)`이 붙는다(`scripts/apply.py`의 `apply_issue`).
-10. mode를 `alerts`, issueKey를 비워 실행하면 주간 점검 메시지가 Slack 채널로 간다. 메시지 본문은 Summary 탭에도 남는다(`scripts/apply.py`의 `slack_weekly`).
+10. mode를 `alerts`, issueKey를 비워 실행하면 주간 점검 메시지가 Slack 채널로 간다.
+    - 메시지 사본은 Summary 탭에도 남고, 사본에는 멘션 대신 담당자의 Jira 표시 이름이 들어간다(`scripts/apply.py`의 `slack_weekly`).
 
 ## 운영 중 자주 하는 일
 
@@ -240,6 +244,8 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
 - 팀장용 문서화 리뷰 comment의 팀장 멘션은 jira-doc이 팀장 계정으로 작성한다.
   - 추정: Jira는 자기 자신을 멘션한 comment에 알림을 보내지 않을 수 있다.
   - 관찰 모드 동안은 Summary 탭이나 JQL(Jira 검색 조건) `project = INNO AND comment ~ "문서화 리뷰"`로 문서화 리뷰 comment를 모아 확인한다.
+- 주간 점검 메시지의 사본은 Summary 탭에도 남는다. apply.py는 이 사본에 Slack 멘션 대신 담당자의 Jira 표시 이름을 적는다(`scripts/apply.py`의 `slack_weekly`).
+  - 이유: public repo의 Actions 실행 화면은 GitHub에 로그인한 누구나 볼 수 있어, 멘션(`<@U…>`)을 그대로 남기면 Slack 멤버 ID가 드러난다(https://docs.github.com/en/actions/how-tos/monitor-workflows/use-workflow-run-logs: "You must be logged in to a GitHub account to view workflow run information, including for public repositories.").
 - 주간 점검 메시지는 중복을 걸러 내지 않는다(`scripts/apply.py`의 `weekly_lines`, `slack_weekly`).
   - 사유나 활동을 남길 때까지 매주 같은 항목이 다시 올라온다.
 - 미연결 PR(제목에 task 키가 없는 병합 PR) 보고는 주간 점검 메시지에서 뺐다(`scripts/apply.py`의 `ALERT_SECTIONS`).
