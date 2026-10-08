@@ -3,7 +3,7 @@
 
 - ctx/<KEY>/            -> ctx/<KEY>/precheck.json   (Claude가 인용하는 검사 결과와 예상 산출물 목록)
 - ctx/_scan/<KEY>.json  -> ctx/_scan/<KEY>.alerts.json (주간 점검 알림. apply.py가 Slack으로 보냄)
-검사 항목의 정의는 prompts/rules.md(설계 문서 5.5절)와 같다.
+검사 항목의 정의는 prompts/rules.md와 prompts/types/<work type>/review.md의 검사 항목 표와 같다.
 """
 from __future__ import annotations
 
@@ -18,12 +18,17 @@ from jira_api import STOP_REASON_PREFIX, section_body, strip_placeholders  # noq
 
 LIST_ITEM_RE = re.compile(r"^\s*(?:([*#\-]+)|(\d+)[.)])\s+(.*)$")   # 글머리표(*, #, -), 번호(1. 1))
 LEGACY_AC_RE = re.compile(r"^AC-\d+\s*[:：]\s*")                       # 예전 형식 'AC-1:'은 접두어만 떼고 본문을 쓴다
-BUG_ASIS_FIELDS = ["발생 기기", "발생 일자", "발생 장비", "발생 계정", "발생 내용"]
+# Bug의 기본 정보 구역 항목. 키는 줄을 찾는 접두어, 값은 내용 칸에 적는 템플릿의 항목 이름
+BUG_INFO_FIELDS = {"발생 기기": "발생 기기/서비스", "발생 일자": "발생 일자", "발생 장비": "발생 장비", "발생 계정": "발생 계정"}
 CHECKBOX_CHECKED = re.compile(r"\[\s*[xX✓✔]\s*\]|\(\s*[xX]\s*\)|☑|✅")
 CHECKBOX_ANY = re.compile(r"\[\s*[xX✓✔ ]?\s*\]|\(\s*[xX ]?\s*\)|☐|☑")
+# Jira 체크 목록(ADF taskList)에서 선택한 항목은 REST API v2의 wiki markup에 취소선 "-제안-"으로 나온다(INNO-36 검수, 2026-10-08)
+STRUCK_ITEM = re.compile(r"^\s*(?:[*#-]+\s+)?-(?=[^\s-])[^\n]*[^\s-]-\s*$", re.M)
 STOP_TO, WORK_STATUS, RTD = "Backlog", "In Progress", "ready-to-done"     # Jira 상태 이름. 비교는 is_status로 대소문자 무시
 REQUEST_KO = "request 전환(담당자가 완료를 요청해 task를 ready-to-done 상태로 보내는 Jira 전환)"   # 검사 표에 나가는 전환 이름. 프롬프트의 "request 전환"과 같은 이름
 LINES_NOTE = "(안내문과 빈 줄을 뺀 줄 수)"
+# 문서화 리뷰의 배경 구역. 구역은 제목 앞부분으로 찾으므로 "문제"로 Bug의 "문제(As-Is)"를 찾는다
+DOC_BACKGROUND_SECTIONS = {"Task": "진행 배경", "Bug": "문제", "Issue": "이슈 내용"}
 
 
 def is_status(name: str | None, target: str) -> bool:
@@ -102,23 +107,50 @@ def check_task_template(desc: str) -> dict:
 
 
 def check_bug_template(desc: str, attachment_count: int) -> dict:
-    asis = section_body(desc, "현황")
+    """Bug의 description field 구성(기본 정보, 문제(As-Is), 개선(To-Be), 첨부 자료(필수))을 검사한다.
+
+    Args:
+        desc: description(wiki markup).
+        attachment_count: Jira task의 첨부 파일 개수.
+
+    Returns:
+        B1(기본 정보 항목, 문제(As-Is) 내용, Jira 첨부 파일)과 B2(개선(To-Be) 내용)의 결과와 내용 칸 문구.
+    """
+    info = section_body(desc, "기본 정보")
     missing = []
-    for label in BUG_ASIS_FIELDS:
-        m = re.search(rf"{re.escape(label)}[^:：\n]*[:：][ \t]*(.*)", asis)
+    for prefix, name in BUG_INFO_FIELDS.items():
+        m = re.search(rf"{re.escape(prefix)}[^:：\n]*[:：][ \t]*(.*)", info)
         if not m or not strip_placeholders(m.group(1)):
-            missing.append(label)
-    b1_ok = not missing and attachment_count >= 1
-    filled = f"현황 항목 {len(BUG_ASIS_FIELDS)}개({', '.join(BUG_ASIS_FIELDS)}) 모두 채워짐"
-    b1_detail = (filled if not missing else "비어 있는 현황 항목: " + ", ".join(missing)) + f", 첨부 {attachment_count}개"
+            missing.append(name)
+    problem = strip_placeholders(section_body(desc, "문제"))
+    b1_ok = not missing and bool(problem) and attachment_count >= 1
+    if missing:
+        info_detail = f"기본 정보 중 비어 있는 항목 {len(missing)}개({', '.join(missing)})"
+    else:
+        info_detail = f"기본 정보 항목 {len(BUG_INFO_FIELDS)}개({', '.join(BUG_INFO_FIELDS.values())}) 모두 채워짐"
+    b1_detail = ", ".join([
+        info_detail,
+        f"문제(As-Is) 내용 {len(problem)}줄{LINES_NOTE}",
+        f"첨부 파일 {attachment_count}개",
+    ])
     tobe = strip_placeholders(section_body(desc, "개선"))
     return {"B1": {"result": "pass" if b1_ok else "fail", "detail": b1_detail},
-            "B2": {"result": "pass" if tobe else "fail", "detail": f"개선(To-be) 내용 {len(tobe)}줄{LINES_NOTE}"}}
+            "B2": {"result": "pass" if tobe else "fail", "detail": f"개선(To-Be) 내용 {len(tobe)}줄{LINES_NOTE}"}}
 
 
 def check_issue_template(desc: str) -> dict:
+    """Issue의 description 구역(이슈 유형, 이슈 내용)을 검사한다.
+
+    이슈 유형은 체크 글자(CHECKBOX_CHECKED)나 Jira 체크 목록의 선택 항목(취소선 줄, STRUCK_ITEM)이 있으면 선택됨으로 본다.
+
+    Args:
+        desc: description(wiki markup).
+
+    Returns:
+        이슈 유형 선택(I1)과 이슈 내용 작성(I2)의 결과와 내용 칸 문구. I1은 체크 상태를 글자로 알 수 없으면 unknown이다.
+    """
     kind = section_body(desc, "이슈 유형")
-    if CHECKBOX_CHECKED.search(kind):
+    if CHECKBOX_CHECKED.search(kind) or STRUCK_ITEM.search(kind):
         i1 = ("pass", "유형 선택됨")
     elif CHECKBOX_ANY.search(kind):
         i1 = ("fail", "체크된 유형 없음")
@@ -200,10 +232,19 @@ def check_r4(stops: list[dict]) -> dict:
     return {"result": "pass", "detail": f"{detail}. 늦게 기록: {'; '.join(marks)}", "late": True}
 
 
-def check_a2(itype: str, changelog: list[dict], desc_section: str) -> dict:
-    """가장 최근 Ready-to-Done 전환 이후에 완료 기준 구역(Task: 예상 산출물, Bug: 개선)이 바뀌었는가."""
-    if itype == "Issue":
-        return {"result": "n/a", "detail": "Issue는 해당 없음"}
+def check_a2(changelog: list[dict], desc_section: str, label: str | None = None) -> dict:
+    """가장 최근 Ready-to-Done 전환 이후에 완료 기준 구역(Task: 예상 산출물, Bug: 개선)이 바뀌었는지 검사한다.
+
+    Issue는 완료 기준 구역이 없어 이 검사를 하지 않는다(run_issue_dir이 부르지 않음).
+
+    Args:
+        changelog: changelog.json의 상태 전환과 description 변경 이력.
+        desc_section: 구역을 찾는 제목 앞부분.
+        label: 내용 칸에 적는 구역 이름. 없으면 desc_section을 적는다.
+
+    Returns:
+        A2(완료 기준의 사후 변경)의 결과와 내용 칸 문구.
+    """
     rtd_times = [parse_ts(c["created"]) for c in changelog if c["field"] == "status" and is_status(c.get("to"), RTD)]
     if not rtd_times:
         return {"result": "n/a", "detail": f"{REQUEST_KO} 이력 없음"}
@@ -215,13 +256,27 @@ def check_a2(itype: str, changelog: list[dict], desc_section: str) -> dict:
         before = section_body(c.get("from") or "", desc_section)
         after = section_body(c.get("to") or "", desc_section)
         if before.strip() != after.strip():
-            return {"result": "fail", "detail": f"{fmt_ts(changed)}에 '{desc_section}' 구역이 바뀜 (마지막 {REQUEST_KO} {fmt_ts(last)} 이후)"}
+            return {"result": "fail", "detail": f"{fmt_ts(changed)}에 '{label or desc_section}' 구역이 바뀜 (마지막 {REQUEST_KO} {fmt_ts(last)} 이후)"}
     return {"result": "pass", "detail": f"마지막 {REQUEST_KO} 이후 완료 기준 변경 없음"}
 
 
-def doc_facts(d: Path, desc: str, changelog: list[dict], human: list[dict], now: dt.datetime) -> dict:
-    """문서화 리뷰(T4~T7)를 agent가 판단할 때 인용하는 사실. 판단은 하지 않고 수치만 모은다."""
-    bg = strip_placeholders(section_body(desc, "진행 배경"))
+def doc_facts(d: Path, itype: str, desc: str, changelog: list[dict], human: list[dict], now: dt.datetime) -> dict:
+    """문서화 리뷰(Task T4–T7, Bug B5–B7, Issue I4–I5)를 agent가 판단할 때 인용하는 사실. 판단은 하지 않고 수치만 모은다.
+
+    배경 줄 수는 work type별 배경 구역(DOC_BACKGROUND_SECTIONS: Task 진행 배경, Bug 문제(As-Is), Issue 이슈 내용)에서 센다.
+
+    Args:
+        d: ctx/<KEY>/ 폴더. subtasks/*.json이 있으면 sub-task별 수치를 센다.
+        itype: work type(Task, Bug, Issue).
+        desc: description(wiki markup).
+        changelog: changelog.json의 상태 전환과 description 변경 이력.
+        human: 사람 comment 목록.
+        now: 지금 시각. request 전환 이력이 없으면 작업 기간의 끝으로 쓴다.
+
+    Returns:
+        background(배경 줄 수와 글자 수), activity(작업 기간과 기간 중 comment 수), subtasks(sub-task별 수치).
+    """
+    bg = strip_placeholders(section_body(desc, DOC_BACKGROUND_SECTIONS[itype]))
     status_changes = [c for c in changelog if c["field"] == "status"]
     starts = [t for t in (parse_ts(c["created"]) for c in status_changes if is_status(c.get("to"), WORK_STATUS)) if t]
     requests = [t for t in (parse_ts(c["created"]) for c in status_changes if is_status(c.get("to"), RTD)) if t]
@@ -253,6 +308,15 @@ def doc_facts(d: Path, desc: str, changelog: list[dict], human: list[dict], now:
 
 
 def run_issue_dir(d: Path, now: dt.datetime) -> None:
+    """ctx/<KEY>/의 수집 결과로 스크립트 검사를 계산해 ctx/<KEY>/precheck.json에 쓴다.
+
+    work type별 템플릿 검사(Task T1, T2, Bug B1, B2, Issue I1, I2), 완료 기준의 사후 변경(A2, Task와 Bug만),
+    stop 사유 comment(R4)와 문서화 리뷰용 수치(docFacts)를 담는다.
+
+    Args:
+        d: 수집 단계가 만든 ctx/<KEY>/ 폴더(issue.json, description.wiki, comments.json, changelog.json).
+        now: 지금 시각.
+    """
     issue = json.loads((d / "issue.json").read_text(encoding="utf-8"))
     desc = (d / "description.wiki").read_text(encoding="utf-8")
     comments = json.loads((d / "comments.json").read_text(encoding="utf-8"))
@@ -268,14 +332,15 @@ def run_issue_dir(d: Path, now: dt.datetime) -> None:
         t = check_task_template(desc)
         out["expected"] = t.pop("expected")
         out["checks"].update(t)
-        out["checks"]["A2"] = check_a2(itype, changelog, "예상 산출물")
-        out["docFacts"] = doc_facts(d, desc, changelog, human, now)
+        out["checks"]["A2"] = check_a2(changelog, "예상 산출물")
+        out["docFacts"] = doc_facts(d, itype, desc, changelog, human, now)
     elif itype == "Bug":
         out["checks"].update(check_bug_template(desc, len(issue.get("attachments", []))))
-        out["checks"]["A2"] = check_a2(itype, changelog, "개선")
+        out["checks"]["A2"] = check_a2(changelog, "개선", "개선(To-Be)")
+        out["docFacts"] = doc_facts(d, itype, desc, changelog, human, now)
     elif itype == "Issue":
         out["checks"].update(check_issue_template(desc))
-        out["checks"]["A2"] = check_a2(itype, changelog, "")
+        out["docFacts"] = doc_facts(d, itype, desc, changelog, human, now)
     out["checks"]["R4"] = check_r4(stops)
     (d / "precheck.json").write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
     fails = [k for k, v in out["checks"].items() if v["result"] == "fail"]

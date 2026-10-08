@@ -34,7 +34,7 @@ ISSUE_FIELDS = ["summary", "status", "assignee", "reporter", "created", "updated
 # 사람 구역(해시와 검사에 쓰는 구역). agent 구역은 제외한다.
 HUMAN_SECTIONS = {
     "Task": ["진행 배경", "예상 산출물"],
-    "Bug": ["현황", "개선", "첨부"],
+    "Bug": ["기본 정보", "문제", "개선", "첨부"],
     "Issue": ["이슈 유형", "이슈 내용"],
 }
 
@@ -208,15 +208,17 @@ def collect_issue(j: Jira, key: str, site: str, org: str, mode: str, force: bool
 
 
 def collect_scan(j: Jira, project: str, site: str) -> None:
-    """누락 검사용 요약. Done/Deleted가 아닌 모든 최상위 task."""
+    """누락 검사(stop 사유 comment, 활동 없음)용 요약. Done/Deleted가 아닌 모든 최상위 task.
+
+    scripts/precheck.py의 run_scan이 읽는다. 템플릿 누락은 Jira 전환 검증이 막으므로 description 구역과 첨부 수는 모으지 않는다.
+    """
     types = ", ".join(TARGET_TYPES)
     jql = f'project = {project} AND issuetype in ({types}) AND statusCategory != Done AND status != Deleted ORDER BY created ASC'
-    fields = ["summary", "status", "issuetype", "created", "updated", "assignee", "description", "attachment", "comment"]
+    fields = ["summary", "status", "issuetype", "created", "updated", "assignee", "comment"]
     for it in j.search(jql, fields):
         key = it["key"]
         f = it.get("fields", {})
         itype = canon_type((f.get("issuetype") or {}).get("name", ""))
-        desc = f.get("description") or ""
         raw_comments = (f.get("comment") or {}).get("comments", [])
         comments = norm_comments(raw_comments, site, key)
         changelog = norm_changelog(j.changelog(key))
@@ -225,13 +227,10 @@ def collect_scan(j: Jira, project: str, site: str) -> None:
             "summary": f.get("summary"), "url": f"{site}/browse/{key}" if site else "",
             "created": f.get("created"), "updated": f.get("updated"),
             "assignee": {"accountId": (f.get("assignee") or {}).get("accountId"), "displayName": (f.get("assignee") or {}).get("displayName")},
-            "attachmentCount": len(f.get("attachment") or []),
-            "sections": {t: section_body(desc, t) for t in ["진행 배경", "예상 산출물", "현황", "개선", "첨부", "이슈 유형", "이슈 내용"]},
             # body: 본문 앞 100자. 늦게 남긴 stop 사유("stop 사유:"로 시작하는 comment)를 precheck가 찾는 데 쓴다
             "humanComments": [{"created": c["created"], "url": c["url"], "body": c["body"][:100]}
                               for c in comments if c["kind"] == "human"],
             "statusChanges": [c for c in changelog if c["field"] == "status"],
-            "state": j.prop_get(key),
         })
 
 
