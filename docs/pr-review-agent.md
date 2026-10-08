@@ -271,10 +271,10 @@ PR 작성자가 이의를 남기고 지정 리뷰어가 `review/override` 라벨
 설치는 이 repo의 main 반영, secret과 variable 등록, 호출 yml 배치, PR로 확인의 순서다.
 
 1. 이 repo(`everex-ai/.github`)의 변경을 `main`에 올린다. 이 repo는 public repo라서 대상 repo의 기본 토큰으로 checkout된다.
-2. `CLAUDE_CODE_OAUTH_TOKEN`을 organization secret으로 등록한다(Organization Settings > Secrets and variables > Actions > New organization secret).
-   - 대상 repo가 늘어도 secret을 다시 등록할 필요가 없다.
-   - Repository access는 "Selected repositories"로 대상 repo들을 고르거나 "Private repositories"로 둔다.
-   - `.github` repo는 public이라 "Private repositories" 범위에 들어가지 않으므로, jira-doc이 사용하는 `.github` repo의 기존 repo secret은 지우지 않는다. 같은 이름이면 repo secret이 우선한다.
+2. 대상 repo마다 `CLAUDE_CODE_OAUTH_TOKEN`을 repo secret으로 등록한다(Settings > Secrets and variables > Actions > New repository secret).
+   - 2026-10-08 기준으로 등록된 곳은 `everex-ai/.github`(jira-doc)와 `everex-ai/pose-ai-verifier`다(repo마다 `gh secret list -R <repo>`로 확인).
+   - `CLAUDE_CODE_OAUTH_TOKEN`을 다시 발급한 사람이 등록된 repo의 secret을 모두 교체한다.
+   - Claude Code 문서는 여러 repo가 공유하는 secret에 `CLAUDE_CODE_OAUTH_TOKEN` 같은 OAuth 토큰 대신 API key(Claude Console에서 발급해 사용량만큼 과금되는 key)를 권장한다. OAuth 토큰은 발급한 사람의 구독에 묶이기 때문이다(https://code.claude.com/docs/en/github-actions.md "Set up for an organization": "an OAuth token is tied to the subscription of the person who ran `claude setup-token`").
 3. 대상 repo에 `workflow-templates/pr-review.yml`을 `.github/workflows/pr-review.yml`로 넣는다. 의존성 설치 명령이나 Python 버전이 다르면 `with:`에서 바꾼다.
 4. 대상 repo의 `.gitignore`에 `.everex-review/`를 넣는다.
 5. override를 사용하려면 `workflow-templates/pr-review-override.yml`을 `.github/workflows/pr-review-override.yml`로 넣고, repo variable `PR_REVIEW_REVIEWERS`에 지정 리뷰어 계정을 쉼표로 등록한다(Settings > Secrets and variables > Actions > Variables).
@@ -289,7 +289,12 @@ PR 작성자가 이의를 남기고 지정 리뷰어가 `review/override` 라벨
   - 추정: 그래서 PR 작성자가 `reviewers`에 자기 계정을 넣고 `review/override` 라벨을 붙이면 override가 성립한다. 게이트 모드를 사용할 때는 branch protection이나 CODEOWNERS로 호출 yml 변경을 막아야 한다.
 - pytest는 PR의 코드를 실행한다(일반 CI와 같음).
 - 추정: Claude 단계에는 Bash 도구가 없어 PR 내용이 Claude를 속여도 명령 실행이나 토큰 유출로 이어지지 않는다. `Write`는 경로를 한정하지 않으므로 git이 추적하지 않는 파일의 변경은 `--require-clean`으로 잡히지 않는다.
-- Claude 사용량은 구독 토큰(`CLAUDE_CODE_OAUTH_TOKEN`) 소유자의 요금제 한도를 소모하고, 별도로 과금되지 않는다.
+- Claude 사용량은 `CLAUDE_CODE_OAUTH_TOKEN`을 발급한 사람의 좌석 사용량 한도를 소모한다.
+  - 좌석은 Team plan(회사가 구독한 Claude 조직용 요금제)에서 구성원 한 명에게 배정된 사용 권한이다.
+  - 좌석 사용량 한도는 사람별이라, 발급한 사람이 직접 Claude를 사용한 양과 같은 좌석 사용량 한도를 나눠 사용한다(https://support.claude.com/en/articles/9266767-what-is-the-team-plan: "Usage limits on Team plans are per-member").
+  - 2026-10-08 기준 Team plan 관리자 설정에서 usage credits(좌석 사용량 한도를 넘은 뒤의 사용량을 과금하는 설정)는 꺼져 있다.
+  - Team plan 문서는 usage credits를 켜야 좌석 사용량 한도를 넘은 뒤에도 계속 사용할 수 있다고 적는다(https://support.claude.com/en/articles/9266767-what-is-the-team-plan: "enable usage credits to allow team members ... to continue working ... after reaching their included usage limits").
+  - 추정: 그래서 좌석 사용량 한도를 넘어도 과금되지 않고 Claude 단계가 실패한다.
 - 로그의 `api_equiv_usd`는 같은 사용량을 API 종량제로 사용했을 때의 환산값이다(`scripts/review/claude_summary.py`의 `summarize`가 `total_cost_usd`를 소수 둘째 자리로 반올림해 출력함).
   - precheck 판정이 반려이거나 등급이 0이면 Claude 단계를 실행하지 않아 0이다.
 - `concurrency`로 같은 PR의 이전 실행은 취소된다(`.github/workflows/pr-review.yml`의 `concurrency`).
@@ -348,6 +353,13 @@ pytest && ruff check . && ruff format --check .
     - 회당 약 0.7–1.3 USD, 1–2분. 모델은 orchestrator opus, subagent sonnet
     - 추정: 이 값도 `claude-result.json`의 같은 필드 값이다. 실측 기록에 출처 필드가 적혀 있지 않다.
   - 위 실측은 모두 subagent를 sonnet으로 실행한 결과다. 지금 배정(test-necessity와 design-review는 opus, dead-code는 haiku)으로는 다시 측정하지 않았다.
+- 실제 PR 실측(Actions 로그의 `[claude] ... api_equiv_usd=...`). USD 값은 API 종량제 환산값이다.
+  - 2026-10-02 11:58–19:04 KST, pose-ai-verifier PR #6, #10–#16에서 Claude 단계가 실행된 20회(`gh run list -R everex-ai/pose-ai-verifier -w pr-review --json databaseId,createdAt`로 2026-09-24 이후 실행 41회를 찾고, `gh api repos/everex-ai/pose-ai-verifier/actions/runs/<실행 ID>/logs`로 받은 로그에 `api_equiv_usd`가 있는 20회를 셈. PR 번호는 실행의 브랜치로 `gh pr list --head <브랜치> --state all`에서 찾음)
+    - Claude 단계 1회의 `api_equiv_usd`는 20회 값의 산술평균 8.41 USD, 최솟값–최댓값 6.30–12.55 USD, 합 168.27 USD다.
+    - 모델은 orchestrator claude-opus-5(`orchestrator_model` 기본값, `.github/workflows/pr-review.yml:33`)다. subagent는 test-necessity와 design-review가 opus, test-coverage가 sonnet, dead-code가 haiku다(`plugins/everex-review/agents/*.md`의 `model` 값을 그대로 적음. 추정: opus는 claude-opus-5, sonnet은 claude-sonnet-5로 실행된다).
+    - 이 subagent 모델 배정(commit `43432b3`)은 merge commit `940dde9`(PR #5)로 2026-10-02 10:18 KST에 `main`에 반영됐고(`git log --first-parent main`), 20회 모두 그 뒤에 실행됐다.
+  - 평균 8.41 USD는 2026-09-30 `--clean` fixture 실측값으로 나누면 1.71 USD 대비 4.9배, 1.64 USD 대비 5.1배다.
+    - 추정: 실제 PR은 `--clean` fixture보다 변경 파일과 심볼이 많아 turn(Claude가 응답을 한 번 생성하는 단위) 수가 늘기 때문이다.
 
 ## 다음 단계
 
