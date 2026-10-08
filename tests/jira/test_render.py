@@ -465,12 +465,21 @@ def test_failure_comment(ja, monkeypatch):
 
 def test_validate_verdict_message_names_doc_review_checks(ja):
     v = {"issueKey": "INNO-1", "mode": "review", "verdict": "pass", "checks": [], "items": [], "extra": []}
-    v |= {"requests": [], "feedback": [{"id": "T8", "points": []}]}
+    v |= {"requests": [], "feedback": [{"id": "T8", "points": []}]}  # T8은 apply.py가 계산하므로 feedback에 쓸 수 없음
     err = ja.validate_verdict(v, "review", "INNO-1")
     assert (
-        "진행 배경 충실도 (T4), 예상 산출물 분할 단위 (T5), 진행 기록 comment (T6), sub-task 기록 (T7) 중 하나" in err
-    )
+        "진행 배경 충실도 (T4), 예상 산출물 분할 단위 (T5), 진행 기록 comment (T6), sub-task 기록 (T7), "
+        "문제(As-Is) 재현 정보 (B5), 원인 분석 기록 (B6), 해결 확인 기록 (B7), "
+        "이슈 내용 충실도 (I4), 논의와 결정 기록 (I5) 중 하나"
+    ) in err
     assert "~" not in err
+
+
+@pytest.mark.parametrize("cid", ["B5", "B6", "B7", "I4", "I5"])
+def test_validate_verdict_accepts_bug_and_issue_feedback(ja, cid):
+    v = {"issueKey": "INNO-1", "mode": "review", "verdict": "pass", "checks": [], "items": [], "extra": []}
+    v |= {"requests": [], "feedback": [{"id": cid, "points": ["a"], "request": "b 필요"}]}
+    assert ja.validate_verdict(v, "review", "INNO-1") is None
 
 
 def test_alert_messages(jp, tmp_path):
@@ -504,6 +513,10 @@ def test_rendered_samples_have_no_formal_endings(render, tmp_path):
         "slack-review-hold.txt",
         "slack-review-request.txt",
         "slack-review-pass.txt",
+        "review-comment-bug-pass.wiki",
+        "doc-review-comment-bug.wiki",
+        "review-comment-issue-fix.wiki",
+        "doc-review-comment-issue.wiki",
     }
     for p in files:
         text = p.read_text(encoding="utf-8")
@@ -543,11 +556,11 @@ def test_a2_detail(jp):
             "created": "2026-09-20T10:12:00.000+0900",
         },
     ]
-    a2 = jp.check_a2("Bug", changelog, "개선")
+    a2 = jp.check_a2(changelog, "개선")
     assert a2["result"] == "fail"
     assert a2["detail"].startswith("2026-09-20 10:12에 '개선' 구역이 바뀜 (마지막 request 전환(")
     assert a2["detail"].endswith(") 2026-09-19 17:40 이후)")
-    assert jp.check_a2("Bug", [], "개선")["detail"].startswith("request 전환(")
+    assert jp.check_a2([], "개선")["detail"].startswith("request 전환(")
 
 
 BUG_INFO = {
@@ -1043,3 +1056,145 @@ def test_hold_reason_for_r4_is_a_sentence(ja, jp):
     t1 = {"id": "T1", "result": "fail", "detail": "예상 산출물 구역에 항목 없음"}
     got = ja.review_slack_reasons("fix", "Task", EXPECTED, ITEMS[:1], [], [t1, r4], [], "* 요약")
     assert got == [f"{ja.check_label('T1')}: 예상 산출물 구역에 항목 없음", want]
+
+
+# Bug, Issue 문서화 리뷰(Bug B5–B7, Issue I4–I5)
+BUG_PRE = {
+    "B1": {"result": "pass", "detail": "기본 정보 채워짐"},
+    "B2": {"result": "pass", "detail": "개선(To-Be) 있음"},
+    "A2": {"result": "n/a", "detail": "request 전환 이력 없음"},
+    "R4": {"result": "n/a", "detail": "stop 이력 없음"},
+}
+BUG_AGENT_CHECKS = [
+    {"id": "B3", "result": "pass", "detail": "원인과 해결에 PR 링크 있음"},
+    {"id": "B4", "result": "pass", "detail": "확인 comment 있음"},
+    {"id": "B5", "result": "fail", "detail": "재현 정보 부족"},
+    {"id": "B6", "result": "pass", "detail": "원인 분석 기록 있음"},
+    {"id": "B7", "result": "pass", "detail": "해결 확인 기록 있음"},
+    {"id": "R2", "result": "pass", "detail": "링크 있음"},
+]
+BUG_FEEDBACK = [{"id": "B5", "points": ["재현 절차 없음"], "request": "문제(As-Is)에 재현 절차 작성 필요"}]
+ISSUE_PRE = {
+    "I1": {"result": "pass", "detail": "유형 선택됨"},
+    "I2": {"result": "pass", "detail": "이슈 내용 2줄"},
+    "R4": {"result": "n/a", "detail": "stop 이력 없음"},
+}
+ISSUE_AGENT_CHECKS = [
+    {"id": "I3", "result": "pass", "detail": "결정 comment 링크 있음"},
+    {"id": "I4", "result": "pass", "detail": "제기 이유 있음"},
+    {"id": "I5", "result": "pass", "detail": "결정 이유 있음"},
+    {"id": "R2", "result": "pass", "detail": "링크 있음"},
+]
+
+
+def run_type_review(render, ja, work, itype, pre_checks, checks, feedback, gate=False, j=None):
+    """Bug 또는 Issue task(INNO-50)를 CI agent 판정 통과로 검수 모드 실행하고 FakeJira를 돌려준다."""
+    ctx, out = work / "ctx", work / "out"
+    render.write_issue(ctx, "INNO-50", itype, [], pre_checks)
+    v = {"issueKey": "INNO-50", "mode": "review", "verdict": "pass", "checks": checks}
+    v |= {"items": [], "extra": [], "requests": [], "feedback": feedback}
+    render.write_out(out, "INNO-50", v, "* 요약")
+    if j is None:
+        j = render.FakeJira({"INNO-50": ""})
+    ja.apply_issue(j, ctx / "INNO-50", out, "review", gate, "acc-lead", ja.Summary(str(work / "summary.md")))
+    return j
+
+
+def test_check_table_puts_bug_and_issue_doc_review_after_template_checks(ja):
+    ids = ["I5", "B7", "I3", "B5", "B4", "I4", "B6"]
+    table = ja.check_table([{"id": cid, "result": "pass", "detail": cid} for cid in ids])
+    labels = [row.split(" | ")[0].removeprefix("| ") for row in table.splitlines()[1:]]
+    assert labels == [
+        "To-Be 동작 확인 comment (B4)",
+        "문제(As-Is) 재현 정보 (B5)",
+        "원인 분석 기록 (B6)",
+        "해결 확인 기록 (B7)",
+        "대응 결과의 근거 (I3)",
+        "이슈 내용 충실도 (I4)",
+        "논의와 결정 기록 (I5)",
+    ]
+
+
+def test_bug_observe_doc_review_goes_to_lead_comment_only(render, ja, tmp_path):
+    j = run_type_review(render, ja, tmp_path, "Bug", BUG_PRE, BUG_AGENT_CHECKS, BUG_FEEDBACK)
+    assert len(j.comments) == 2
+    review, doc = j.comments[0][1], j.comments[1][1]
+    assert "검수 결과: *통과*" in review  # 관찰 모드는 문서화 리뷰로 검수 결과를 바꾸지 않음
+    assert "문서화 리뷰 결과(관찰 모드): *보완 필요*" in doc
+    assert "| 문제(As-Is) 재현 정보 (B5) | ❌ 보완 필요 | 재현 절차 없음 |" in doc
+    assert "| 원인 분석 기록 (B6) | ✅ 만족 | 원인 분석 기록 있음 |" in doc
+    assert "| 해결 확인 기록 (B7) | ✅ 만족 | 해결 확인 기록 있음 |" in doc
+    assert "# 문제(As-Is)에 재현 절차 작성 필요" in doc
+    assert all(f"({cid})" not in review for cid in ("B5", "B6", "B7"))
+    assert "| To-Be 동작 확인 comment (B4) | ✅ 만족 |" in review
+
+
+@pytest.mark.parametrize(("failed", "want"), [("I4", "보류"), ("I5", "보류"), (None, "통과")])
+def test_issue_gate_doc_review_fail_turns_pass_into_hold(render, ja, tmp_path, failed, want):
+    checks = [{**c, "result": "fail"} if c["id"] == failed else c for c in ISSUE_AGENT_CHECKS]
+    j = run_type_review(render, ja, tmp_path, "Issue", ISSUE_PRE, checks, [], gate=True)
+    assert len(j.comments) == 1  # 게이트 모드는 팀장용 문서화 리뷰 comment를 따로 남기지 않음
+    body = j.comments[0][1]
+    assert f"검수 결과: *{want}*" in body
+    if failed:
+        note = f"* 문서화 리뷰에 보완 필요 항목이 있어 통과에서 보류로 바꿈: {ja.check_label(failed)}\n"
+        assert note in body
+        assert f"| {ja.check_label(failed)} | ❌ 보완 필요 |" in body
+
+
+@pytest.mark.parametrize(
+    ("itype", "pre", "checks"),
+    [("Bug", BUG_PRE, BUG_AGENT_CHECKS), ("Issue", ISSUE_PRE, ISSUE_AGENT_CHECKS)],
+)
+def test_bug_and_issue_review_do_not_compute_t8(render, ja, tmp_path, itype, pre, checks):
+    j = run_type_review(render, ja, tmp_path, itype, pre, checks, [])
+    assert len(j.comments) == 2  # 검수 comment와 문서화 리뷰 comment
+    assert all("(T8)" not in body for _, body in j.comments)
+
+
+def test_issue_run_issue_dir_has_no_a2(jp, tmp_path):
+    d = tmp_path / "INNO-35"
+    d.mkdir()
+    issue = {"key": "INNO-35", "type": "Issue", "status": "Ready-to-Done"}
+    changelog = [{"field": "status", "to": "Ready-to-Done", "created": "2026-09-19T17:40:00.000+0900"}]
+    for name, data in [("issue.json", issue), ("comments.json", []), ("changelog.json", changelog)]:
+        (d / name).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    (d / "description.wiki").write_text("h2. 이슈 유형\n* [x] 제안\n\nh2. 이슈 내용\n* a\n* b\n", encoding="utf-8")
+    jp.run_issue_dir(d, NOW)
+    pre = json.loads((d / "precheck.json").read_text(encoding="utf-8"))
+    assert set(pre["checks"]) == {"I1", "I2", "R4"}
+    assert "docFacts" in pre
+
+
+@pytest.mark.parametrize(
+    ("itype", "desc", "lines"),
+    [
+        ("Task", "h2. 진행 배경\n* a\n\nh2. 예상 산출물\n* b\n* c\n", 1),
+        ("Bug", bug_desc(BUG_INFO, PROBLEM, TOBE).replace(f"* {PROBLEM}\n", f"* {PROBLEM}\n* 매번 일어남\n"), 2),
+        ("Issue", "h2. 이슈 유형\n* [x] 제안\n\nh2. 이슈 내용\n* a\n* b\n* c\n\nh2. 진행 배경\n* x\n", 3),
+    ],
+    ids=["Task는 진행 배경", "Bug는 문제(As-Is)", "Issue는 이슈 내용"],
+)
+def test_doc_facts_counts_background_by_work_type(jp, tmp_path, itype, desc, lines):
+    assert jp.doc_facts(tmp_path, itype, desc, [], [], NOW)["background"]["lines"] == lines
+
+
+def test_bug_observe_records_doc_fails(render, ja, tmp_path, monkeypatch):
+    j = render.FakeJira({"INNO-50": ""})
+    props: list[dict] = []
+    monkeypatch.setattr(j, "prop_set", lambda key, prop: props.append(prop))
+    run_type_review(render, ja, tmp_path, "Bug", BUG_PRE, BUG_AGENT_CHECKS, BUG_FEEDBACK, j=j)
+    assert props[-1]["docFails"] == ["B5"]  # jira-doc 기록에 보완 필요인 문서화 리뷰 항목 ID만 남음
+
+
+def test_bug_run_issue_dir_counts_problem_lines_as_background(jp, tmp_path):
+    d = tmp_path / "INNO-30"
+    d.mkdir()
+    issue = {"key": "INNO-30", "type": "Bug", "status": "Ready-to-Done", "attachments": [{}]}
+    for name, data in [("issue.json", issue), ("comments.json", []), ("changelog.json", [])]:
+        (d / name).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    desc = bug_desc(BUG_INFO, PROBLEM, TOBE).replace(f"* {PROBLEM}\n", f"* {PROBLEM}\n* 매번 일어남\n")
+    (d / "description.wiki").write_text(desc, encoding="utf-8")
+    jp.run_issue_dir(d, NOW)
+    pre = json.loads((d / "precheck.json").read_text(encoding="utf-8"))
+    assert pre["docFacts"]["background"]["lines"] == 2  # 문제(As-Is) 2줄. 기본 정보 4줄, 개선(To-Be) 1줄과 다름

@@ -3,7 +3,7 @@
 
 - ctx/<KEY>/            -> ctx/<KEY>/precheck.json   (Claude가 인용하는 검사 결과와 예상 산출물 목록)
 - ctx/_scan/<KEY>.json  -> ctx/_scan/<KEY>.alerts.json (주간 점검 알림. apply.py가 Slack으로 보냄)
-검사 항목의 정의는 prompts/rules.md(설계 문서 5.5절)와 같다.
+검사 항목의 정의는 prompts/rules.md와 prompts/types/<work type>/review.md의 검사 항목 표와 같다.
 """
 from __future__ import annotations
 
@@ -25,6 +25,8 @@ CHECKBOX_ANY = re.compile(r"\[\s*[xX✓✔ ]?\s*\]|\(\s*[xX ]?\s*\)|☐|☑")
 STOP_TO, WORK_STATUS, RTD = "Backlog", "In Progress", "ready-to-done"     # Jira 상태 이름. 비교는 is_status로 대소문자 무시
 REQUEST_KO = "request 전환(담당자가 완료를 요청해 task를 ready-to-done 상태로 보내는 Jira 전환)"   # 검사 표에 나가는 전환 이름. 프롬프트의 "request 전환"과 같은 이름
 LINES_NOTE = "(안내문과 빈 줄을 뺀 줄 수)"
+# 문서화 리뷰의 배경 구역. 구역은 제목 앞부분으로 찾으므로 "문제"로 Bug의 "문제(As-Is)"를 찾는다
+DOC_BACKGROUND_SECTIONS = {"Task": "진행 배경", "Bug": "문제", "Issue": "이슈 내용"}
 
 
 def is_status(name: str | None, target: str) -> bool:
@@ -218,11 +220,12 @@ def check_r4(stops: list[dict]) -> dict:
     return {"result": "pass", "detail": f"{detail}. 늦게 기록: {'; '.join(marks)}", "late": True}
 
 
-def check_a2(itype: str, changelog: list[dict], desc_section: str, label: str | None = None) -> dict:
+def check_a2(changelog: list[dict], desc_section: str, label: str | None = None) -> dict:
     """가장 최근 Ready-to-Done 전환 이후에 완료 기준 구역(Task: 예상 산출물, Bug: 개선)이 바뀌었는지 검사한다.
 
+    Issue는 완료 기준 구역이 없어 이 검사를 하지 않는다(run_issue_dir이 부르지 않음).
+
     Args:
-        itype: work type(Task, Bug, Issue).
         changelog: changelog.json의 상태 전환과 description 변경 이력.
         desc_section: 구역을 찾는 제목 앞부분.
         label: 내용 칸에 적는 구역 이름. 없으면 desc_section을 적는다.
@@ -230,8 +233,6 @@ def check_a2(itype: str, changelog: list[dict], desc_section: str, label: str | 
     Returns:
         A2(완료 기준의 사후 변경)의 결과와 내용 칸 문구.
     """
-    if itype == "Issue":
-        return {"result": "n/a", "detail": "Issue는 해당 없음"}
     rtd_times = [parse_ts(c["created"]) for c in changelog if c["field"] == "status" and is_status(c.get("to"), RTD)]
     if not rtd_times:
         return {"result": "n/a", "detail": f"{REQUEST_KO} 이력 없음"}
@@ -247,9 +248,23 @@ def check_a2(itype: str, changelog: list[dict], desc_section: str, label: str | 
     return {"result": "pass", "detail": f"마지막 {REQUEST_KO} 이후 완료 기준 변경 없음"}
 
 
-def doc_facts(d: Path, desc: str, changelog: list[dict], human: list[dict], now: dt.datetime) -> dict:
-    """문서화 리뷰(T4~T7)를 agent가 판단할 때 인용하는 사실. 판단은 하지 않고 수치만 모은다."""
-    bg = strip_placeholders(section_body(desc, "진행 배경"))
+def doc_facts(d: Path, itype: str, desc: str, changelog: list[dict], human: list[dict], now: dt.datetime) -> dict:
+    """문서화 리뷰(Task T4–T7, Bug B5–B7, Issue I4–I5)를 agent가 판단할 때 인용하는 사실. 판단은 하지 않고 수치만 모은다.
+
+    배경 줄 수는 work type별 배경 구역(DOC_BACKGROUND_SECTIONS: Task 진행 배경, Bug 문제(As-Is), Issue 이슈 내용)에서 센다.
+
+    Args:
+        d: ctx/<KEY>/ 폴더. subtasks/*.json이 있으면 sub-task별 수치를 센다.
+        itype: work type(Task, Bug, Issue).
+        desc: description(wiki markup).
+        changelog: changelog.json의 상태 전환과 description 변경 이력.
+        human: 사람 comment 목록.
+        now: 지금 시각. request 전환 이력이 없으면 작업 기간의 끝으로 쓴다.
+
+    Returns:
+        background(배경 줄 수와 글자 수), activity(작업 기간과 기간 중 comment 수), subtasks(sub-task별 수치).
+    """
+    bg = strip_placeholders(section_body(desc, DOC_BACKGROUND_SECTIONS[itype]))
     status_changes = [c for c in changelog if c["field"] == "status"]
     starts = [t for t in (parse_ts(c["created"]) for c in status_changes if is_status(c.get("to"), WORK_STATUS)) if t]
     requests = [t for t in (parse_ts(c["created"]) for c in status_changes if is_status(c.get("to"), RTD)) if t]
@@ -281,6 +296,15 @@ def doc_facts(d: Path, desc: str, changelog: list[dict], human: list[dict], now:
 
 
 def run_issue_dir(d: Path, now: dt.datetime) -> None:
+    """ctx/<KEY>/의 수집 결과로 스크립트 검사를 계산해 ctx/<KEY>/precheck.json에 쓴다.
+
+    work type별 템플릿 검사(Task T1, T2, Bug B1, B2, Issue I1, I2), 완료 기준의 사후 변경(A2, Task와 Bug만),
+    stop 사유 comment(R4)와 문서화 리뷰용 수치(docFacts)를 담는다.
+
+    Args:
+        d: 수집 단계가 만든 ctx/<KEY>/ 폴더(issue.json, description.wiki, comments.json, changelog.json).
+        now: 지금 시각.
+    """
     issue = json.loads((d / "issue.json").read_text(encoding="utf-8"))
     desc = (d / "description.wiki").read_text(encoding="utf-8")
     comments = json.loads((d / "comments.json").read_text(encoding="utf-8"))
@@ -296,14 +320,15 @@ def run_issue_dir(d: Path, now: dt.datetime) -> None:
         t = check_task_template(desc)
         out["expected"] = t.pop("expected")
         out["checks"].update(t)
-        out["checks"]["A2"] = check_a2(itype, changelog, "예상 산출물")
-        out["docFacts"] = doc_facts(d, desc, changelog, human, now)
+        out["checks"]["A2"] = check_a2(changelog, "예상 산출물")
+        out["docFacts"] = doc_facts(d, itype, desc, changelog, human, now)
     elif itype == "Bug":
         out["checks"].update(check_bug_template(desc, len(issue.get("attachments", []))))
-        out["checks"]["A2"] = check_a2(itype, changelog, "개선", "개선(To-Be)")
+        out["checks"]["A2"] = check_a2(changelog, "개선", "개선(To-Be)")
+        out["docFacts"] = doc_facts(d, itype, desc, changelog, human, now)
     elif itype == "Issue":
         out["checks"].update(check_issue_template(desc))
-        out["checks"]["A2"] = check_a2(itype, changelog, "")
+        out["docFacts"] = doc_facts(d, itype, desc, changelog, human, now)
     out["checks"]["R4"] = check_r4(stops)
     (d / "precheck.json").write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
     fails = [k for k, v in out["checks"].items() if v["result"] == "fail"]

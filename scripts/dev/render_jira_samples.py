@@ -5,7 +5,8 @@
 
 scripts/apply.py의 apply_issue, apply_alerts, slack_weekly를 가짜 Jira 객체와 샘플 입력으로 실행하고,
 Jira에 쓰려던 comment와 필드 값, Slack에 보내려던 본문을 파일로 저장한다.
-샘플 입력의 문구는 prompts/types/task.md의 출력 예시에서 가져온다.
+샘플 입력의 문구는 prompts/types/task/deliverables.md, prompts/types/task/review.md, prompts/types/bug/review.md,
+prompts/types/issue/review.md의 출력 예시에서 가져온다.
 """
 
 from __future__ import annotations
@@ -328,6 +329,9 @@ LATE_REASON = {
 BUG_CHECKS = [
     {"id": "B3", "result": "pass", "detail": "원인과 해결에 PR 링크 있음"},
     {"id": "B4", "result": "fail", "detail": "해결 뒤 To-Be 동작 확인 comment 없음"},
+    {"id": "B5", "result": "pass", "detail": "문제(As-Is)와 기본 정보로 재현 조건을 알 수 있음"},
+    {"id": "B6", "result": "pass", "detail": "원인을 찾은 과정이 PR 본문에 있음"},
+    {"id": "B7", "result": "fail", "detail": "해결 뒤 To-Be 확인 기록 없음"},
     {"id": "R2", "result": "pass", "detail": "원인과 해결마다 링크 있음"},
     {"id": "R3", "result": "pass", "detail": "agent 구역(TL;DR)을 개조식으로 작성함"},
 ]
@@ -353,14 +357,109 @@ BUG_CHANGELOG = [
     {"field": "status", "to": "Ready-to-Done", "created": "2026-09-19T17:40:00.000+0900"},
     {"field": "description", "from": BUG_DESC_OLD, "to": BUG_DESC, "created": "2026-09-20T10:12:00.000+0900"},
 ]
+# Bug 문서화 리뷰 샘플(INNO-33): 통과 조건은 모두 만족하고, 문서화 리뷰의 B5와 B7이 보완 필요인 경우.
+# feedback 문장은 prompts/types/bug/review.md의 feedback 예시에서 가져온다
+BUG_DOC_DESC = """h2. 기본 정보
+* 발생 기기/서비스: 포즈 추정 웹 콘솔
+* 발생 일자: 2026-09-12
+* 발생 장비: Windows 11 PC
+* 발생 계정: qa02
+
+h2. 문제(As-Is)
+* CSV export 안 됨
+
+h2. 개선(To-Be)
+* CSV export가 오류 없이 끝남
+
+h2. 첨부 자료(필수)
+* csv-export-error.png
+"""
+BUG_DOC_CHECKS = [
+    {"id": "B3", "result": "pass", "detail": "원인과 해결에 PR 링크 있음"},
+    {"id": "B4", "result": "pass", "detail": "해결 뒤 To-Be 동작을 확인한 사람 comment 있음"},
+    {"id": "B5", "result": "fail", "detail": "문제(As-Is)에 재현 절차, 조건, 빈도 없음"},
+    {"id": "B6", "result": "pass", "detail": "원인을 찾은 과정 comment 있음"},
+    {"id": "B7", "result": "fail", "detail": "To-Be 확인 comment에 반영 버전, 환경, 확인 방법 없음"},
+    {"id": "R2", "result": "pass", "detail": "원인과 해결마다 링크 있음"},
+    {"id": "R3", "result": "pass", "detail": "agent 구역(TL;DR)을 개조식으로 작성함"},
+]
+BUG_FEEDBACK = [
+    {
+        "id": "B5",
+        "points": [
+            "기본 정보에 발생 기기/서비스, 발생 일자, 발생 장비, 발생 계정이 모두 채워져 있음",
+            "문제(As-Is)에 'CSV export 안 됨'이라는 현상만 있고 어느 화면에서 무엇을 눌렀는지, 매번 일어나는지가 없음",
+        ],
+        "request": "문제(As-Is)에 재현 절차(화면과 조작 순서), 발생 조건, 발생 빈도 작성 필요",
+    },
+    {
+        "id": "B6",
+        "points": [
+            f"원인 분석 comment([comment 2026-09-15|{comment_url('INNO-33', 10210)}])에 오류 로그와 재현 결과가 함께 있어 "
+            "원인을 찾은 과정이 분명함"
+        ],
+    },
+    {
+        "id": "B7",
+        "points": [
+            "해결 PR([PR #51 CSV export 인코딩 수정|https://github.com/everex-ai/repo/pull/51]) 병합 뒤 사람 comment"
+            f"([comment 2026-09-17|{comment_url('INNO-33', 10220)}])는 '확인함' 한 줄뿐이라 어느 버전, 어느 환경에서 "
+            "To-Be 동작을 어떻게 확인했는지 알 수 없음"
+        ],
+        "request": "To-Be 동작을 확인한 반영 버전, 확인 환경, 확인 방법 comment 필요",
+    },
+]
+BUG_DOC_SUMMARY = f"""* 원인은 CSV 인코딩 처리 누락, 해결은 인코딩 지정으로 2026-09-16 병합됨([PR #51 CSV export 인코딩 수정|https://github.com/everex-ai/repo/pull/51])
+* 해결 뒤 To-Be 동작을 확인했다는 사람 comment 있음([comment 2026-09-17|{comment_url("INNO-33", 10220)}])"""
+# Issue 검수 샘플(INNO-35): 대응 결과의 근거(I3)가 보완 필요라 보류이고, 문서화 리뷰의 I5가 보완 필요인 경우.
+# feedback 문장은 prompts/types/issue/review.md의 feedback 예시에서 가져온다
+ISSUE_DESC = """h2. 이슈 유형
+* [x] 제안
+* [ ] 이슈
+* [ ] 기타
+
+h2. 이슈 내용
+* 추론 서버의 GPU 메모리 부족으로 배치 크기 16 요청이 실패함
+* 서버 증설과 모델 경량화 중 무엇으로 대응할지 결정 필요
+"""
+ISSUE_CHECKS = [
+    {"id": "I3", "result": "fail", "detail": "대응 결과(다른 task로 이관)에 이관해서 만든 task 키 없음"},
+    {"id": "I4", "result": "pass", "detail": "제기한 이유와 결정이 필요한 것 있음"},
+    {"id": "I5", "result": "fail", "detail": "검토한 대안과 결정 이유 없음"},
+    {"id": "R2", "result": "pass", "detail": "대응 결과에 결정 comment 링크 있음"},
+    {"id": "R3", "result": "pass", "detail": "agent 구역(TL;DR)을 개조식으로 작성함"},
+]
+ISSUE_FEEDBACK = [
+    {
+        "id": "I4",
+        "points": [
+            "추론 서버의 GPU 메모리 부족으로 요청이 실패한 사례와 결정이 필요한 것(서버 증설 또는 모델 경량화)이 이슈 내용에 "
+            "있어 제기한 이유가 분명함"
+        ],
+    },
+    {
+        "id": "I5",
+        "points": [
+            f"이관 결정 comment([comment 2026-09-20|{comment_url('INNO-35', 10300)}])에 결정만 있고 검토한 대안"
+            "(서버 증설, 모델 경량화)과 이관을 고른 이유가 없음"
+        ],
+        "request": "검토한 대안과 이관을 결정한 이유 comment 필요",
+    },
+]
+ISSUE_SUMMARY = (
+    "* 대응 결과는 다른 task로 이관하기로 한 결정만 있고 이관해서 만든 task 키가 기록에 없어 보류함"
+    f"([comment 2026-09-20|{comment_url('INNO-35', 10300)}])"
+)
 
 
 def precheck_checks(jp: types.ModuleType, itype: str, stops: list[dict] | None = None) -> dict:
     """샘플 task의 스크립트 검사 결과를 scripts/precheck.py의 검사 함수로 계산한다.
 
+    Issue는 완료 기준 구역이 없어 A2를 계산하지 않는다(scripts/precheck.py의 run_issue_dir과 같음).
+
     Args:
         jp: jira_precheck 모듈.
-        itype: Task 또는 Bug.
+        itype: Task, Bug 또는 Issue.
         stops: precheck.stop_events의 결과. 없으면 stop 이력이 없는 것으로 R4를 계산한다.
 
     Returns:
@@ -369,10 +468,12 @@ def precheck_checks(jp: types.ModuleType, itype: str, stops: list[dict] | None =
     if itype == "Task":
         checks = jp.check_task_template(TASK_DESC)
         checks.pop("expected")
-        checks["A2"] = jp.check_a2("Task", [], "예상 산출물")
-    else:
+        checks["A2"] = jp.check_a2([], "예상 산출물")
+    elif itype == "Bug":
         checks = jp.check_bug_template(BUG_DESC, 2)
-        checks["A2"] = jp.check_a2("Bug", BUG_CHANGELOG, "개선", "개선(To-Be)")
+        checks["A2"] = jp.check_a2(BUG_CHANGELOG, "개선", "개선(To-Be)")
+    else:
+        checks = jp.check_issue_template(ISSUE_DESC)
     checks["R4"] = jp.check_r4(stops or [])
     return checks
 
@@ -581,6 +682,35 @@ def render(out_dir: Path) -> list[Path]:
         with contextlib.redirect_stdout(io.StringIO()):
             ja.apply_issue(j, ctx / "INNO-30", out, "review", False, LEAD, ja.Summary(str(work / "summary.md")))
         save("review-comment-bug-escalate.wiki", j.comments[0][1])
+
+        # Bug 문서화 리뷰(관찰 모드): 검수 결과는 통과 그대로이고, B5–B7은 팀장용 문서화 리뷰 comment에만 들어감
+        bug_doc_checks = jp.check_bug_template(BUG_DOC_DESC, 1)
+        bug_doc_checks |= {"A2": jp.check_a2([], "개선", "개선(To-Be)"), "R4": jp.check_r4([])}
+        write_issue(ctx, "INNO-33", "Bug", [], bug_doc_checks)
+        bug_doc = {"issueKey": "INNO-33", "mode": "review", "verdict": "pass", "checks": BUG_DOC_CHECKS}
+        bug_doc |= {"items": [], "extra": [], "requests": [], "feedback": BUG_FEEDBACK}
+        write_out(out, "INNO-33", bug_doc, BUG_DOC_SUMMARY)
+        j = FakeJira({"INNO-33": BUG_DOC_DESC})
+        with contextlib.redirect_stdout(io.StringIO()):
+            ja.apply_issue(j, ctx / "INNO-33", out, "review", False, LEAD, ja.Summary(str(work / "summary.md")))
+        save("review-comment-bug-pass.wiki", j.comments[0][1])
+        save("doc-review-comment-bug.wiki", j.comments[1][1])
+
+        # Issue 검수(관찰 모드): I3 보완 필요로 보류. 검사 표에 A2 행이 없고, I4와 I5는 문서화 리뷰 comment에만 들어감
+        write_issue(ctx, "INNO-35", "Issue", [], precheck_checks(jp, "Issue"))
+        issue_v = {"issueKey": "INNO-35", "mode": "review", "verdict": "fix", "checks": ISSUE_CHECKS}
+        issue_v |= {
+            "items": [],
+            "extra": [],
+            "requests": ["이관해서 만든 task 키 comment 필요"],
+            "feedback": ISSUE_FEEDBACK,
+        }
+        write_out(out, "INNO-35", issue_v, ISSUE_SUMMARY)
+        j = FakeJira({"INNO-35": ISSUE_DESC})
+        with contextlib.redirect_stdout(io.StringIO()):
+            ja.apply_issue(j, ctx / "INNO-35", out, "review", False, LEAD, ja.Summary(str(work / "summary.md")))
+        save("review-comment-issue-fix.wiki", j.comments[0][1])
+        save("doc-review-comment-issue.wiki", j.comments[1][1])
 
         # 실패 알림: verdict.json이 없음
         write_issue(ctx, "INNO-31", "Task", jp.expected_items(TASK_DESC), precheck_checks(jp, "Task"))

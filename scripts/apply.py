@@ -9,7 +9,7 @@ alerts 모드(주간 점검)는 Jira에 쓰지 않고 ctx/_scan/*.alerts.json을
   정해진 형식으로 조립한다. Claude가 쓰는 자유 서술은 comment.wiki(결과 요약)와 tldr.wiki뿐이다.
 - 검수 결과는 통과(pass), 검토 요청(escalate), 보류(fix)다. 괄호 안은 verdict.json의 코드값이다.
 - T3: verdict.items의 번호가 precheck의 예상 산출물 번호(1..n)와 1:1이 아니면 검수 결과를 검토 요청으로 바꾼다.
-- 문서화 리뷰(T4–T8, Task 검수): 관찰 모드는 검수 결과를 바꾸지 않고 팀장용 comment와 Actions Summary로 공유하고,
+- 문서화 리뷰 항목(Task T4–T8, Bug B5–B7, Issue I4–I5. 검수 모드): 관찰 모드는 검수 결과를 바꾸지 않고 팀장용 comment와 Actions Summary로 공유하고,
   게이트 모드는 미달이면 통과를 보류로 바꾼다. T8(초과 달성·미달성 사유)은 이 스크립트가 계산한다.
 - Task 검수는 미달성 항목마다 담당자가 남긴 사유가 있으면 검토 요청으로, 통과인데 미달성 항목이 있으면 보류로 바꾼다.
 - 상태 전환(검수 모드): 보류이고 지금 상태가 ready-to-done이면 In Progress로 되돌린다. 통과와 검토 요청은 상태를
@@ -33,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from jira_api import AGENT_MARK, STOP_REASON_PREFIX, Jira, JiraError, set_section  # noqa: E402
 
 VERDICT_KO = {"pass": "통과", "fix": "보류", "escalate": "검토 요청", None: "정리"}
-# 검수 결과를 다시 정하는 규칙(recheck_verdict)과 상태 전환. 검사 이름은 CHECK_NAMES, prompts/rules.md와 같다
+# 검수 결과를 다시 정하는 규칙(recheck_verdict)과 상태 전환. 검사 이름은 CHECK_NAMES, prompts/rules.md와 prompts/types/<work type>/review.md의 검사 항목 표와 같다
 OWNER_FIXABLE_CHECKS = ("T1", "T2", "R2", "R4", "B1", "B2", "B3", "B4", "I1", "I2", "I3")   # 담당자가 고칠 수 있는 검사. 실패하면 보류
 SENTENCE_DETAIL_CHECKS = ("R4",)                                              # detail이 이유 문장이라 Slack 보류 이유에 검사 이름 없이 적는 검사
 SLACK_INDENT = "    "                                                         # Slack 메시지의 묶음 항목 들여쓰기(공백 4칸). 검수 알림과 주간 점검에 사용
@@ -50,7 +50,7 @@ SECTION_NOTE = {"Task": "agent가 comment, sub-task, PR 기록을 근거로 작�
 SOURCE_KO = {"review": "검수", "digest": "F3 정리: Jira task 화면의 문서 정리 버튼"}     # 결과 산출물 구역의 안내 줄 끝에 붙여 출처를 보인다
 
 # 검사 항목의 표시 순서와 이름. Jira comment의 검사 표는 항상 이 순서로, 이 이름으로 나간다 (ID는 괄호로 덧붙인다).
-# 정의는 prompts/rules.md(설계 문서 5.5절)와 같다.
+# 정의는 prompts/rules.md와 prompts/types/<work type>/review.md의 검사 항목 표와 같다.
 CHECK_NAMES = {
     "T1": "예상 산출물 작성",
     "T2": "진행 배경 작성",
@@ -64,9 +64,14 @@ CHECK_NAMES = {
     "B2": "개선(To-Be) 작성",
     "B3": "원인과 해결의 근거 링크",
     "B4": "To-Be 동작 확인 comment",
+    "B5": "문제(As-Is) 재현 정보",
+    "B6": "원인 분석 기록",
+    "B7": "해결 확인 기록",
     "I1": "이슈 유형 선택",
     "I2": "이슈 내용 작성",
     "I3": "대응 결과의 근거",
+    "I4": "이슈 내용 충실도",
+    "I5": "논의와 결정 기록",
     "R2": "1년 뒤에도 이해 가능한 기록",
     "R3": "개조식 작성",
     "R4": "stop 사유 comment",
@@ -75,8 +80,10 @@ CHECK_NAMES = {
 }
 CHECK_ORDER = {cid: i for i, cid in enumerate(CHECK_NAMES)}
 RESULT_KO = {"pass": "✅ 만족", "fail": "❌ 보완 필요", "n/a": "➖ 해당 없음"}   # 검사 표 결과 칸. 모든 검사 항목에 같은 표시
-# 문서화 리뷰(Task 검수). 관찰 모드에서는 검수 결과를 바꾸지 않고 팀장용 comment로, 게이트 모드에서는 보류로 이어진다
-DOC_CHECKS = ("T4", "T5", "T6", "T7", "T8")
+# 문서화 리뷰(검수 모드)의 work type별 항목. 관찰 모드에서는 검수 결과를 바꾸지 않고 팀장용 comment로, 게이트 모드에서는 보류로 이어진다
+DOC_CHECKS = {"Task": ("T4", "T5", "T6", "T7", "T8"), "Bug": ("B5", "B6", "B7"), "Issue": ("I4", "I5")}
+ALL_DOC_CHECKS = tuple(cid for ids in DOC_CHECKS.values() for cid in ids)          # 세 work type의 문서화 리뷰 항목 전체
+FEEDBACK_DOC_CHECKS = tuple(cid for cid in ALL_DOC_CHECKS if cid != "T8")         # CI agent가 feedback에 적는 항목. T8은 이 스크립트가 계산(check_t8)
 CELL_BREAK = " \\\\ "                                                              # Jira wiki 표 칸 안의 줄바꿈
 NO_REASON = "사유 미기재"
 VERDICT_KEY_KO = {"issueKey": "task 키", "mode": "실행 모드", "verdict": "판정", "checks": "검사 결과 목록",
@@ -312,7 +319,7 @@ def doc_review_result(doc_checks: list[dict]) -> str:
     """문서화 리뷰 결과 값. 문서화 리뷰 항목에 보완 필요가 하나라도 있으면 "보완 필요", 없으면 "통과".
 
     Args:
-        doc_checks: 문서화 리뷰 항목(T4–T8)의 검사 결과 목록.
+        doc_checks: 문서화 리뷰 항목(Task T4–T8, Bug B5–B7, Issue I4–I5)의 검사 결과 목록.
 
     Returns:
         "보완 필요" 또는 "통과".
@@ -324,7 +331,7 @@ def doc_review_comment(doc_checks: list[dict], feedback: list[dict], lead: str) 
     """관찰 모드의 팀장용 문서화 리뷰 comment. 첫 줄에 문서화 리뷰 결과 값(doc_review_result)을 적는다.
 
     Args:
-        doc_checks: 문서화 리뷰 항목(T4–T8)의 검사 결과 목록.
+        doc_checks: 문서화 리뷰 항목(Task T4–T8, Bug B5–B7, Issue I4–I5)의 검사 결과 목록.
         feedback: verdict.json의 feedback(문서화 리뷰 항목별 피드백).
         lead: 팀장의 Jira accountId. 비어 있으면 멘션하지 않는다.
 
@@ -345,7 +352,7 @@ def doc_review_md(key: str, doc_checks: list[dict], feedback: list[dict]) -> lis
 
     Args:
         key: task 키.
-        doc_checks: 문서화 리뷰 항목(T4–T8)의 검사 결과 목록.
+        doc_checks: 문서화 리뷰 항목(Task T4–T8, Bug B5–B7, Issue I4–I5)의 검사 결과 목록.
         feedback: verdict.json의 feedback(문서화 리뷰 항목별 피드백).
 
     Returns:
@@ -428,8 +435,19 @@ def load_slack_users() -> tuple[dict[str, str], str | None]:
     return users, (None if users else "Slack 멘션 대응표가 비어 멘션 없이 이름으로 보냄")
 
 
-def validate_verdict(v, mode: str, key: str) -> str | None:
-    """schemas/verdict.json의 핵심 제약만 검사한다. 문제가 있으면 이유를 돌려준다."""
+def validate_verdict(v: object, mode: str, key: str) -> str | None:
+    """schemas/verdict.json의 핵심 제약만 검사한다.
+
+    feedback의 id는 CI agent가 적는 문서화 리뷰 항목(FEEDBACK_DOC_CHECKS: T4–T7, B5–B7, I4–I5) 중 하나여야 한다.
+
+    Args:
+        v: verdict.json을 JSON으로 읽은 값.
+        mode: 실행 모드(review: 검수, digest: F3 정리).
+        key: task 키(ctx 폴더 이름).
+
+    Returns:
+        문제가 있으면 그 이유, 없으면 None.
+    """
     if not isinstance(v, dict):
         return "verdict.json이 객체가 아님"
     for k in ("issueKey", "mode", "verdict", "checks", "items", "extra", "requests"):
@@ -452,8 +470,8 @@ def validate_verdict(v, mode: str, key: str) -> str | None:
     if not isinstance(v["requests"], list) or not all(isinstance(r, str) for r in v["requests"]):
         return "requests(담당자 요청 목록) 형식 오류"
     fb = v.get("feedback", [])
-    if not isinstance(fb, list) or not all(isinstance(f, dict) and f.get("id") in DOC_CHECKS[:-1] and isinstance(f.get("points"), list) for f in fb):
-        return (f"feedback(문서화 리뷰 항목별 피드백) 형식 오류 (항목마다 id(검사 ID)는 {', '.join(check_label(c) for c in DOC_CHECKS[:-1])} "
+    if not isinstance(fb, list) or not all(isinstance(f, dict) and f.get("id") in FEEDBACK_DOC_CHECKS and isinstance(f.get("points"), list) for f in fb):
+        return (f"feedback(문서화 리뷰 항목별 피드백) 형식 오류 (항목마다 id(검사 ID)는 {', '.join(check_label(c) for c in FEEDBACK_DOC_CHECKS)} "
                 "중 하나, points(피드백 문장 목록) 필요)")
     return None
 
@@ -589,16 +607,19 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
                 notes.append(changes[-1])
             v = "escalate"
 
-    # 문서화 리뷰 (Task 검수만): Claude가 T4–T7과 feedback을 내고 T8은 여기서 계산한다.
+    # 문서화 리뷰 (검수 모드, 문서화 리뷰 항목이 있는 work type): Claude가 그 work type의 항목(Task T4–T7, Bug B5–B7,
+    # Issue I4–I5)과 feedback을 내고, Task의 T8은 여기서 계산한다. 검수 comment의 검사 표에서는 세 work type의 항목을 모두 뺀다.
     # 관찰 모드는 검수 결과를 그대로 두고 팀장용 comment로 공유, 게이트 모드는 미달이면 통과를 보류로 바꾼다
     requests = list(verdict["requests"])
     feedback = verdict.get("feedback") or []
-    doc_checks = [c for c in checks if c["id"] in DOC_CHECKS and c["id"] != "T8"]
-    checks = [c for c in checks if c["id"] not in DOC_CHECKS]
+    type_doc_checks = DOC_CHECKS.get(itype, ())
+    doc_checks = [c for c in checks if c["id"] in type_doc_checks and c["id"] != "T8"]
+    checks = [c for c in checks if c["id"] not in ALL_DOC_CHECKS]
     doc_fails: list[str] = []
-    if mode == "review" and itype == "Task":
-        doc_checks.append(check_t8(expected, items, extra))
-        missing = [cid for cid in DOC_CHECKS if cid not in {c["id"] for c in doc_checks}]
+    if mode == "review" and type_doc_checks:
+        if itype == "Task":
+            doc_checks.append(check_t8(expected, items, extra))
+        missing = [cid for cid in type_doc_checks if cid not in {c["id"] for c in doc_checks}]
         if missing:
             notes.append(f"문서화 리뷰 항목 누락: {', '.join(check_label(cid) for cid in missing)}")
         doc_fails = [c["id"] for c in doc_checks if c["result"] == "fail"]
@@ -661,7 +682,7 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
         notes.append(state_note)                       # 검수 comment의 검수 결과 줄 아래에 나간다
         summary = strip_claude_header((o / "comment.wiki").read_text(encoding="utf-8")) if (o / "comment.wiki").exists() else ""
         text = review_comment(v, checks, expected if itype == "Task" else [], items, extra, summary, requests, notes,
-                              feedback if gate else None)   # 게이트 모드에서만 검수 표에 T4–T8이 들어간다
+                              feedback if gate else None)   # 게이트 모드에서만 검수 표에 문서화 리뷰 항목이 들어간다
         if v == "escalate" and lead and f"[~accountid:{lead}]" not in text:
             text += f"\n\n팀장 확인 필요: [~accountid:{lead}]"
         elif v != "escalate" and assignee and f"[~accountid:{assignee}]" not in text:
@@ -691,7 +712,7 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
                  "inputHash": meta.get("inputHash", prop.get("inputHash"))})
     if mode == "review":                               # F3 정리는 판정을 내지 않으므로 검수 판정을 덮어쓰지 않는다
         prop["lastVerdict"] = v
-        if itype == "Task":
+        if type_doc_checks:                            # 문서화 리뷰 항목이 있는 work type만 기록한다
             prop["docFails"] = doc_fails
     prop.setdefault("notified", [])
     j.prop_set(key, prop)
