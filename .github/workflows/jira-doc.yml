@@ -77,10 +77,10 @@ jobs:
           claude_args: |
             --model claude-sonnet-5-5
             --max-turns ${{ env.MODE == 'digest' && 200 || 40 }}
-            --allowedTools "Read(ctx/**),Read(prompts/**),Read(schemas/**),Edit(out/**)"
+            --allowedTools "Read(ctx/**),Read(prompts/**),Read(schemas/**),Edit(out/**),Edit(/${{ github.workspace }}/out/**)"
 
       # 3단계의 전체 출력은 Jira 기록이 담겨 있어 public 로그에 남기지 않는다(show_full_output: false).
-      # 실패 원인을 알 수 있게 실행 결과 수치와, 실패했을 때만 result 문구(API 오류 문구)를 남긴다
+      # 실패 원인을 알 수 있게 실행 결과 수치, 거부된 파일 쓰기 경로, 실패했을 때만 result 문구(API 오류 문구)를 남긴다
       - name: 3-1. Claude 실행 결과 요약
         if: always() && steps.claude.outputs.execution_file != ''
         env:
@@ -94,6 +94,9 @@ jobs:
                   continue
               print(f"is_error={r.get('is_error')} subtype={r.get('subtype')} num_turns={r.get('num_turns')} total_cost_usd={r.get('total_cost_usd')}")
               print("permission_denials=" + ",".join(d.get("tool_name", "?") for d in r.get("permission_denials") or []))
+              for d in r.get("permission_denials") or []:   # 파일 쓰기 거부는 경로만 남긴다. Bash 명령은 Jira 기록이 담길 수 있어 남기지 않는다
+                  if d.get("tool_name") in ("Write", "Edit"):
+                      print(f"denied {d.get('tool_name')}: {(d.get('tool_input') or {}).get('file_path')}")
               if r.get("is_error"):
                   print(f"result={r.get('result')}")
 
