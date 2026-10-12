@@ -257,11 +257,16 @@ def write_weekly_scan(ctx):
     (scan / "INNO-40.alerts.json").write_text(json.dumps(alerts, ensure_ascii=False), encoding="utf-8")
 
 
-def run_weekly(ja, work):
-    """주간 점검을 실행하고 Actions Summary 파일에 쓴 글을 돌려준다."""
+def run_weekly(ja, work, lead="", extra=()):
+    """주간 점검을 실행하고 Actions Summary 파일에 쓴 글을 돌려준다.
+
+    extra는 INNO-40 밖에 ctx/_scan/에 더 쓸 알림 파일 내용(*.alerts.json) 목록이고, lead는 팀장 accountId다.
+    """
     write_weekly_scan(work / "ctx")
+    for a in extra:
+        (work / "ctx" / "_scan" / f"{a['key']}.alerts.json").write_text(json.dumps(a, ensure_ascii=False), "utf-8")
     summ = ja.Summary(str(work / "summary.md"))
-    ja.slack_weekly(work / "ctx", summ)
+    ja.slack_weekly(work / "ctx", summ, lead)
     summ.flush()
     return (work / "summary.md").read_text(encoding="utf-8")
 
@@ -316,6 +321,66 @@ def test_weekly_summary_copy_has_names_not_mentions(ja, tmp_path, monkeypatch, s
     assert "<@" not in summary and "담당 담당자A, " in copy
     # 파일 대응표의 Slack 멤버 ID는 print와 Summary 파일(행과 사본)에 나가지 않음
     assert "U-ASSIGNEE" not in capsys.readouterr().out + summary
+
+
+STALE_ALERTS = {
+    "key": "INNO-41",
+    "summary": "모델 경량화",
+    "url": "https://example.atlassian.net/browse/INNO-41",
+    "assignee": {"accountId": "acc-assignee", "displayName": "담당자A"},
+    "alerts": [
+        {
+            "check": "A1",
+            "code": "STALE:2026-09-15",
+            "detail": "마지막 활동 2026-09-15 뒤 영업일 기준 10일 경과",
+            "message": "진행 상황 comment 필요",
+        }
+    ],
+}
+READY_WAIT_DETAIL = "ready-to-done 진입 2026-09-23 뒤 영업일 기준 4일 경과(토요일과 일요일 제외)"
+READY_WAIT_ALERTS = {
+    "key": "INNO-42",
+    "summary": "추론 지연 개선",
+    "url": "https://example.atlassian.net/browse/INNO-42",
+    "assignee": {"accountId": "acc-assignee", "displayName": "담당자A"},
+    "alerts": [
+        {"check": "A3", "code": "READY_WAIT:2026-09-23", "detail": READY_WAIT_DETAIL, "message": "팀장 조치 필요"}
+    ],
+}
+
+
+def test_weekly_message_sections_have_actions_and_a3_mentions_lead(ja, tmp_path, monkeypatch, slack):
+    monkeypatch.delenv("SLACK_USERS_JSON", raising=False)
+    summary = run_weekly(ja, tmp_path, lead="acc-lead", extra=[STALE_ALERTS, READY_WAIT_ALERTS])
+    lines = slack[-1].splitlines()
+    assert lines[0].endswith("전달사항] <@U-ASSIGNEE> <@U-LEAD>")  # 팀장 멘션이 머리줄 멘션 목록에 들어감
+    assert "아래 task마다" not in slack[-1]  # 전체 조치 문구 줄 대신 절 제목마다 조치 문구를 붙임
+    assert "*stop 사유 미기재* (1건) — 담당자: stop 사유 comment 필요" in lines
+    assert (
+        "*영업일 기준 5일 이상 활동 없음* (1건) — 담당자: 진행 상황 comment, 또는 멈춘 task면 stop 전환 필요" in lines
+    )
+    assert "*ready-to-done 영업일 기준 3일 이상 대기* (1건) — 팀장: done 전환, 또는 미루는 이유 comment 필요" in lines
+    # A3 항목: 담당자는 Jira 표시 이름(멘션 아님), 팀장은 멘션
+    assert f"    • INNO-42 추론 지연 개선 — 담당 담당자A, 팀장 <@U-LEAD>, {READY_WAIT_DETAIL}" in lines
+    assert "    • INNO-41 모델 경량화 — 담당 <@U-ASSIGNEE>, " + STALE_ALERTS["alerts"][0]["detail"] in lines
+    assert "U-LEAD" not in summary  # Actions Summary 사본에는 팀장의 Slack 멤버 ID도 나가지 않음
+    assert f"    • INNO-42 추론 지연 개선 — 담당 담당자A, 팀장(Slack 멘션 없음), {READY_WAIT_DETAIL}" in summary
+
+
+@pytest.mark.parametrize(
+    ("lead", "want_text", "want_mentions"),
+    [
+        ("", "팀장 미지정", []),
+        ("acc-unknown", "팀장(Slack 멘션 없음)", []),
+        ("acc-lead", "팀장 <@U-LEAD>", ["<@U-LEAD>"]),
+    ],
+    ids=["lead 없음", "대응표에 없음", "대응표에 있음"],
+)
+def test_weekly_a3_lead_display(ja, tmp_path, lead, want_text, want_mentions):
+    (tmp_path / "INNO-42.alerts.json").write_text(json.dumps(READY_WAIT_ALERTS, ensure_ascii=False), "utf-8")
+    lines, mentions = ja.weekly_lines(tmp_path, {"acc-assignee": "U-ASSIGNEE", "acc-lead": "U-LEAD"}, lead)
+    assert f"    • INNO-42 추론 지연 개선 — 담당 담당자A, {want_text}, {READY_WAIT_DETAIL}" in lines
+    assert mentions == want_mentions  # A3 항목만 있으면 담당자는 멘션 목록에 들어가지 않음
 
 
 @pytest.mark.parametrize(
@@ -681,6 +746,89 @@ def test_stale_alert_message_and_stop_detail(jp, tmp_path):
         and stale["detail"] == "마지막 활동 2026-09-02 뒤 영업일 기준 19일 경과(토요일과 일요일 제외)"
     )
     assert stale["message"].count(". ") == 1 and stale["message"].endswith("필요")
+
+
+def scan_ready_wait(jp, tmp_path, status, changes):
+    """INNO-42의 주간 점검 데이터로 run_scan을 2026-09-29(화) 09:00에 실행하고 알림 목록을 돌려준다."""
+    now = dt.datetime(2026, 9, 29, 9, 0, tzinfo=dt.timezone(dt.timedelta(hours=9)))
+    scan = {
+        "key": "INNO-42",
+        "type": "Task",
+        "status": status,
+        "created": "2026-09-01T10:00:00.000+0900",
+        "humanComments": [],
+        "statusChanges": [{"created": created, "field": "status", "to": to} for created, to in changes],
+    }
+    p = tmp_path / "INNO-42.json"
+    p.write_text(json.dumps(scan), encoding="utf-8")
+    jp.run_scan(p, now)
+    return json.loads((tmp_path / "INNO-42.alerts.json").read_text(encoding="utf-8"))["alerts"]
+
+
+def test_ready_wait_alert_after_3_business_days(jp, tmp_path):
+    # 예전 진입(2026-09-10) 뒤 In Progress로 돌아갔다가 2026-09-24(목)에 다시 진입. 마지막 진입부터 셈
+    changes = [
+        ("2026-09-10T10:00:00.000+0900", "ready-to-done"),
+        ("2026-09-11T10:00:00.000+0900", "In Progress"),
+        ("2026-09-24T15:00:00.000+0900", "ready-to-done"),
+    ]
+    alerts = scan_ready_wait(jp, tmp_path, "ready-to-done", changes)
+    assert [(a["code"], a["check"]) for a in alerts] == [("READY_WAIT:2026-09-24", "A3")]
+    assert alerts[0]["detail"] == "ready-to-done 진입 2026-09-24 뒤 영업일 기준 3일 경과(토요일과 일요일 제외)"
+    assert alerts[0]["message"].endswith("팀장의 done 전환 또는 보류 comment 필요")
+
+
+def test_ready_wait_no_alert_after_2_business_days(jp, tmp_path):
+    # 2026-09-25(금) 진입 뒤 월, 화 2영업일
+    assert scan_ready_wait(jp, tmp_path, "ready-to-done", [("2026-09-25T10:00:00.000+0900", "ready-to-done")]) == []
+
+
+def test_ready_wait_no_alert_after_reentry_2_business_days_ago(jp, tmp_path):
+    # 예전 진입(2026-09-10)부터는 3영업일이 넘지만, 마지막 진입(2026-09-25(금))부터는 2영업일
+    changes = [
+        ("2026-09-10T10:00:00.000+0900", "ready-to-done"),
+        ("2026-09-11T10:00:00.000+0900", "In Progress"),
+        ("2026-09-25T10:00:00.000+0900", "ready-to-done"),
+    ]
+    assert scan_ready_wait(jp, tmp_path, "ready-to-done", changes) == []
+
+
+def test_ready_wait_no_alert_outside_ready_to_done(jp, tmp_path):
+    changes = [("2026-09-24T15:00:00.000+0900", "ready-to-done"), ("2026-09-25T10:00:00.000+0900", "Done")]
+    assert scan_ready_wait(jp, tmp_path, "Done", changes) == []
+
+
+def test_apply_alerts_skips_task_with_only_ready_wait_alert(render, ja, tmp_path):
+    scan = tmp_path / "ctx" / "_scan"
+    scan.mkdir(parents=True)
+    for a in (READY_WAIT_ALERTS, STALE_ALERTS):
+        (scan / f"{a['key']}.alerts.json").write_text(json.dumps(a, ensure_ascii=False), encoding="utf-8")
+    j = render.FakeJira({})
+    ja.apply_alerts(j, tmp_path / "ctx", "acc-lead", ja.Summary(str(tmp_path / "summary.md")))
+    assert [key for key, _ in j.comments] == ["INNO-41"]  # A3만 있는 INNO-42에는 comment 없음
+
+
+def test_apply_alerts_leaves_ready_wait_out_of_comment_and_notified(render, ja, tmp_path):
+    class PropJira(render.FakeJira):
+        """prop_set에 넘긴 property를 task별로 기억한다."""
+
+        def __init__(self):
+            super().__init__({})
+            self.props = {}
+
+        def prop_set(self, key, prop):
+            self.props[key] = prop
+
+    both = {**STALE_ALERTS, "alerts": STALE_ALERTS["alerts"] + READY_WAIT_ALERTS["alerts"]}
+    scan = tmp_path / "ctx" / "_scan"
+    scan.mkdir(parents=True)
+    (scan / "INNO-41.alerts.json").write_text(json.dumps(both, ensure_ascii=False), encoding="utf-8")
+    j = PropJira()
+    ja.apply_alerts(j, tmp_path / "ctx", "acc-lead", ja.Summary(str(tmp_path / "summary.md")))
+    [(key, body)] = j.comments
+    assert key == "INNO-41" and "진행 상황 comment 필요" in body and "팀장 조치 필요" not in body
+    assert "누락 항목 1건" in body
+    assert j.props["INNO-41"]["notified"] == ["STALE:2026-09-15"]  # READY_WAIT 코드는 notified에 없음
 
 
 def test_t3_mismatch_detail(render, ja, tmp_path):

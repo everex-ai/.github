@@ -77,6 +77,7 @@ CHECK_NAMES = {
     "R4": "stop 사유 comment",
     "A1": "영업일 기준 5일 이상 활동 없음",
     "A2": "완료 기준의 사후 변경",
+    "A3": "ready-to-done 영업일 기준 3일 이상 대기",
 }
 CHECK_ORDER = {cid: i for i, cid in enumerate(CHECK_NAMES)}
 RESULT_KO = {"pass": "✅ 만족", "fail": "❌ 보완 필요", "n/a": "➖ 해당 없음"}   # 검사 표 결과 칸. 모든 검사 항목에 같은 표시
@@ -91,7 +92,11 @@ VERDICT_KEY_KO = {"issueKey": "task 키", "mode": "실행 모드", "verdict": "�
 VERDICT_FILE_KO = "CI agent(GitHub Actions에서 실행되는 문서화 Agent)의 판정 파일(verdict.json)"   # 실패 알림에 나가는 이름
 # 주간 점검(alerts) Slack 보고
 SLACK_USERS = Path(__file__).parent.parent / "config" / "slack-users.json"   # Jira accountId -> Slack member ID
-ALERT_SECTIONS = [("R4", "stop 사유 미기재"), ("A1", "영업일 기준 5일 이상 활동 없음")]
+# (검사 ID, 절 제목, 절 제목 뒤의 조치 문구). 절은 이 순서로 나간다
+ALERT_SECTIONS = [("R4", "stop 사유 미기재", "담당자: stop 사유 comment 필요"),
+                  ("A1", "영업일 기준 5일 이상 활동 없음", "담당자: 진행 상황 comment, 또는 멈춘 task면 stop 전환 필요"),
+                  ("A3", "ready-to-done 영업일 기준 3일 이상 대기", "팀장: done 전환, 또는 미루는 이유 comment 필요")]
+LEAD_ALERTS = ("A3",)   # 팀장이 할 조치의 알림. 주간 점검 Slack에만 넣고 정리 모드의 담당자 멘션 comment(apply_alerts)에서는 뺀다
 ALERT_LIMIT = 15
 
 
@@ -737,6 +742,17 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
 
 
 def apply_alerts(j: Jira, ctx: Path, lead: str, summ: Summary) -> None:
+    """정리 모드에서 주간 점검 데이터(ctx/_scan/*.alerts.json)의 새 알림을 담당자 멘션 Jira comment로 게시한다.
+
+    이미 보낸 알림 코드는 task의 jira-doc 기록(notified)으로 걸러 낸다. 팀장이 할 조치의 알림(LEAD_ALERTS)은
+    comment 대상과 notified 갱신에서 뺀다. 그런 알림만 있는 task에는 comment를 게시하지 않는다.
+
+    Args:
+        j: Jira 클라이언트.
+        ctx: 수집 단계가 만든 ctx 폴더.
+        lead: 팀장 accountId. comment에서 멘션을 허용할 사람에 넣는다.
+        summ: Actions 요약.
+    """
     scan = ctx / "_scan"
     if not scan.exists():
         return
@@ -751,7 +767,7 @@ def apply_alerts(j: Jira, ctx: Path, lead: str, summ: Summary) -> None:
         clear = tuple(a.get("clear", []))
         if clear:
             notified = {n for n in notified if not n.startswith(clear)}
-        new = [al for al in a.get("alerts", []) if al["code"] not in notified]
+        new = [al for al in a.get("alerts", []) if al.get("check") not in LEAD_ALERTS and al["code"] not in notified]
         if new:
             assignee = (a.get("assignee") or {}).get("accountId") or ""
             allowed = {x for x in (assignee, lead) if x}
@@ -882,25 +898,46 @@ def review_slack_text(v: str, key: str, title: str, url: str, mention: str, stat
     return "\n".join(lines)
 
 
-def weekly_lines(scan: Path, users: dict) -> tuple[list[str], list[str]]:
-    """(Slack 본문 줄, 멘션 목록). 알림이 없으면 본문은 빈 목록."""
-    rows: dict[str, list[dict]] = {cid: [] for cid, _ in ALERT_SECTIONS}
+def weekly_lines(scan: Path, users: dict, lead: str = "") -> tuple[list[str], list[str]]:
+    """주간 점검 Slack 메시지의 절 줄과 머리줄 멘션 목록을 만든다.
+
+    절 제목은 "*{이름}* ({n}건) — {조치 문구}"이고, 절은 ALERT_SECTIONS의 순서로 나간다.
+    R4, A1 항목은 담당자를 멘션하고, A3 항목은 담당자의 Jira 표시 이름과 팀장 멘션을 적는다.
+    멘션 목록에는 Slack 멤버 ID로 바꾼 멘션만 중복 없이 넣는다.
+
+    Args:
+        scan: 주간 점검 데이터 폴더(ctx/_scan). *.alerts.json을 읽는다.
+        users: Jira accountId -> Slack 멤버 ID 대응표.
+        lead: 팀장 accountId. A3 항목에 비어 있으면 "팀장 미지정"을, 대응표에 있으면 "팀장 <@멤버 ID>"를,
+            대응표에 없으면 "팀장(Slack 멘션 없음)"을 적는다.
+
+    Returns:
+        (Slack 본문 줄, 멘션 목록). 알림이 없으면 본문은 빈 목록.
+    """
+    rows: dict[str, list[dict]] = {cid: [] for cid, _, _ in ALERT_SECTIONS}
     mentions: list[str] = []
+    lead_uid = users.get(lead) if lead else None
+    lead_who = f"<@{lead_uid}>" if lead_uid else ""
+    lead_text = "팀장 미지정" if not lead else (f"팀장 {lead_who}" if lead_uid else "팀장(Slack 멘션 없음)")
     for p in sorted(scan.glob("*.alerts.json")) if scan.exists() else []:
         a = load_json(p, {})
         for al in a.get("alerts", []):
             if al.get("check") in rows:
                 rows[al["check"]].append({**a, "detail": al.get("detail") or al.get("message", "")})
     lines: list[str] = []
-    for cid, title in ALERT_SECTIONS:
+    for cid, title, action in ALERT_SECTIONS:
         items = rows[cid]
         if not items:
             continue
-        lines += ["", f"*{title}* ({len(items)}건)"]
+        lines += ["", f"*{title}* ({len(items)}건) — {action}"]
         for it in items[:ALERT_LIMIT]:
-            who = slack_mention(it.get("assignee"), users)
-            if who.startswith("<@") and who not in mentions:
-                mentions.append(who)
+            if cid in LEAD_ALERTS:  # 팀장이 할 조치: 담당자는 이름만 적고 팀장을 멘션한다
+                who = f"{(it.get('assignee') or {}).get('displayName') or '담당자 미지정'}, {lead_text}"
+                mention = lead_who
+            else:
+                who = mention = slack_mention(it.get("assignee"), users)
+            if mention.startswith("<@") and mention not in mentions:
+                mentions.append(mention)
             lines.append(f"{SLACK_INDENT}• {it['key']} {it.get('summary') or ''} — 담당 {who}, {it['detail']}")
             if it.get("url"):
                 lines.append(f"{SLACK_INDENT}  {it['url']}")
@@ -923,30 +960,32 @@ def slack_post(text: str) -> str:
         return f"전송 실패: {e}"
 
 
-def slack_weekly(ctx: Path, summ: Summary) -> None:
-    """주간 점검 결과를 Slack 한 건으로 보낸다. 첫 줄이 스레드 제목이고 담당자를 멘션한다.
+def slack_weekly(ctx: Path, summ: Summary, lead: str = "") -> None:
+    """주간 점검 결과를 Slack 한 건으로 보낸다. 첫 줄이 스레드 제목이고 담당자와 팀장(A3 항목이 있을 때)을 멘션한다.
 
     Actions Summary는 GitHub에 로그인한 누구나 볼 수 있어, Summary에는 빈 대응표로 다시 만든 본문을 남긴다.
-    이 본문에는 Slack 멤버 ID(멘션) 대신 담당자의 Jira 표시 이름이 들어가고 머리줄의 멘션 목록이 빠진다.
+    이 본문에는 Slack 멤버 ID(멘션) 대신 담당자의 Jira 표시 이름이 들어가고, 팀장은 "팀장(Slack 멘션 없음)"으로 적히며,
+    머리줄의 멘션 목록이 빠진다.
 
     Args:
         ctx: 수집 단계가 만든 ctx 폴더. ctx/_scan/*.alerts.json을 읽는다.
         summ: Actions 요약.
+        lead: 팀장 accountId(환경 변수 JIRA_LEAD_ACCOUNT_ID). A3 항목의 팀장 멘션에 사용한다.
     """
     day = dt.datetime.now().strftime("%Y-%m-%d")
 
     def weekly_text(users: dict[str, str]) -> tuple[str, list[str], bool]:
         """(본문, 멘션 목록, 알림 유무)."""
-        lines, mentions = weekly_lines(ctx / "_scan", users)
+        lines, mentions = weekly_lines(ctx / "_scan", users, lead)
         if not lines:
             return "\n".join([f"[{day} 전달사항]", "점검 결과 이상 없음"]), mentions, False
         head = f"[{day} 전달사항] " + " ".join(mentions)
-        return "\n".join([head.rstrip(), "아래 task마다 사유 또는 진행 상황 comment 필요", *lines]), mentions, True
+        return "\n".join([head.rstrip(), *lines]), mentions, True
 
     users, warning = load_slack_users()
     text, mentions, alerted = weekly_text(users)
     result = slack_post(text)
-    note = f"Slack 멘션 {len(mentions)}명(대응표에 있는 담당자만 셈)" if alerted else "알림 없음"
+    note = f"Slack 멘션 {len(mentions)}명(대응표에 있는 담당자와 팀장만 셈)" if alerted else "알림 없음"
     summ.row("-", "-", "alerts", result, f"{note}; {warning}" if warning else note)
     summary_text, _, _ = weekly_text({})
     summ.extra += [f"### 주간 점검 (Slack {result})", "", "```", summary_text, "```", ""]
@@ -967,7 +1006,7 @@ def main() -> None:
     summ = Summary(args.summary)
 
     if args.mode == "alerts":                      # 주간 점검: Jira에 쓰지 않고 Slack으로만 보고
-        slack_weekly(ctx, summ)
+        slack_weekly(ctx, summ, lead)
         summ.flush()
         return
 

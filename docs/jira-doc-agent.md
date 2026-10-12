@@ -62,7 +62,7 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
 | `.github/workflows/jira-doc.yml` | Actions 워크플로. 네 단계와 실행 모드 세 가지 |
 | `scripts/jira_api.py` | Jira REST API v2 클라이언트(`Jira`)와 description 구역 처리 함수(`find_section`, `set_section`) |
 | `scripts/collect.py` | 1단계. Jira와 GitHub에서 입력을 모아 `ctx/`에 저장 |
-| `scripts/precheck.py` | 2단계. 스크립트 검사 9개와 문서화 리뷰용 수치(docFacts) 계산 |
+| `scripts/precheck.py` | 2단계. 스크립트 검사 10개와 문서화 리뷰용 수치(docFacts) 계산 |
 | `scripts/apply.py` | 4단계. verdict.json 검증, 결과 산출물 구역과 comment 조립, Jira 반영, 상태 전환, Slack 알림. 주간 점검 모드에서는 Jira에 기록하지 않고 Slack 메시지만 전송 |
 | `scripts/jira.sh` | 사람이 터미널에서 Jira를 조회하거나 고칠 때 사용하는 curl 래퍼 |
 | `prompts/rules.md` | 모든 work type과 실행 모드에 공통인 지시: 문서화 규칙, 신뢰 경계, 입력, 작성 규칙, 공통 검사 항목, 문서화 리뷰 공통 규칙, 검수 결과 기준 |
@@ -73,12 +73,14 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
 | `schemas/verdict.json` | verdict.json의 스키마 |
 | `config/slack-users.json` | `SLACK_USERS_JSON`이 비어 있을 때 apply.py가 읽는 Jira accountId와 Slack 멤버 ID 대응표 파일(`scripts/apply.py`의 `load_slack_users`). Actions 실행에서 사용하는 대응표는 secret `SLACK_USERS_JSON`에 있어 이 파일에는 설명만 둠 |
 
-- 스크립트 검사 9개는 아래와 같다(`scripts/precheck.py`의 `run_issue_dir`, `run_scan`).
+- 스크립트 검사 10개는 아래와 같다(`scripts/precheck.py`의 `run_issue_dir`, `run_scan`).
   - 예상 산출물 작성 (T1), 진행 배경 작성 (T2)
   - 기본 정보와 문제(As-Is) 작성, 첨부 파일 (B1), 개선(To-Be) 작성 (B2)
   - 이슈 유형 선택 (I1), 이슈 내용 작성 (I2)
   - stop 사유 comment (R4), 완료 기준의 사후 변경 (A2)
   - 영업일 기준 5일 이상 활동 없음 (A1). 주간 점검 모드와, task 키 없이 실행한 정리 모드에서만 계산한다.
+  - ready-to-done 영업일 기준 3일 이상 대기 (A3). 상태가 ready-to-done이고 마지막 ready-to-done 진입 뒤 영업일 기준 3일 이상 지난 task를 찾는다. A1과 같은 경우에만 계산하고, 주간 점검 메시지에만 올린다.
+    - 정리 모드의 누락 알림 comment에는 넣지 않는다. `end` 전환은 팀장이 하므로 담당자에게 요청할 일이 아니기 때문이다(`scripts/apply.py`의 `apply_alerts`, `LEAD_ALERTS`).
 - docFacts는 CI agent가 문서화 리뷰를 판단할 때 인용하는 수치다(`scripts/precheck.py`의 `doc_facts`).
   - 배경 구역(Task 진행 배경, Bug 문제(As-Is), Issue 이슈 내용)의 줄 수와 글자 수
   - 작업 기간(첫 In Progress 전환부터 마지막 request 전환까지), 그 기간의 영업일 수, 사람 comment 수
@@ -130,7 +132,7 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
 | 검수 모드(review) | F1, Actions 수동 실행(task 키 필수) | TL;DR, 결과 산출물 구역(Task만), 검수 comment, 문서화 리뷰 comment(관찰 모드), 상태 전환과 Slack 알림 | 실행 |
 | 정리 모드(digest), task 키 지정 | F3, Actions 수동 실행 | 그 task의 TL;DR과 결과 산출물 구역을 지금까지의 기록으로 다시 작성. comment와 검수 결과 없음 | 실행 |
 | 정리 모드(digest), task 키 없음 | Actions 수동 실행 | 최근 3일 안에 사람이 바꾼 In Progress, Backlog task를 정리(실행당 최대 20건). Done, Deleted가 아닌 task 전체에서 누락 항목(R4, A1)을 찾아 누락 알림 comment를 담당자 멘션과 함께 게시 | 실행 |
-| 주간 점검 모드(alerts) | 매주 수요일 09:00 KST cron, Actions 수동 실행 | stop 사유 comment가 없는 task(R4)와 영업일 기준 5일 이상 활동이 없는 task(A1)를 Slack 메시지 한 건으로 보고 | 실행하지 않음 |
+| 주간 점검 모드(alerts) | 매주 수요일 09:00 KST cron, Actions 수동 실행 | stop 사유 comment가 없는 task(R4), 영업일 기준 5일 이상 활동이 없는 task(A1), ready-to-done에서 영업일 기준 3일 이상 대기 중인 task(A3)를 Slack 메시지 한 건으로 보고. R4, A1은 담당자를, A3는 팀장을 멘션 | 실행하지 않음 |
 
 - 이 표의 근거는 아래와 같다.
   - `scripts/collect.py`의 `main`
@@ -251,10 +253,10 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
 - 팀장용 문서화 리뷰 comment의 팀장 멘션은 jira-doc이 팀장 계정으로 작성한다.
   - 추정: Jira는 자기 자신을 멘션한 comment에 알림을 보내지 않을 수 있다.
   - 관찰 모드 동안은 Summary 탭이나 JQL(Jira 검색 조건) `project = INNO AND comment ~ "문서화 리뷰"`로 문서화 리뷰 comment를 모아 확인한다.
-- 주간 점검 메시지의 사본은 Summary 탭에도 남는다. apply.py는 이 사본에 Slack 멘션 대신 담당자의 Jira 표시 이름을 적는다(`scripts/apply.py`의 `slack_weekly`).
+- 주간 점검 메시지의 사본은 Summary 탭에도 남는다. apply.py는 이 사본에 Slack 멘션 대신 담당자의 Jira 표시 이름을 적고, A3 항목의 팀장 멘션은 "팀장"으로만 적는다(`scripts/apply.py`의 `slack_weekly`, `weekly_lines`).
   - 이유: public repo의 Actions 실행 화면은 GitHub에 로그인한 누구나 볼 수 있어, 멘션(`<@U…>`)을 그대로 남기면 Slack 멤버 ID가 드러난다(https://docs.github.com/en/actions/how-tos/monitor-workflows/use-workflow-run-logs: "You must be logged in to a GitHub account to view workflow run information, including for public repositories.").
 - 주간 점검 메시지는 중복을 걸러 내지 않는다(`scripts/apply.py`의 `weekly_lines`, `slack_weekly`).
-  - 사유나 활동을 남길 때까지 매주 같은 항목이 다시 올라온다.
+  - 사유나 활동을 남길 때까지 매주 같은 항목이 다시 올라온다. A3 항목은 팀장이 `end` 전환할 때까지 다시 올라온다.
 - 미연결 PR(제목에 task 키가 없는 병합 PR) 보고는 주간 점검 메시지에서 뺐다(`scripts/apply.py`의 `ALERT_SECTIONS`).
   - AI팀의 GitHub organization을 전사 GitHub organization과 통합한 뒤, 팀장이 이 보고를 다시 넣을지 검토한다.
   - task 키 없이 실행한 정리 모드의 Summary 탭에는 미연결 PR 목록이 남는다(`scripts/apply.py`의 `main`).

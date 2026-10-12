@@ -763,6 +763,24 @@ def render(out_dir: Path) -> list[Path]:
                 "statusChanges": [{"created": "2026-09-02T10:00:00.000+0900", "field": "status", "to": "In Progress"}],
             },
         )
+        # A3(ready-to-done 영업일 기준 3일 이상 대기): 팀장 멘션은 주간 점검 Slack에만 나가고 누락 알림 comment에는 없음
+        write_json(
+            scan / "INNO-42.json",
+            {
+                "key": "INNO-42",
+                "type": "Task",
+                "status": "ready-to-done",
+                "summary": "추론 지연 개선",
+                "url": f"{SITE}/browse/INNO-42",
+                "created": "2026-09-01T10:00:00.000+0900",
+                "assignee": {"accountId": ASSIGNEE, "displayName": "담당자A"},
+                "humanComments": [],
+                "statusChanges": [
+                    {"created": "2026-09-02T10:00:00.000+0900", "field": "status", "to": "In Progress"},
+                    {"created": "2026-09-23T14:00:00.000+0900", "field": "status", "to": "ready-to-done"},
+                ],
+            },
+        )
         for p in sorted(scan.glob("INNO-*.json")):
             if not p.name.endswith(".alerts.json"):
                 with contextlib.redirect_stdout(io.StringIO()):
@@ -774,7 +792,7 @@ def render(out_dir: Path) -> list[Path]:
 
         weekly_summ = ja.Summary(str(work / "weekly-summary.md"))
         with contextlib.redirect_stdout(io.StringIO()):
-            ja.slack_weekly(ctx, weekly_summ)
+            ja.slack_weekly(ctx, weekly_summ, LEAD)
         weekly_summ.flush()
         save("weekly-slack.txt", sent[-1])  # 검수 알림도 sent에 쌓이므로 마지막에 보낸 주간 점검 본문을 쓴다
         # Actions Summary 탭에 남기는 주간 점검 사본. Slack 멤버 ID 대신 Jira 표시 이름이 들어간다
