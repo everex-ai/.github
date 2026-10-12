@@ -100,7 +100,7 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
 | `JIRA_EMAIL` | secret | `JIRA_API_TOKEN`을 발급한 계정 이메일 |
 | `JIRA_API_TOKEN` | secret | Jira scoped API 토큰(`read:jira-work`, `write:jira-work`) |
 | `ORG_READ_TOKEN` | secret | Organization 전체 repo의 Pull requests 읽기 권한이 있는 GitHub fine-grained PAT(권한과 대상 repo를 골라 발급하는 personal access token). 없으면 PR 수집을 건너뜀(`scripts/collect.py`의 `gh`) |
-| `CLAUDE_CODE_OAUTH_TOKEN` | secret | `claude setup-token`으로 발급한 Claude 구독 토큰 |
+| `CLAUDE_CODE_OAUTH_TOKEN` | secret | `claude setup-token`으로 발급한 Claude Team plan 토큰. 발급한 사람의 좌석(Team plan에서 구성원 한 명에게 배정된 사용 권한) 사용량 한도를 소모함(https://support.claude.com/en/articles/9266767-what-is-the-team-plan: "Usage limits on Team plans are per-member") |
 | `SLACK_WEBHOOK_URL` | secret | 주간 점검 메시지와 검수 뒤 Slack 알림을 받을 Slack 채널의 Incoming Webhook URL |
 | `SLACK_USERS_JSON` | secret | Jira accountId를 키로, Slack 멤버 ID를 값으로 둔 JSON 문자열. 주간 점검 메시지와 검수 뒤 Slack 알림의 멘션에 사용(`scripts/apply.py`의 `load_slack_users`) |
 | `JIRA_DOC_GATE` | variable | `false`(관찰 모드). 게이트 모드에서는 `true` |
@@ -263,6 +263,8 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
   - F1의 PAT: F1이 GitHub에 repository_dispatch를 보낼 때 사용하는 GitHub 토큰이다. Jira Automation 설정에 있다.
   - `ORG_READ_TOKEN`
   - `CLAUDE_CODE_OAUTH_TOKEN`
+    - 2026-10-08에 Team plan 좌석으로 다시 발급했다(`gh secret list -R everex-ai/.github`의 갱신 날짜 2026-10-08). 만료는 2027-10-08이다(https://code.claude.com/docs/en/authentication.md "Generate a long-lived token": "one-year OAuth token").
+    - 추정: 발급한 사람이 Team plan에서 빠지거나 좌석이 회수되면 만료 전이라도 동작하지 않는다. 그때는 팀장이 다른 좌석으로 다시 발급해, 등록된 repo의 secret을 모두 교체한다(`docs/pr-review-agent.md`의 "대상 repo에 설치" 절 2번).
 - 여러 task가 동시에 request 전환되면 task마다 Actions 워크플로 실행이 따로 생겨 동시에 실행된다(Actions 워크플로의 `concurrency`).
   - 같은 task의 실행은 앞 실행이 끝날 때까지 대기한다(`group`이 task 키 기준, `cancel-in-progress: false`).
 - Actions 워크플로 실행을 취소해도 4단계(반영)는 실행된다. 4단계의 실행 조건이 `always() && steps.collect.outcome == 'success'`이기 때문이다(Actions 워크플로 4단계의 `if`).
