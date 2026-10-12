@@ -95,7 +95,7 @@ jobs:
           claude_args: |
             --model claude-sonnet-5-5
             --max-turns ${{ env.MODE == 'digest' && 200 || 40 }}
-            --allowedTools "Read(ctx/**),Read(prompts/**),Read(schemas/**),Edit(out/**),Edit(/${{ github.workspace }}/out/**)"
+            --allowedTools "Read(ctx/**),Read(prompts/**),Read(schemas/**)"
             ${{ steps.schema.outputs.json && format('--json-schema ''{0}''', steps.schema.outputs.json) || '' }}
 
       # 3단계의 전체 출력은 Jira 기록이 담겨 있어 public 로그에 남기지 않는다(show_full_output: false).
@@ -145,7 +145,7 @@ jobs:
           claude_args: |
             --model claude-sonnet-5-5
             --max-turns ${{ env.MODE == 'digest' && 200 || 40 }}
-            --allowedTools "Read(ctx/**),Read(prompts/**),Read(schemas/**),Edit(out/**),Edit(/${{ github.workspace }}/out/**)"
+            --allowedTools "Read(ctx/**),Read(prompts/**),Read(schemas/**)"
             ${{ steps.schema.outputs.json && format('--json-schema ''{0}''', steps.schema.outputs.json) || '' }}
 
       - name: 3-R. 출력 다시 저장

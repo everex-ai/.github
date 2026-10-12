@@ -28,7 +28,7 @@ jira-doc(AI팀 업무 문서화 agent)은 Jira task의 기록을 근거로 결�
 - Jira 워크플로: Jira task의 상태와 상태 사이 전환의 체계
 - CI agent: Actions 워크플로 3단계에서 실행되는 Claude. `ctx/`의 입력을 읽어 TL;DR, 판정 객체, 검수 comment의 결과 요약을 구조화 출력(JSON)으로 낸다. 파일은 작성하지 않는다(3단계 prompt의 "결과는 구조화 출력으로만 낸다. 파일은 작성하지 않는다.", 형식은 `schemas/agent-output.json`).
   - `out/<task 키>/`의 파일(verdict.json, tldr.wiki, comment.wiki)은 3-2 단계의 `scripts/save_output.py`가 구조화 출력으로 만든다. 구조화 출력에 없는 부분은 판정 없음 기본값으로 채운다(`scripts/save_output.py`의 `build_verdict`).
-  - 3단계의 `--allowedTools`에는 상대 경로 규칙 `Edit(out/**)`와 작업 디렉터리 절대 경로 규칙 `Edit(/${{ github.workspace }}/out/**)`가 아직 남아 있다(`.github/workflows/jira-doc.yml:98`). 이 두 규칙은 구조화 출력 전환 PR 세 개 중 셋째(PR-3)에서 삭제한다.
+  - 3단계의 `--allowedTools`에는 읽기 규칙 `Read(ctx/**)`, `Read(prompts/**)`, `Read(schemas/**)`만 있어 CI agent는 파일을 작성할 수 없다(`.github/workflows/jira-doc.yml:98`). 구조화 출력 전환 전에 있던 쓰기 규칙 `Edit(out/**)`와 `Edit(/${{ github.workspace }}/out/**)`는 전환 뒤 삭제했다.
   - 구조화 출력 전환 전에는 CI agent가 `out/`에 파일을 작성했다. 절대 경로 규칙을 둔 이유: 2026-10-12 시험 실행 22회(실행 38223203394–38223731012) 중 11회가 Write 권한 거부 3회 뒤 verdict.json 없이 끝났다. 절대 경로 규칙을 추가한 뒤 같은 날 실행 12회(38226434145, 38258447642–38258742976의 10회, 38259344639)는 모두 verdict.json을 남겼다.
     - 근거는 각 실행 로그(`gh run view <실행 ID> --log`)의 3-1 단계 `permission_denials=` 줄과 4단계 `[apply]` 줄이다.
     - 추정: CI agent가 출력 파일을 절대 경로로 작성하려 했고, 상대 경로 규칙이 그 경로를 허용하지 않았다.
