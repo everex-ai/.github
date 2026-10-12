@@ -8,7 +8,7 @@ jira-doc(AI팀 업무 문서화 agent)은 Jira task의 기록을 근거로 결�
   - 검수 comment: 검수 결과(통과, 검토 요청, 보류)와 검사 표를 담은 comment
   - 문서화 리뷰 comment: 담당자의 기록 습관을 검사한 문서화 리뷰 결과를 팀장에게 공유하는 comment. 문서화 리뷰 항목은 Task 6개(T4–T9), Bug 3개(B5–B7), Issue 2개(I4–I5)다(`scripts/apply.py`의 `DOC_CHECKS`).
   - 누락 알림 comment: stop 사유 comment가 없거나 영업일 기준 5일 이상 활동이 없는 task의 담당자에게 알리는 comment
-  - 실패 알림 comment: CI agent의 출력(verdict.json, 검수 모드의 tldr.wiki와 comment.wiki)이 없거나 verdict.json 형식이 틀려 검수하지 못했을 때 팀장에게 알리는 comment
+  - 실패 알림(Slack): CI agent의 구조화 출력이 없거나, 구조화 출력으로 저장한 파일(verdict.json, 검수 모드의 tldr.wiki와 comment.wiki)이 없거나 verdict.json 형식이 틀려 task를 반영하지 못했을 때 팀장에게 알리는 Slack 메시지. 한 실행의 실패를 한 건으로 모아 보내고 Jira에는 comment를 남기지 않는다(`scripts/apply.py`의 `failure_slack_text`, `main`). 전환 전에는 Jira 실패 알림 comment(첫 문구 "자동 검수 실행 실패:")를 남겼다.
   - 검수 뒤 Slack 알림과 주간 점검 메시지
 - 설계 문서는 claude.ai 프로젝트(claude.ai의 Projects 기능) "Jira 기반 AI팀 업무 프로세스 수립"의 `task-doc-agent/AI팀_업무문서화_agent_도입계획_v0.1.md`다.
 
@@ -16,16 +16,20 @@ jira-doc(AI팀 업무 문서화 agent)은 Jira task의 기록을 근거로 결�
 
 이 문서는 아래 용어를 한 이름으로만 사용한다.
 
-- Actions 워크플로: `.github/workflows/jira-doc.yml`. 아래 네 단계로 실행된다(Actions 워크플로의 스텝 이름).
+- Actions 워크플로: `.github/workflows/jira-doc.yml`. 아래 단계로 실행된다(Actions 워크플로의 스텝 이름).
   1. 입력 수집
   2. 스크립트 검사. 스텝 이름은 "결정론적 검사 (precheck)"다.
   3. CI agent 문서화. 스텝 이름은 "Claude 문서화"다.
+     - 바로 앞의 3-0 단계("3-0. 스키마 준비")가 `schemas/agent-output.json`을 한 줄 JSON으로 만들어 3단계의 `--json-schema` 인자로 넘긴다(`.github/workflows/jira-doc.yml:66-79`, 3단계의 `claude_args`).
      - 바로 뒤의 3-1 단계("3-1. Claude 실행 결과 요약")가 CI agent의 실행 결과를 로그에 남긴다. 자세한 내용은 "알아 둘 것" 절에 있다.
+     - 3-2 단계("3-2. 출력 저장")가 `scripts/save_output.py`로 CI agent의 구조화 출력(JSON)을 `out/<task 키>/` 파일로 저장한다(`.github/workflows/jira-doc.yml:124-130`).
+     - 3-R 단계("3-R. Claude 문서화 다시 실행", "3-R. 출력 다시 저장")는 검수 모드에서 3-2 단계가 `retry=true`를 출력했을 때 3단계와 3-2 단계를 1회 더 실행한다(`.github/workflows/jira-doc.yml:133-157`, `scripts/save_output.py`의 `main`).
   4. 반영
 - Jira 워크플로: Jira task의 상태와 상태 사이 전환의 체계
-- CI agent: Actions 워크플로 3단계에서 실행되는 Claude. `ctx/`의 입력을 읽어 TL;DR과 판정 파일 verdict.json을 작성한다(3단계의 `--allowedTools`).
-  - 파일 쓰기는 `out/`에만 허용한다. 같은 폴더를 상대 경로 규칙 `Edit(out/**)`와 작업 디렉터리 절대 경로 규칙 `Edit(/${{ github.workspace }}/out/**)` 두 가지로 적는다.
-  - 절대 경로 규칙을 둔 이유: 2026-10-12 시험 실행 22회(실행 38223203394–38223731012) 중 11회가 Write 권한 거부 3회 뒤 verdict.json 없이 끝났다. 절대 경로 규칙을 추가한 뒤 같은 날 실행 12회(38226434145, 38258447642–38258742976의 10회, 38259344639)는 모두 verdict.json을 남겼다.
+- CI agent: Actions 워크플로 3단계에서 실행되는 Claude. `ctx/`의 입력을 읽어 TL;DR, 판정 객체, 검수 comment의 결과 요약을 구조화 출력(JSON)으로 낸다. 파일은 작성하지 않는다(3단계 prompt의 "결과는 구조화 출력으로만 낸다. 파일은 작성하지 않는다.", 형식은 `schemas/agent-output.json`).
+  - `out/<task 키>/`의 파일(verdict.json, tldr.wiki, comment.wiki)은 3-2 단계의 `scripts/save_output.py`가 구조화 출력으로 만든다. 구조화 출력에 없는 부분은 판정 없음 기본값으로 채운다(`scripts/save_output.py`의 `build_verdict`).
+  - 3단계의 `--allowedTools`에는 상대 경로 규칙 `Edit(out/**)`와 작업 디렉터리 절대 경로 규칙 `Edit(/${{ github.workspace }}/out/**)`가 아직 남아 있다(`.github/workflows/jira-doc.yml:98`). 이 두 규칙은 구조화 출력 전환 PR 세 개 중 셋째(PR-3)에서 삭제한다.
+  - 구조화 출력 전환 전에는 CI agent가 `out/`에 파일을 작성했다. 절대 경로 규칙을 둔 이유: 2026-10-12 시험 실행 22회(실행 38223203394–38223731012) 중 11회가 Write 권한 거부 3회 뒤 verdict.json 없이 끝났다. 절대 경로 규칙을 추가한 뒤 같은 날 실행 12회(38226434145, 38258447642–38258742976의 10회, 38259344639)는 모두 verdict.json을 남겼다.
     - 근거는 각 실행 로그(`gh run view <실행 ID> --log`)의 3-1 단계 `permission_denials=` 줄과 4단계 `[apply]` 줄이다.
     - 추정: CI agent가 출력 파일을 절대 경로로 작성하려 했고, 상대 경로 규칙이 그 경로를 허용하지 않았다.
   - 승인할 사람이 없는 실행이라 허용 규칙에 없는 도구 호출은 모두 자동으로 거부된다(https://code.claude.com/docs/en/headless.md: "In a `-p` run with no host, these requests are denied either way"). 거부되어도 CI agent는 멈추지 않고 실행을 끝낸다. 예: 실행 38223698527은 Write 거부 3회가 있었는데도 3-1 단계 결과가 `is_error=False`, `num_turns=13`이었다.
@@ -65,18 +69,20 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
 
 | 경로 | 역할 |
 |---|---|
-| `.github/workflows/jira-doc.yml` | Actions 워크플로. 네 단계와 실행 모드 세 가지 |
+| `.github/workflows/jira-doc.yml` | Actions 워크플로. 단계(1, 2, 3-0, 3, 3-1, 3-2, 3-R, 4)와 실행 모드 세 가지 |
 | `scripts/jira_api.py` | Jira REST API v2 클라이언트(`Jira`)와 description 구역 처리 함수(`find_section`, `set_section`) |
 | `scripts/collect.py` | 1단계. Jira와 GitHub에서 입력을 모아 `ctx/`에 저장 |
 | `scripts/precheck.py` | 2단계. 스크립트 검사 10개와 문서화 리뷰용 수치(docFacts) 계산 |
-| `scripts/apply.py` | 4단계. verdict.json 검증, 결과 산출물 구역과 comment 조립, Jira 반영, 상태 전환, Slack 알림. 주간 점검 모드에서는 Jira에 기록하지 않고 Slack 메시지만 전송 |
+| `scripts/save_output.py` | 3-2 단계와 3-R 단계. CI agent의 구조화 출력을 `out/<task 키>/` 파일(verdict.json, tldr.wiki, comment.wiki, 원인을 적은 `_agent_error.txt`)과 `out/_failed.txt`로 저장하고, 검수 모드에서 판정이 없으면 `retry=true`를 출력. 표준 라이브러리만 사용 |
+| `scripts/apply.py` | 4단계. verdict.json 검증, 결과 산출물 구역과 comment 조립, Jira 반영, 상태 전환, Slack 알림. 반영하지 못한 task는 Slack 실패 알림 한 건으로 알리고 종료 코드 1로 끝남. 주간 점검 모드에서는 Jira에 기록하지 않고 Slack 메시지만 전송 |
 | `scripts/jira.sh` | 사람이 터미널에서 Jira를 조회하거나 고칠 때 사용하는 curl 래퍼 |
 | `prompts/rules.md` | 모든 work type과 실행 모드에 공통인 지시: 문서화 규칙, 신뢰 경계, 입력, 작성 규칙, 공통 검사 항목, 문서화 리뷰 공통 규칙, 검수 결과 기준 |
 | `prompts/review.md`, `prompts/digest.md` | 검수 모드, 정리 모드의 공통 절차. issue.json(1단계가 `ctx/<task 키>/`에 저장하는 task 정보 파일)의 work type으로 아래 work type별 지시 파일을 가리킨다 |
 | `prompts/types/{task,bug,issue}/review.md` | work type별 검수 모드 지시: 구역, 검사 항목, 문서화 리뷰 항목, 출력 형식, 검수 결과 기준 |
-| `prompts/types/{task,bug,issue}/digest.md` | work type별 정리 모드 지시: items와 extra(verdict.json의 예상 산출물별 결과 목록과 초과 달성 목록), TL;DR 형식 |
+| `prompts/types/{task,bug,issue}/digest.md` | work type별 정리 모드 지시: items와 extra(판정 객체(verdict)의 예상 산출물별 결과 목록과 초과 달성 목록), tldr 형식 |
 | `prompts/types/task/deliverables.md` | Task의 완료 판단 기준, 예상 산출물 표현('개발', '적용')별 달성 근거, items와 extra 작성 방법. CI agent가 Task의 검수 모드와 정리 모드에서 함께 읽는다 |
-| `schemas/verdict.json` | verdict.json의 스키마 |
+| `schemas/agent-output.json` | CI agent의 구조화 출력 스키마(JSON Schema draft-07). 최상위 키는 `tasks`(task별 `issueKey`, 판정 객체 `verdict`, `tldr`, `comment`)와 `failed`(처리하지 못한 task와 이유)다. 판정 객체는 `schemas/verdict.json`에서 `issueKey`, `mode`를 뺀 것과 같다(`tests/jira/test_save_output.py`의 `test_schema_verdict_part_matches_verdict_json`) |
+| `schemas/verdict.json` | save_output.py가 저장하는 verdict.json의 스키마 |
 | `config/slack-users.json` | `SLACK_USERS_JSON`이 비어 있을 때 apply.py가 읽는 Jira accountId와 Slack 멤버 ID 대응표 파일(`scripts/apply.py`의 `load_slack_users`). Actions 실행에서 사용하는 대응표는 secret `SLACK_USERS_JSON`에 있어 이 파일에는 설명만 둠 |
 
 - 스크립트 검사 10개는 아래와 같다(`scripts/precheck.py`의 `run_issue_dir`, `run_scan`).
@@ -109,8 +115,8 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
 | `JIRA_API_TOKEN` | secret | Jira scoped API 토큰(`read:jira-work`, `write:jira-work`) |
 | `ORG_READ_TOKEN` | secret | Organization 전체 repo의 Pull requests 읽기 권한이 있는 GitHub fine-grained PAT(권한과 대상 repo를 골라 발급하는 personal access token). 없으면 PR 수집을 건너뜀(`scripts/collect.py`의 `gh`) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | secret | `claude setup-token`으로 발급한 Claude Team plan 토큰. 발급한 사람의 좌석(Team plan에서 구성원 한 명에게 배정된 사용 권한) 사용량 한도를 소모함(https://support.claude.com/en/articles/9266767-what-is-the-team-plan: "Usage limits on Team plans are per-member") |
-| `SLACK_WEBHOOK_URL` | secret | 주간 점검 메시지와 검수 뒤 Slack 알림을 받을 Slack 채널의 Incoming Webhook URL |
-| `SLACK_USERS_JSON` | secret | Jira accountId를 키로, Slack 멤버 ID를 값으로 둔 JSON 문자열. 주간 점검 메시지와 검수 뒤 Slack 알림의 멘션에 사용(`scripts/apply.py`의 `load_slack_users`) |
+| `SLACK_WEBHOOK_URL` | secret | 주간 점검 메시지, 검수 뒤 Slack 알림, 실패 알림을 받을 Slack 채널의 Incoming Webhook URL |
+| `SLACK_USERS_JSON` | secret | Jira accountId를 키로, Slack 멤버 ID를 값으로 둔 JSON 문자열. 주간 점검 메시지, 검수 뒤 Slack 알림, 실패 알림의 멘션에 사용(`scripts/apply.py`의 `load_slack_users`) |
 | `JIRA_DOC_GATE` | variable | `false`(관찰 모드). 게이트 모드에서는 `true` |
 | `JIRA_PROJECT_KEY` | variable | `INNO` |
 | `JIRA_LEAD_ACCOUNT_ID` | variable | 팀장의 Jira accountId |
@@ -169,11 +175,23 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
     - 원인과 해결의 근거 링크 (B3), To-Be 동작 확인 comment (B4)
     - 대응 결과의 근거 (I3), 1년 뒤에도 이해 가능한 기록 (R2)
   - 바꾼 이유는 검수 comment의 검수 결과 줄 아래에 적힌다.
-- 아래 경우에는 결과를 "실패"로 처리한다(`scripts/apply.py`의 `apply_issue`, `failure_comment`).
+- 아래 경우에는 결과를 "실패"로 처리한다(`scripts/apply.py`의 `apply_issue`, `validate_verdict`).
   - verdict.json이 없거나 형식이 틀림
-  - 검수 모드에서 verdict.json은 있으나 tldr.wiki(TL;DR 본문)나 comment.wiki(검수 comment의 결과 요약)가 없음. 예: INNO-43 실행 38188818467(2026-10-12)에서 CI agent가 턴 상한(`--max-turns` 40)에 걸려 verdict.json만 쓰고 멈춤(로그의 `"subtype": "error_max_turns"`, 4단계의 "TL;DR 출력 없음")
-  - 실패면 팀장을 멘션한 실패 알림 comment만 달고, 상태 전환, Slack 알림, TL;DR 갱신, 결과 산출물 구역 갱신은 하지 않는다.
-  - 정리 모드에서 tldr.wiki가 없으면 실패로 처리하지 않고 Summary 탭에 "TL;DR 출력 없음"만 남긴다.
+  - "CI agent 판정 없음": save_output.py가 채운 판정 없음 기본값이 그대로 남음. 검수 결과 코드값이 `"no_verdict"`이거나 items에 `done`이 null인 항목이 있는 경우다(`scripts/apply.py`의 `NO_VERDICT_KO`, `validate_verdict`). 구조화 출력이 없거나 구조화 출력에 그 task가 없을 때 생긴다. 예상 산출물이 없는 정리 모드 task는 기본값만으로 형식 검사를 통과하므로, `_agent_error.txt`에 내용이 있으면 모드와 관계없이 같은 이유로 실패 처리한다(`apply_issue`).
+  - 검수 모드에서 구조화 출력에 TL;DR 본문(`tldr`)이나 검수 comment의 결과 요약(`comment`)이 없거나 비어 있어 tldr.wiki나 comment.wiki가 없음. 전환 전 예: INNO-43 실행 38188818467(2026-10-12)에서 CI agent가 턴 상한(`--max-turns` 40)에 걸려 verdict.json만 쓰고 멈춤(로그의 `"subtype": "error_max_turns"`, 4단계의 "TL;DR 출력 없음")
+- 실패한 task의 처리는 아래와 같다(`scripts/apply.py`의 `apply_issue`, `main`).
+  - Jira에는 comment를 남기지 않는다(검수 모드 포함). 상태 전환, 검수 Slack 알림, TL;DR 갱신, 결과 산출물 구역 갱신도 하지 않는다. Summary 탭에 "실패" 행만 남긴다.
+  - 실패 이유 끝에 `out/<task 키>/_agent_error.txt`의 내용이 ". 원인: …"으로 붙는다.
+    - save_output.py는 구조화 출력이 없을 때 실행 결과 파일이 없으면 "실행 결과 파일 없음(Claude 문서화 단계(Actions 워크플로 3단계) 결과: …)"을, 있으면 "Claude 문서화 단계 종료 종류(subtype): …"로 result 메시지의 `subtype`(종료 종류, 예: `error_max_turns`)을 작성한다(`scripts/save_output.py`의 `no_output_reason`).
+    - result 메시지의 `is_error`가 true일 때만 `result` 앞 300자를 "실패 문구"로 덧붙인다. 성공한 실행의 `result`는 Jira 기록이 담길 수 있어 옮기지 않는다.
+    - 구조화 출력은 있으나 그 task가 `tasks`에 없으면 `failed`의 이유("CI agent가 처리하지 못함: …") 또는 "구조화 출력에 이 Task 결과 없음"을 적는다(`scripts/save_output.py`의 `save_task`). `failed`의 이유는 앞 300자만 옮긴다(`failed_reasons`).
+  - 한 실행에서 실패한 task(Jira 오류로 반영하지 못한 task 포함)를 모아 Slack 한 건으로 팀장에게 알린다(`scripts/apply.py`의 `failure_slack_text`, `main`).
+    - 첫 줄은 "[jira-doc 실패] 검수 모드(또는 정리 모드) Task n건 처리 실패"와 팀장 멘션이다.
+    - task마다 Jira 링크, task 키, 제목, 원인이 한 줄씩 나오고, 마지막 줄에 GitHub Actions 실행 링크가 나온다.
+    - Summary 탭에는 Slack 멤버 ID 대신 "팀장(Slack 멘션 없음)"으로 적은 사본을 남긴다(`scripts/apply.py`의 `main`).
+  - 실패가 하나라도 있으면 apply.py가 종료 코드 1로 끝나 Actions 실행 상태가 failure가 된다(`scripts/apply.py`의 `main`).
+- 검수 모드에서 3-2 단계가 판정 없음, items의 `done` null, 빈 `tldr`, 빈 `comment` 중 하나를 확인하면 `retry=true`를 출력해 3-R 단계가 3단계를 1회 더 실행한다(`scripts/save_output.py`의 `main`, `missing_parts`). 정리 모드는 다시 실행하지 않는다.
+- 정리 모드에서 tldr.wiki가 없으면 실패로 처리하지 않고 Summary 탭에 "TL;DR 출력 없음"만 남긴다.
 - 보류로 In Progress가 된 task는 담당자가 요청대로 기록하거나 미달성 사유를 comment로 남긴 뒤 다시 request 전환을 한다. 그러면 F1이 다시 검수한다.
 - 사유 없이 stop했다가 다시 진행한 task는 stop 사유 comment (R4)가 보완 필요가 되어 검수 결과가 보류가 된다(`scripts/precheck.py`의 `check_r4`, `scripts/apply.py`의 `apply_issue`).
   - 늦은 사유: stop 뒤 다음 상태 변경 이후에 남긴, "stop 사유:"로 시작하는 사람 comment. precheck.py는 이 comment를 stop 뒤 언제 남겼든 그 stop의 사유로 센다(`scripts/precheck.py`의 `stop_events`).
@@ -199,6 +217,7 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
    - 2단계: `[precheck] INNO-29 (Task): 예상 산출물 n개, 실패 …`(`scripts/precheck.py`의 `run_issue_dir`)
 3. Summary 탭의 "jira-doc 실행 결과" 표에서 Jira 반영을 확인한다.
    - 행은 `| INNO-29 | Task | review | 통과 | … |` 꼴이고, 결과 칸은 통과, 검토 요청, 보류, 실패 중 하나다(`scripts/apply.py`의 `Summary.row`).
+   - 실패 행이 있으면 Slack 실패 알림 한 건이 가고 실행 상태가 failure가 된다. 마지막 행 `| - | - | review | 전송 완료 | 실패 알림 Task n건 |`이 실패 알림 전송 결과다(`scripts/apply.py`의 `main`).
 4. INNO-29를 열어 아래를 확인한다.
    - TL;DR과 결과 산출물 구역이 바뀌었고, 진행 배경과 예상 산출물은 그대로다. apply.py는 description에서 결과 산출물 구역만 바꾼다(`scripts/jira_api.py`의 `set_section`, `scripts/apply.py`의 `apply_issue`).
    - 첫 줄이 `[ai-doc-agent]`인 검수 comment가 달렸다.
@@ -279,6 +298,7 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
     - 추정: 발급한 사람이 Team plan에서 빠지거나 좌석이 회수되면 만료 전이라도 동작하지 않는다. 그때는 팀장이 다른 좌석으로 다시 발급해, 등록된 repo의 secret을 모두 교체한다(`docs/pr-review-agent.md`의 "대상 repo에 설치" 절 2번).
 - 여러 task가 동시에 request 전환되면 task마다 Actions 워크플로 실행이 따로 생겨 동시에 실행된다(Actions 워크플로의 `concurrency`).
   - 같은 task의 실행은 앞 실행이 끝날 때까지 대기한다(`group`이 task 키 기준, `cancel-in-progress: false`).
+- 3-2 단계(save_output.py)는 표준 출력에 task마다 "[save] <task 키>: verdict=<값> 없음=<빠진 부분>" 한 줄만 남긴다. tldr, comment, 실행 결과의 `result` 같은 Jira 기록 내용은 출력하지 않는다(`scripts/save_output.py`의 `save_task`).
 - 3-1 단계(Claude 실행 결과 요약)는 CI agent 실행 결과 파일(claude-code-action의 `execution_file` 출력)에서 아래만 로그에 남긴다(Actions 워크플로의 "3-1. Claude 실행 결과 요약" 단계).
   - `is_error`, `num_turns`(턴 수), `total_cost_usd`(claude CLI가 계산한 API 환산 비용)
   - `permission_denials`: 권한이 거부된 도구 이름. Write와 Edit는 거부된 파일 경로도 남긴다
@@ -286,8 +306,12 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
   - 3단계의 전체 출력은 Jira 기록이 담겨 있어 public 로그에 남기지 않는다(3단계의 `show_full_output`은 기본값 false). 성공한 실행의 `result`도 같은 이유로 남기지 않는다.
 - claude-code-action은 워크플로 파일이 기본 브랜치(main)의 것과 같을 때만 3단계를 실행한다.
   - 원문: "The workflow file must exist and have identical content to the version on the repository's default branch."(2026-10-12 실행 38221063946 로그)
-  - 그래서 다른 브랜치로 수동 실행해 시험할 때는 그 브랜치의 `.github/workflows/jira-doc.yml`이 main과 같아야 한다. 다르면 3단계가 건너뛰어지고 4단계가 verdict.json 없음 실패 알림을 남긴다(실행 38221063946: 3단계 로그 "Exiting due to workflow validation skip", 4단계 로그 `[apply] INNO-47: 실패 … verdict.json 없음`).
-- 4단계가 실패 알림 comment를 남겨도 Actions 실행 상태는 success로 보일 수 있다. apply.py가 실패를 기록한 뒤에도 종료 코드 0으로 끝나기 때문이다(`scripts/apply.py`의 `main`). 예: 실행 38221063946은 4단계가 실패를 기록했는데 실행 상태가 success였다(`gh run list -R everex-ai/.github -w jira-doc.yml`). 실패 여부는 4단계 로그의 `[apply]` 줄이나 Summary 탭의 결과 칸으로 확인한다.
+  - 그래서 다른 브랜치로 수동 실행해 시험할 때는 그 브랜치의 `.github/workflows/jira-doc.yml`이 main과 같아야 한다. 다르면 3단계가 건너뛰어진다.
+  - 전환 전에는 4단계가 verdict.json 없음 실패 알림 comment를 남겼다(실행 38221063946: 3단계 로그 "Exiting due to workflow validation skip", 4단계 로그 `[apply] INNO-47: 실패 … verdict.json 없음`). 지금은 3-2 단계가 판정 없음 기본값과 `_agent_error.txt`(3단계 결과 값 포함)를 만들고, 4단계가 "CI agent 판정 없음. 원인: …"으로 실패 처리해 Slack 실패 알림을 보낸다(`scripts/save_output.py`의 `no_output_reason`, `scripts/apply.py`의 `apply_issue`).
+- 4단계가 실패를 기록하면 Actions 실행 상태가 failure가 된다. apply.py가 실패를 기록한 뒤 종료 코드 1로 끝나기 때문이다(`scripts/apply.py`의 `main`).
+  - 구조화 출력 전환 전에는 종료 코드 0으로 끝나 실행 상태가 success로 보였다. 예: 실행 38221063946은 4단계가 실패를 기록했는데 실행 상태가 success였다(`gh run list -R everex-ai/.github -w jira-doc.yml`).
+  - 실패 원인은 Slack 실패 알림, 4단계 로그의 `[apply]` 줄, Summary 탭의 결과 칸으로 확인한다.
 - Actions 워크플로 실행을 취소해도 4단계(반영)는 실행된다. 4단계의 실행 조건이 `always() && steps.collect.outcome == 'success'`이기 때문이다(Actions 워크플로 4단계의 `if`).
-  - 검수 모드에서 3단계가 끝나기 전에 취소하면 verdict.json이 없어 실패 알림 comment가 달린다(예: INNO-29의 comment `57997`).
+  - 3-2 단계도 같은 조건(`always()`)이라 실행된다(`.github/workflows/jira-doc.yml:126`). 검수 모드에서 3단계가 끝나기 전에 취소하면 구조화 출력이 없어 4단계가 "CI agent 판정 없음"으로 실패 처리하고 Slack 실패 알림을 보낸다(`scripts/apply.py`의 `apply_issue`, `main`).
+  - 전환 전에는 verdict.json이 없어 실패 알림 comment가 달렸다(예: INNO-29의 comment `57997`).
 - 영업일 수는 토요일과 일요일만 뺀 날 수이고, 공휴일은 빼지 않는다(`scripts/precheck.py`의 `business_days_since`).

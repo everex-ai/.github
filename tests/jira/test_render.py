@@ -519,16 +519,22 @@ def test_jira_transition_to_matches_target_status(ja):
         jr.transition_to("INNO-1", "Backlog")
 
 
-def test_failure_comment(ja, monkeypatch):
+def test_failure_slack_text(ja, monkeypatch):
     monkeypatch.setenv("GITHUB_SERVER_URL", "https://github.com")
     monkeypatch.setenv("GITHUB_REPOSITORY", "org/repo")
     monkeypatch.setenv("GITHUB_RUN_ID", "1")
-    assert ja.failure_comment("verdict.json 없음", "acc-lead") == (
-        "자동 검수 실행 실패: verdict.json 없음\n팀장 확인 필요\n"
-        "근거: [GitHub Actions 실행 로그|https://github.com/org/repo/actions/runs/1]\n[~accountid:acc-lead]"
+    failures = [{"key": "INNO-17", "title": "A & B", "url": ISSUE_URL, "reason": "CI agent 판정 없음. 원인: x"}]
+    users = {"acc-lead": "U-LEAD"}
+    assert ja.failure_slack_text("review", failures, users, "acc-lead") == (
+        "[jira-doc 실패] 검수 모드 Task 1건 처리 실패 <@U-LEAD>\n"
+        f"• <{ISSUE_URL}|INNO-17 A &amp; B>: CI agent 판정 없음. 원인: x\n"
+        "GitHub Actions 실행: <https://github.com/org/repo/actions/runs/1|실행 로그>"
     )
     monkeypatch.delenv("GITHUB_RUN_ID")
-    assert ja.failure_comment("x", "") == "자동 검수 실행 실패: x\n팀장 확인 필요"
+    no_url = [{"key": "INNO-9", "title": "제목", "url": "", "reason": "Jira 오류: x"}]
+    assert ja.failure_slack_text("digest", no_url, {}, "acc-lead") == (
+        "[jira-doc 실패] 정리 모드 Task 1건 처리 실패 팀장(Slack 멘션 없음)\n• INNO-9 제목: Jira 오류: x"
+    )
 
 
 def test_validate_verdict_message_names_doc_review_checks(ja):
@@ -575,7 +581,8 @@ def test_rendered_samples_have_no_formal_endings(render, tmp_path):
         "deliverables-digest.wiki",
         "review-comment-task-observe.wiki",
         "doc-review-comment.wiki",
-        "failure-comment.wiki",
+        "failure-slack.txt",
+        "failure-slack-invalid.txt",
         "missing-alert-comment.wiki",
         "weekly-slack.txt",
         "slack-review-hold.txt",
@@ -924,7 +931,7 @@ def test_tldr_missing_note_stays_out_of_comment(render, ja, tmp_path):
     j, summ = run_without_output(render, ja, tmp_path, "review", "tldr.wiki")
     assert all("TL;DR 출력 없음" not in body for _, body in j.comments)
     assert "TL;DR 출력 없음" not in summ.rows[0]
-    assert "판정 파일(verdict.json)은 있으나 tldr.wiki(TL;DR 본문) 없음 또는 비어 있음" in summ.rows[0]
+    assert "CI agent 출력에 TL;DR 본문 없음 또는 비어 있음" in summ.rows[0]
 
 
 def test_t8_counts_not_a_reason_as_missing_reason(ja):
@@ -966,21 +973,26 @@ def test_validate_verdict_accepts_t9_feedback_and_reports_missing_t9(render, ja,
 @pytest.mark.parametrize("blank", [False, True], ids=["파일 없음", "빈 파일"])
 @pytest.mark.parametrize(
     ("missing", "label"),
-    [("tldr.wiki", "tldr.wiki(TL;DR 본문)"), ("comment.wiki", "comment.wiki(검수 comment의 결과 요약)")],
+    [("tldr.wiki", "TL;DR 본문"), ("comment.wiki", "검수 comment의 결과 요약")],
 )
-def test_review_without_output_file_posts_only_failure_comment(render, ja, tmp_path, slack, missing, label, blank):
+def test_review_without_output_file_leaves_no_jira_comment(render, ja, tmp_path, slack, missing, label, blank):
+    ctx, out = tmp_path / "ctx", tmp_path / "out"
     j, summ = run_without_output(render, ja, tmp_path, "review", missing, blank=blank)
-    [(key, body)] = j.comments  # 검수 comment와 문서화 리뷰 comment 없이 실패 알림 comment 하나만 남음
-    assert key == "INNO-17"
-    assert body.startswith("[ai-doc-agent]\n자동 검수 실행 실패: ")
-    assert (
-        f"판정 파일(verdict.json)은 있으나 {label} 없음 또는 비어 있음. 추정: CI agent 실행이 끝나기 전에 멈춤" in body
-    )
-    assert "[~accountid:acc-lead]" in body and "검수 결과:" not in body
+    assert j.comments == []  # 검수 comment, 문서화 리뷰 comment, 실패 알림 comment 모두 Jira에 남기지 않음
     assert j.transitioned_to == [] and j.fields == {}  # 상태 전환, TL;DR와 결과 산출물 구역 갱신 없음
     assert j.props_set == []  # jira-doc 기록(property)도 남기지 않음
-    assert slack == []
+    assert slack == []  # Slack 검수 알림도 없음. 실패는 main이 한 건으로 알림
     assert summ.rows[0].startswith("| INNO-17 | Task | review | 실패 |")
+    assert f"CI agent 출력에 {label} 없음 또는 비어 있음" in summ.rows[0]
+    assert "추정:" not in summ.rows[0]
+    summ2 = ja.Summary(str(tmp_path / "summary2.md"))
+    failure = ja.apply_issue(render.FakeJira({}), ctx / "INNO-17", out, "review", False, "acc-lead", summ2)
+    assert failure == {
+        "key": "INNO-17",
+        "title": "",
+        "url": ISSUE_URL,
+        "reason": f"CI agent 출력에 {label} 없음 또는 비어 있음",
+    }
 
 
 def test_digest_without_tldr_keeps_note_in_summary_only(render, ja, tmp_path, slack):
@@ -990,19 +1002,138 @@ def test_digest_without_tldr_keeps_note_in_summary_only(render, ja, tmp_path, sl
     assert "결과 산출물" in j.fields["INNO-17"]["description"]  # 정리 모드는 결과 산출물 구역을 그대로 갱신함
 
 
-def test_failure_comment_reasons(render, ja, tmp_path):
+def test_failure_reasons(render, ja, tmp_path):
     ctx, out = tmp_path / "ctx", tmp_path / "out"
-    bodies = {}
+    failures = {}
     for key, content in (("INNO-1", None), ("INNO-2", "{not json")):
         render.write_issue(ctx, key, "Task", EXPECTED, {})
         (out / key).mkdir(parents=True)
         if content is not None:
             (out / key / "verdict.json").write_text(content, encoding="utf-8")
         j = render.FakeJira({})
-        ja.apply_issue(j, ctx / key, out, "review", False, "", ja.Summary(str(tmp_path / "summary.md")))
-        bodies[key] = j.comments[0][1]
-    assert "판정 파일(verdict.json) 없음. 추정: CI agent 실행이 실패했거나 끝나지 않음" in bodies["INNO-1"]
-    assert "판정 파일(verdict.json)을 JSON으로 읽을 수 없음" in bodies["INNO-2"]
+        failures[key] = ja.apply_issue(j, ctx / key, out, "review", False, "", ja.Summary(str(tmp_path / "summary.md")))
+        assert j.comments == []
+    assert (
+        "판정을 저장한 파일(verdict.json) 없음. 추정: CI agent 실행이 실패했거나 끝나지 않음"
+        in failures["INNO-1"]["reason"]
+    )
+    assert "판정을 저장한 파일(verdict.json)을 JSON으로 읽을 수 없음" in failures["INNO-2"]["reason"]
+
+
+def test_agent_error_cause_is_appended_to_every_failure(render, ja, tmp_path):
+    ctx, out = tmp_path / "ctx", tmp_path / "out"
+    render.write_issue(ctx, "INNO-1", "Task", EXPECTED, {})
+    (out / "INNO-1").mkdir(parents=True)
+    (out / "INNO-1" / "_agent_error.txt").write_text(
+        "Claude 문서화 단계 종료 종류(subtype): error_max_turns\n", encoding="utf-8"
+    )
+    summ = ja.Summary(str(tmp_path / "summary.md"))
+    failure = ja.apply_issue(render.FakeJira({}), ctx / "INNO-1", out, "review", False, "", summ)
+    assert failure["reason"].endswith(". 원인: Claude 문서화 단계 종료 종류(subtype): error_max_turns")
+    assert failure["reason"] in summ.rows[0]
+
+
+def test_no_verdict_default_fails_without_format_wrapper(render, ja, tmp_path):
+    ctx, out = tmp_path / "ctx", tmp_path / "out"
+    render.write_issue(ctx, "INNO-17", "Task", EXPECTED, {})
+    default = render.task_verdict("INNO-17", "review", "no_verdict") | {
+        "items": [{"id": "1", "done": None, "result": ""}]
+    }
+    render.write_out(out, "INNO-17", default, "* 요약")
+    j = render.FakeJira({"INNO-17": ""})
+    summ = ja.Summary(str(tmp_path / "summary.md"))
+    failure = ja.apply_issue(j, ctx / "INNO-17", out, "review", False, "acc-lead", summ)
+    assert failure["reason"] == ja.NO_VERDICT_KO == "CI agent 판정 없음"
+    assert j.comments == [] and j.fields == {} and j.transitioned_to == []
+    # items의 done만 null이어도(정리 모드 포함) 같은 이유로 실패함
+    only_items = render.task_verdict("INNO-17", "digest", None) | {"items": [{"id": "1", "done": None, "result": ""}]}
+    assert ja.validate_verdict(only_items, "digest", "INNO-17") == ja.NO_VERDICT_KO
+
+
+def run_main(render, ja, monkeypatch, work, mode, keys, *, lead="acc-lead", jira=None):
+    """ja.main을 가짜 Jira와 sys.argv로 실행하고 (FakeJira, 종료 코드, Summary 파일 내용)을 돌려준다. 정상 종료면 코드는 0."""
+    j = jira or render.FakeJira({k: "" for k in keys})
+    monkeypatch.setattr(ja, "Jira", lambda: j)
+    monkeypatch.setenv("JIRA_LEAD_ACCOUNT_ID", lead)
+    monkeypatch.setenv("GITHUB_SERVER_URL", "https://github.com")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "org/repo")
+    monkeypatch.setenv("GITHUB_RUN_ID", "9")
+    summary = work / "summary.md"
+    argv = [
+        "apply.py",
+        "--ctx",
+        str(work / "ctx"),
+        "--out",
+        str(work / "out"),
+        "--mode",
+        mode,
+        "--summary",
+        str(summary),
+    ]
+    monkeypatch.setattr(sys, "argv", argv)
+    code = 0
+    try:
+        ja.main()
+    except SystemExit as e:
+        code = e.code
+    return j, code, summary.read_text(encoding="utf-8")
+
+
+def test_main_exits_zero_without_failure(render, ja, monkeypatch, tmp_path, slack):
+    ctx, out = tmp_path / "ctx", tmp_path / "out"
+    render.write_issue(ctx, "INNO-17", "Task", EXPECTED, {})
+    v = render.task_verdict("INNO-17", "review", "pass") | {"items": [{**i, "done": True} for i in ITEMS], "extra": []}
+    render.write_out(out, "INNO-17", v, "* 요약")
+    _, code, _ = run_main(render, ja, monkeypatch, tmp_path, "review", ["INNO-17"])
+    assert code == 0
+    assert all(not t.startswith("[jira-doc 실패]") for t in slack)
+
+
+def test_main_failure_sends_one_slack_and_exits_one(render, ja, monkeypatch, tmp_path, slack):
+    ctx, out = tmp_path / "ctx", tmp_path / "out"
+    render.write_issue(ctx, "INNO-17", "Task", EXPECTED, {}, summary="export 오류")
+    render.write_out(out, "INNO-17", render.task_verdict("INNO-17", "review", "no_verdict"), "* 요약")
+    (out / "INNO-17" / "_agent_error.txt").write_text(
+        "Claude 문서화 단계 종료 종류(subtype): error_max_turns\n", encoding="utf-8"
+    )
+    j, code, summary = run_main(render, ja, monkeypatch, tmp_path, "review", ["INNO-17"])
+    assert code == 1
+    assert j.comments == []  # 검수 모드의 실패도 Jira에 comment를 남기지 않음
+    [text] = slack  # 검수 알림 없이 실패 알림 한 건
+    assert text.startswith("[jira-doc 실패] 검수 모드 Task 1건 처리 실패 <@U-LEAD>\n")
+    assert f"• <{ISSUE_URL}|INNO-17 export 오류>: " in text
+    assert "원인: " in text and "GitHub Actions 실행: <https://github.com/org/repo/actions/runs/9|실행 로그>" in text
+    assert "실패 알림 Task 1건" in summary
+    assert "U-LEAD" not in summary and "<@U-" not in summary  # Actions 요약에 Slack 멤버 ID가 나가지 않음
+
+
+def test_main_digest_two_failures_in_one_slack(render, ja, monkeypatch, tmp_path, slack):
+    ctx = tmp_path / "ctx"
+    for key in ("INNO-1", "INNO-2"):
+        render.write_issue(ctx, key, "Task", EXPECTED, {}, summary=f"제목 {key}")
+    _, code, summary = run_main(render, ja, monkeypatch, tmp_path, "digest", ["INNO-1", "INNO-2"])
+    assert code == 1
+    [text] = slack
+    assert text.startswith("[jira-doc 실패] 정리 모드 Task 2건 처리 실패 <@U-LEAD>\n")
+    assert "INNO-1 제목 INNO-1" in text and "INNO-2 제목 INNO-2" in text
+    assert "U-LEAD" not in summary
+
+
+def test_main_jira_error_is_a_failure(render, ja, monkeypatch, tmp_path, slack):
+    ctx, out = tmp_path / "ctx", tmp_path / "out"
+    render.write_issue(ctx, "INNO-17", "Task", EXPECTED, {}, summary="export 오류")
+    v = render.task_verdict("INNO-17", "review", "pass") | {"items": [{**i, "done": True} for i in ITEMS], "extra": []}
+    render.write_out(out, "INNO-17", v, "* 요약")
+    j = render.FakeJira({"INNO-17": ""})
+
+    def boom(key, fields):
+        raise ja.JiraError("GET /issue/INNO-17 -> 500: boom")
+
+    j.issue = boom
+    _, code, _ = run_main(render, ja, monkeypatch, tmp_path, "review", ["INNO-17"], jira=j)
+    assert code == 1
+    [text] = slack
+    assert "INNO-17 export 오류" in text and "Jira 오류: GET /issue/INNO-17 -&gt; 500: boom" in text
 
 
 def test_t3_mismatch_when_already_review_request(render, ja, tmp_path):

@@ -1,7 +1,7 @@
 # Issue (검수 모드)
 
-이 파일은 work type이 Issue인 task의 구역, 완료 판단 기준, 출력 파일의 작성 형식, 검수 결과 기준을 정한다.
-출력 파일은 verdict.json, tldr.wiki, comment.wiki다.
+이 파일은 work type이 Issue인 task의 구역, 완료 판단 기준, 출력의 작성 형식, 검수 결과 기준을 정한다.
+출력은 구조화 출력(schemas/agent-output.json 형식의 JSON)이고, 파일은 작성하지 않는다. task마다 tasks[]에 판정 객체(verdict), tldr, comment를 낸다.
 
 ## 구역
 - 사람 구역(제기자가 작성하는 description 구역): 이슈 유형(제안, 이슈, 기타 중 고르는 체크박스), 이슈 내용
@@ -28,9 +28,9 @@
 - 링크 추가 요청: 사람 구역에 없는 유용한 링크(PR, 리포트, 데이터 위치)가 있으면 requests에
   "이슈 내용에 [제목|URL] 추가 필요"로 적는다.
 
-## verdict.json의 items와 extra
+## 판정 객체(verdict)의 items와 extra
 - items와 extra는 둘 다 빈 배열([])로 둔다.
-- checks(verdict.json의 검사별 결과 목록)에는 아래 검사를 넣는다.
+- checks(판정 객체의 검사별 결과 목록)에는 아래 검사를 넣는다.
   - I1과 이슈 내용 작성 (I2): precheck.json의 결과를 인용한다
   - I3: agent가 판단한다
   - I4, I5: 문서화 리뷰(검수 모드). agent가 판단한다
@@ -59,9 +59,9 @@
   - 영업일 수는 "영업일 기준 N일"로 적는다("N영업일"로 적지 않는다).
   - precheck.json의 docFacts(문서화 리뷰용 수치)의 키 이름은 적지 않는다.
 - feedback[].request는 "필요"로 맺는다.
-- 문서화 리뷰의 요청 문장은 requests가 아니라 feedback[].request에만 적는다. comment.wiki에도 넣지 않는다.
+- 문서화 리뷰의 요청 문장은 requests가 아니라 feedback[].request에만 적는다. comment에도 넣지 않는다.
 
-## tldr.wiki 형식
+## tldr 형식
 ```
 h2. Summary
 * (대응 결과: 수용 / 반려 / task INNO-000으로 이관, 이유 한 줄)
@@ -69,12 +69,12 @@ h2. Summary
 * {color:#6b778c}상태: <issue.json의 status>, 검수 결과: <통과|검토 요청|보류>, 갱신: <meta.json의 collectedAt, YYYY-MM-DD HH:MM>{color}
 ```
 
-## comment.wiki (검수 모드, 결과 요약 부분만)
+## comment (검수 모드, 결과 요약 부분만)
 검수 모드(review 실행 모드)에서는 대응 결과가 무엇이고 어디에 근거가 있는지를 개조식 1–3줄로 적는다.
 - 줄마다 근거 wiki 링크([comment 날짜|URL]) 또는 이관해서 만든 task의 키를 붙인다.
 
 ## 검수 결과
-verdict(verdict.json의 검수 결과 키)에는 코드값을 적고, 괄호 안은 검수 결과 이름이다.
+판정 객체의 검수 결과 코드값(verdict.verdict)은 아래 코드값으로 적고, 괄호 안은 검수 결과 이름이다.
 - 문서화 리뷰(I4, I5)는 검수 결과에 넣지 않는다. apply.py가 모드에 따라 적용한다(`scripts/apply.py`의 `apply_issue`, `recheck_verdict`).
   - 관찰 모드(Actions 변수 `JIRA_DOC_GATE`가 `false`)에서는 apply.py가 문서화 리뷰 결과를 팀장용 comment와 Actions Summary로 공유한다(`scripts/apply.py`의 `doc_review_comment`).
   - 게이트 모드(`JIRA_DOC_GATE`가 `true`)에서는 fail이 있으면 통과를 보류로 바꾼다.

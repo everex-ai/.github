@@ -1,7 +1,7 @@
 # Task (검수 모드)
 
-이 파일은 검수 모드에서 work type이 Task인 task의 구역, 완료 판단 기준, 출력 파일의 작성 형식, 검수 결과 기준을 정한다.
-출력 파일은 verdict.json, tldr.wiki, comment.wiki다.
+이 파일은 검수 모드에서 work type이 Task인 task의 구역, 완료 판단 기준, 출력의 작성 형식, 검수 결과 기준을 정한다.
+출력은 구조화 출력(schemas/agent-output.json 형식의 JSON)이고, 파일은 작성하지 않는다. task마다 tasks[]에 판정 객체(verdict), tldr, comment를 낸다.
 
 ## 구역
 - 사람 구역(담당자가 작성하는 description 구역): 진행 배경, 예상 산출물 (Task 완료 기준)
@@ -14,7 +14,7 @@
 |---|---|---|---|---|
 | T1 | 예상 산출물 작성 | 예상 산출물 구역에 안내문이 아닌 목록 항목이 1개 이상 있음 | 스크립트 | 실패 시 보류 |
 | T2 | 진행 배경 작성 | 진행 배경 구역에 안내문 외의 내용이 2줄 이상 있음 | 스크립트 | 실패 시 보류 |
-| T3 | 예상 산출물과 결과 산출물의 1:1 대응 | verdict.json의 items 번호가 precheck의 expected 번호와 1:1로 같음 | apply.py (agent 출력 검증). agent는 checks에 넣지 않는다 | 불일치 시 검토 요청 |
+| T3 | 예상 산출물과 결과 산출물의 1:1 대응 | 판정 객체(verdict)의 items 번호가 precheck의 expected 번호와 1:1로 같음 | apply.py (agent 출력 검증). agent는 checks에 넣지 않는다 | 불일치 시 검토 요청 |
 | T4 | 진행 배경 충실도 | 아래 "문서화 리뷰" 참고 | agent | 문서화 리뷰 정책 |
 | T5 | 예상 산출물 분할 단위 | 아래 "문서화 리뷰" 참고 | agent | 문서화 리뷰 정책 |
 | T6 | 진행 기록 comment | 아래 "문서화 리뷰" 참고 | agent | 문서화 리뷰 정책 |
@@ -38,7 +38,7 @@
 - 문서화 리뷰: 진행 배경, 예상 산출물, 사람 comment, sub-task의 description과 comment를 팀장이 리뷰하듯 확인한다.
 
 ## 문서화 리뷰 (검수 모드)
-검수 모드(review 실행 모드)에서는 rules.md의 "문서화 리뷰" 기준으로 아래 다섯 검사를 checks(verdict.json의 검사별 결과 목록)에 넣고, 항목마다 feedback을 작성한다.
+검수 모드(review 실행 모드)에서는 rules.md의 "문서화 리뷰" 기준으로 아래 다섯 검사를 checks(판정 객체의 검사별 결과 목록)에 넣고, 항목마다 feedback을 작성한다.
 - 진행 배경 충실도 (T4)
 - 예상 산출물 분할 단위 (T5)
 - 진행 기록 comment (T6)
@@ -77,9 +77,9 @@
   - 영업일 수는 "영업일 기준 N일"로 적는다("N영업일"로 적지 않는다).
   - precheck.json의 docFacts(문서화 리뷰용 수치)의 키 이름은 적지 않는다.
 - feedback[].request는 "필요"로 맺는다.
-- 문서화 리뷰의 요청 문장은 requests가 아니라 feedback[].request에만 적는다. comment.wiki에도 넣지 않는다.
+- 문서화 리뷰의 요청 문장은 requests가 아니라 feedback[].request에만 적는다. comment에도 넣지 않는다.
 
-## tldr.wiki 형식
+## tldr 형식
 `h2. Summary` 아래에 결과를 가급적 정량 수치로 3–5개 항목으로 적는다.
 ```
 h2. Summary
@@ -89,7 +89,7 @@ h2. Summary
 * {color:#6b778c}상태: <issue.json의 status>, 검수 결과: <통과|검토 요청|보류>, 갱신: <meta.json의 collectedAt, YYYY-MM-DD HH:MM>{color}
 ```
 
-## comment.wiki (검수 모드, 결과 요약 부분만)
+## comment (검수 모드, 결과 요약 부분만)
 검수 모드(review 실행 모드)에서는 이 task에서 무엇이 어떻게 되었고 왜 이 검수 결과인지를 개조식 2–5줄로 적는다.
 - 줄마다 근거 wiki 링크([PR 제목|URL] 또는 [comment 날짜|URL])를 붙인다.
 ```
@@ -99,7 +99,7 @@ h2. Summary
 ```
 
 ## 검수 결과
-verdict(verdict.json의 검수 결과 키)에는 코드값을 적고, 괄호 안은 검수 결과 이름이다.
+판정 객체의 검수 결과 코드값(verdict.verdict)은 아래 코드값으로 적고, 괄호 안은 검수 결과 이름이다.
 - 문서화 리뷰(T4–T9)는 검수 결과에 넣지 않는다. apply.py가 모드에 따라 적용한다(`scripts/apply.py`의 `apply_issue`, `recheck_verdict`).
   - 관찰 모드(Actions 변수 `JIRA_DOC_GATE`가 `false`)에서는 apply.py가 문서화 리뷰 결과를 팀장용 comment와 Actions Summary로 공유한다(`scripts/apply.py`의 `doc_review_comment`).
   - 게이트 모드(`JIRA_DOC_GATE`가 `true`)에서는 fail이 있으면 통과를 보류로 바꾼다.

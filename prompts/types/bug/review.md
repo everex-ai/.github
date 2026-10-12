@@ -1,7 +1,7 @@
 # Bug (검수 모드)
 
-이 파일은 work type이 Bug인 task의 구역, 완료 판단 기준, 출력 파일의 작성 형식, 검수 결과 기준을 정한다.
-출력 파일은 verdict.json, tldr.wiki, comment.wiki다.
+이 파일은 work type이 Bug인 task의 구역, 완료 판단 기준, 출력의 작성 형식, 검수 결과 기준을 정한다.
+출력은 구조화 출력(schemas/agent-output.json 형식의 JSON)이고, 파일은 작성하지 않는다. task마다 tasks[]에 판정 객체(verdict), tldr, comment를 낸다.
 
 ## 구역
 - 사람 구역(제보자가 작성하는 description 구역)은 아래 네 구역이다. agent는 채워졌는지만 검사한다.
@@ -35,9 +35,9 @@
 - 링크 추가 요청: 사람 구역에 없는 유용한 링크(PR, 리포트, 데이터 위치)가 있으면 requests에
   "문제(As-Is)에 [제목|URL] 추가 필요"로 적는다.
 
-## verdict.json의 items와 extra
+## 판정 객체(verdict)의 items와 extra
 - items와 extra는 둘 다 빈 배열([])로 둔다.
-- checks(verdict.json의 검사별 결과 목록)에는 아래 검사를 넣는다.
+- checks(판정 객체의 검사별 결과 목록)에는 아래 검사를 넣는다.
   - B1, B2: precheck.json의 결과를 인용한다
   - B3, B4: agent가 판단한다
   - B5–B7: 문서화 리뷰(검수 모드). agent가 판단한다
@@ -71,9 +71,9 @@ To-Be 동작 확인 comment (B4)는 확인 comment가 있는지를, B7은 그 �
   - 영업일 수는 "영업일 기준 N일"로 적는다("N영업일"로 적지 않는다).
   - precheck.json의 docFacts(문서화 리뷰용 수치)의 키 이름은 적지 않는다.
 - feedback[].request는 "필요"로 맺는다.
-- 문서화 리뷰의 요청 문장은 requests가 아니라 feedback[].request에만 적는다. comment.wiki에도 넣지 않는다.
+- 문서화 리뷰의 요청 문장은 requests가 아니라 feedback[].request에만 적는다. comment에도 넣지 않는다.
 
-## tldr.wiki 형식
+## tldr 형식
 ```
 h2. Summary
 
@@ -88,12 +88,12 @@ h3. 해결
 - 원인이나 해결을 아직 모르면 그 항목에 "(미확인)"이라고 적는다.
 - h3. 소제목 앞에는 빈 줄을 둔다. 빈 줄이 없으면 Jira가 소제목을 앞 목록 항목에 붙여 표시한다(INNO-34 시험 실행의 TL;DR, 2026-10-08).
 
-## comment.wiki (검수 모드, 결과 요약 부분만)
+## comment (검수 모드, 결과 요약 부분만)
 검수 모드(review 실행 모드)에서는 원인과 해결이 무엇이었고 To-Be 확인이 있었는지를 개조식 2–4줄로 적는다.
 - 줄마다 근거 wiki 링크([PR 제목|URL] 또는 [comment 날짜|URL])를 붙인다.
 
 ## 검수 결과
-verdict(verdict.json의 검수 결과 키)에는 코드값을 적고, 괄호 안은 검수 결과 이름이다.
+판정 객체의 검수 결과 코드값(verdict.verdict)은 아래 코드값으로 적고, 괄호 안은 검수 결과 이름이다.
 - 문서화 리뷰(B5–B7)는 검수 결과에 넣지 않는다. apply.py가 모드에 따라 적용한다(`scripts/apply.py`의 `apply_issue`, `recheck_verdict`).
   - 관찰 모드(Actions 변수 `JIRA_DOC_GATE`가 `false`)에서는 apply.py가 문서화 리뷰 결과를 팀장용 comment와 Actions Summary로 공유한다(`scripts/apply.py`의 `doc_review_comment`).
   - 게이트 모드(`JIRA_DOC_GATE`가 `true`)에서는 fail이 있으면 통과를 보류로 바꾼다.

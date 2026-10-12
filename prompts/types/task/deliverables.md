@@ -1,6 +1,6 @@
 # Task 결과 산출물(검수 모드, 정리 모드 공통)
 
-이 파일은 work type이 Task인 task의 완료 판단 기준과, 예상 산출물에 결과를 대응시켜 verdict.json의 items와 extra를 작성하는 방법을 정한다. CI agent가 검수 모드와 정리 모드에서 함께 읽는다.
+이 파일은 work type이 Task인 task의 완료 판단 기준과, 예상 산출물에 결과를 대응시켜 판정 객체(verdict)의 items와 extra를 작성하는 방법을 정한다. CI agent가 검수 모드와 정리 모드에서 함께 읽는다.
 
 ## 완료 판단 기준
 precheck.json(`scripts/precheck.py`가 계산한 검사 결과 파일)의 expected 목록(예상 산출물 항목 목록)이 기준이다.
@@ -29,7 +29,7 @@ precheck.json의 `expected`가 그 목록을 항목별로 나누고 1부터 번�
   `extra`(초과 달성)에 따로 적고, `why`에 왜 추가했는지를 쓴다. 사유가 기록에 없으면 빈 문자열로 둔다(지어내지 않는다).
   초과 달성 자체는 검수 결과에 영향을 주지 않는다. 사유 누락은 T8로 따로 본다.
 - 한 예상 항목에 결과가 여러 개면 한 항목의 result에 모아 쓴다. 결과 하나가 예상 항목 여러 개에 걸치면 각 항목에 나눠 쓴다.
-- 결과 산출물 구역과 검수 comment의 검사 표는 apply.py가 verdict.json으로 조립한다. agent는 형식이 아니라 내용(대응, 판단, 근거)에 집중한다.
+- 결과 산출물 구역과 검수 comment의 검사 표는 apply.py가 판정 객체(verdict)로 조립한다. agent는 형식이 아니라 내용(대응, 판단, 근거)에 집중한다.
 
 ## 예상 산출물 표현별 달성 근거
 
@@ -52,7 +52,7 @@ precheck.json의 `expected`가 그 목록을 항목별로 나누고 1부터 번�
 - 다른 표현의 항목은 위 표를 적용하지 않고 앞 절 "예상 산출물과 결과 산출물의 대응 (Task)"의 규칙대로 판정한다.
   - 무엇을 했는지와 결과가 기록에 있으면 달성으로 판정한다. 확인 방법이 빠졌으면 requests에 요청 문장만 적는다.
 
-## verdict.json의 items와 extra
+## 판정 객체(verdict)의 items와 extra
 결과 산출물 구역은 `scripts/apply.py`의 `deliverables_wiki`가 items와 extra로 만든다.
 ```json
 "items": [

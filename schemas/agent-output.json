@@ -1,0 +1,224 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "jira-doc agent output",
+  "description": "Claude 단계가 파일 대신 구조화 출력(JSON)으로 내는 결과. save_output.py가 이 내용으로 out/<KEY>/ 파일(verdict.json, tldr.wiki, comment.wiki)과 out/_failed.txt를 만든다.",
+  "type": "object",
+  "required": [
+    "tasks",
+    "failed"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "tasks": {
+      "description": "ctx/ 아래 Task 폴더마다 하나씩 낸 결과 목록",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "issueKey",
+          "verdict",
+          "tldr"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "issueKey": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9]+-[0-9]+$",
+            "description": "ctx 폴더 이름"
+          },
+          "verdict": {
+            "description": "검수 판정 객체. verdict.json에서 issueKey, mode를 뺀 내용이다. issueKey는 tasks[].issueKey에 적고 mode는 save_output.py가 채운다.",
+            "type": "object",
+            "required": [
+              "verdict",
+              "checks",
+              "items",
+              "extra",
+              "requests"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "verdict": {
+                "description": "검수 모드: pass(통과) | fix(보류) | escalate(검토 요청). 정리 모드: null",
+                "enum": [
+                  "pass",
+                  "fix",
+                  "escalate",
+                  null
+                ]
+              },
+              "checks": {
+                "description": "검사 항목별 결과. T3, T8은 apply.py가 계산하므로 넣지 않는다. 순서는 상관없다(스크립트가 정렬한다).",
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "result"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^(T[124-79]|B[1-7]|I[1-5]|R[2-4]|A[12])$"
+                    },
+                    "result": {
+                      "enum": [
+                        "pass",
+                        "fail",
+                        "n/a"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "maxLength": 300
+                    }
+                  }
+                }
+              },
+              "items": {
+                "description": "Task만 채운다. precheck.json의 expected 목록과 id가 1:1로 같아야 한다(T3). 예상 산출물 항목마다 실제 결과를 대응시킨 것.",
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "done",
+                    "result"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^[0-9]+$",
+                      "description": "precheck.json expected의 id"
+                    },
+                    "done": {
+                      "type": "boolean",
+                      "description": "예상 산출물이 충족되었는가"
+                    },
+                    "result": {
+                      "type": "string",
+                      "maxLength": 300,
+                      "description": "실제로 나온 결과 한 줄 (개조식, 수치 포함). 미달성이면 현재 상태"
+                    },
+                    "evidence": {
+                      "type": "string",
+                      "maxLength": 500,
+                      "description": "근거 링크. wiki 형식 [제목|URL], 여러 개면 쉼표로"
+                    },
+                    "why": {
+                      "type": "string",
+                      "maxLength": 300,
+                      "description": "미달성일 때 왜 달성하지 못했는지. 사람의 기록(comment, sub-task, PR)에 있는 사유만 쓰고, 없으면 빈 문자열. 근거가 없어 확인하지 못한 경우는 \"근거 부족으로 확인 불가\""
+                    },
+                    "reason": {
+                      "type": "string",
+                      "maxLength": 300,
+                      "description": "미달성일 때 달성하려면 담당자가 무엇을 더 남겨야 하는지"
+                    }
+                  }
+                }
+              },
+              "extra": {
+                "description": "초과 달성. 예상 산출물 어느 항목에도 해당하지 않지만 실제로 나온 결과. Task만 채우고, 없으면 빈 배열.",
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "result"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "result": {
+                      "type": "string",
+                      "maxLength": 300
+                    },
+                    "why": {
+                      "type": "string",
+                      "maxLength": 300,
+                      "description": "예상에 없던 이 결과가 왜 추가되었는지. 사람의 기록에 있는 사유만 쓰고, 없으면 빈 문자열"
+                    },
+                    "evidence": {
+                      "type": "string",
+                      "maxLength": 500
+                    }
+                  }
+                }
+              },
+              "feedback": {
+                "description": "문서화 리뷰의 항목별 피드백(Task T4–T7과 T9, Bug B5–B7, Issue I4–I5). 검수 모드만 채우고 그 외에는 빼거나 빈 배열. apply.py가 관찰 모드에서는 팀장용 comment로, 게이트 모드에서는 검수 comment로 보낸다.",
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "points"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^(T[4-79]|B[5-7]|I[45])$"
+                    },
+                    "points": {
+                      "type": "array",
+                      "maxItems": 3,
+                      "items": {
+                        "type": "string",
+                        "maxLength": 200
+                      },
+                      "description": "잘한 점과 부족한 점. comment 검사 표의 내용 칸에 들어간다. sub-task는 키, 예상 산출물은 번호를 적는다"
+                    },
+                    "request": {
+                      "type": "string",
+                      "maxLength": 300,
+                      "description": "fail일 때 담당자에게 보낼 요청 한 문장. 게이트 모드에서 requests 끝에 붙는다"
+                    }
+                  }
+                }
+              },
+              "requests": {
+                "description": "담당자에게 요청할 것. 검수 comment의 \"요청\" 번호 목록으로 들어간다.",
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 300
+                }
+              }
+            }
+          },
+          "tldr": {
+            "type": "string",
+            "description": "TL;DR 본문. h2. Summary를 포함한 Jira wiki markup"
+          },
+          "comment": {
+            "type": "string",
+            "description": "검수 모드에서만 채우는 검수 comment의 결과 요약(wiki markup)"
+          }
+        }
+      }
+    },
+    "failed": {
+      "description": "처리하지 못한 Task와 이유. 없으면 빈 배열",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "issueKey",
+          "reason"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "issueKey": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 300
+          }
+        }
+      }
+    }
+  }
+}
