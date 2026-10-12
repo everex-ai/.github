@@ -619,7 +619,8 @@ def render(out_dir: Path) -> list[Path]:
         work = Path(stack.enter_context(tempfile.TemporaryDirectory()))
         ctx, out = work / "ctx", work / "out"
         users = work / "slack-users.json"
-        write_json(users, {ASSIGNEE: "U000SAMPLE", LEAD: "U000LEAD"})
+        slack_ids = {ASSIGNEE: "U000SAMPLE", LEAD: "U000LEAD"}
+        write_json(users, slack_ids)
         fake_dt = types.SimpleNamespace(**{k: getattr(dt, k) for k in dir(dt) if not k.startswith("_")})
         fake_dt.datetime = FixedDatetime
         run_env = {
@@ -722,23 +723,37 @@ def render(out_dir: Path) -> list[Path]:
         save("review-comment-issue-fix.wiki", j.comments[0][1])
         save("doc-review-comment-issue.wiki", j.comments[1][1])
 
-        # 실패 알림: verdict.json이 없음
-        write_issue(ctx, "INNO-31", "Task", jp.expected_items(TASK_DESC), precheck_checks(jp, "Task"))
-        write_out(out, "INNO-31", None)
+        # 실패 알림(Slack): 판정 없음 기본값. Jira에는 comment를 남기지 않는다
+        write_issue(
+            ctx, "INNO-31", "Task", jp.expected_items(TASK_DESC), precheck_checks(jp, "Task"), summary=TASK_TITLE
+        )
+        # save_output.py가 구조화 출력이 없을 때 만드는 기본값 verdict.json(판정 없음)과 원인 파일
+        default = task_verdict("INNO-31", "review", "no_verdict")
+        default["items"] = [{"id": e["id"], "done": None, "result": ""} for e in jp.expected_items(TASK_DESC)]
+        write_out(out, "INNO-31", default)
+        (out / "INNO-31" / "_agent_error.txt").write_text(
+            "Claude 문서화 단계 종료 종류(subtype): error_max_turns\n", encoding="utf-8"
+        )
         j = FakeJira({"INNO-31": TASK_DESC})
         with contextlib.redirect_stdout(io.StringIO()):
-            ja.apply_issue(j, ctx / "INNO-31", out, "review", False, LEAD, ja.Summary(str(work / "summary.md")))
-        save("failure-comment.wiki", j.comments[0][1])
+            failure = ja.apply_issue(
+                j, ctx / "INNO-31", out, "review", False, LEAD, ja.Summary(str(work / "summary.md"))
+            )
+        save("failure-slack.txt", ja.failure_slack_text("review", [failure], slack_ids, LEAD))
 
-        # 실패 알림: verdict.json이 형식에 맞지 않음(문서화 리뷰가 아닌 검사 ID로 feedback을 씀)
+        # 실패 알림(Slack): verdict.json이 형식에 맞지 않음(문서화 리뷰가 아닌 검사 ID로 feedback을 씀)
         bad = task_verdict("INNO-32", "review", "fix")
         bad["feedback"] = [{"id": "T8", "points": ["사유 누락"]}]
-        write_issue(ctx, "INNO-32", "Task", jp.expected_items(TASK_DESC), precheck_checks(jp, "Task"))
+        write_issue(
+            ctx, "INNO-32", "Task", jp.expected_items(TASK_DESC), precheck_checks(jp, "Task"), summary=TASK_TITLE
+        )
         write_out(out, "INNO-32", bad)
         j = FakeJira({"INNO-32": TASK_DESC})
         with contextlib.redirect_stdout(io.StringIO()):
-            ja.apply_issue(j, ctx / "INNO-32", out, "review", False, LEAD, ja.Summary(str(work / "summary.md")))
-        save("failure-comment-invalid.wiki", j.comments[0][1])
+            failure = ja.apply_issue(
+                j, ctx / "INNO-32", out, "review", False, LEAD, ja.Summary(str(work / "summary.md"))
+            )
+        save("failure-slack-invalid.txt", ja.failure_slack_text("review", [failure], slack_ids, LEAD))
 
         # 누락 알림(정리 모드)과 주간 점검(Slack): precheck.run_scan이 만든 알림을 쓴다
         scan = ctx / "_scan"

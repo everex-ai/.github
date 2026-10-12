@@ -5,7 +5,7 @@
 ## items와 extra
 - items와 extra는 빈 배열([])로 둔다.
 
-## tldr.wiki 형식
+## tldr 형식
 ```
 h2. Summary
 

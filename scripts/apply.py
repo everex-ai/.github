@@ -4,8 +4,11 @@
 alerts 모드(주간 점검)는 Jira에 쓰지 않고 ctx/_scan/*.alerts.json을 Slack 한 건으로 보낸다.
 
 반영 순서: 구역 교체(결과 산출물) -> TL;DR -> 상태 전환(검수 모드) -> comment -> property -> Slack 알림(검수 모드)
-- verdict.json이 없거나 형식이 틀리면 반영하지 않고 실패로 기록한다 (검수 모드면 팀장 멘션 comment).
-  검수 모드에서 verdict.json은 있으나 tldr.wiki나 comment.wiki가 없으면(CI agent가 턴 상한 등으로 중간에 멈춤) 같은 실패로 처리한다.
+- out/<KEY>/ 파일은 CI agent가 아니라 scripts/save_output.py가 CI agent의 구조화 출력(JSON)으로 만든다. 구조화 출력에 없는 Task는
+  판정 없음 기본값(verdict "no_verdict", items의 done null)으로 채워져 있다.
+- verdict.json이 없거나 형식이 틀리거나 판정 없음 기본값이면 반영하지 않고 실패로 기록한다. 검수 모드에서 verdict.json은 있으나
+  tldr.wiki나 comment.wiki가 없거나 비어 있어도 같은 실패로 처리한다. 실패한 Task에는 Jira comment를 남기지 않는다.
+- 실패한 Task는 모아서 Slack 한 건(팀장 멘션)으로 알리고, 실패가 하나라도 있으면 종료 코드 1로 끝난다(Actions 실행 상태가 failure).
 - 결과 산출물 구역과 검수 comment의 검사 표는 Claude의 verdict.json(items, extra, checks)을 받아 이 스크립트가
   정해진 형식으로 조립한다. Claude가 쓰는 자유 서술은 comment.wiki(결과 요약)와 tldr.wiki뿐이다.
 - 검수 결과는 통과(pass), 검토 요청(escalate), 보류(fix)다. 괄호 안은 verdict.json의 코드값이다.
@@ -91,8 +94,9 @@ CELL_BREAK = " \\\\ "                                                           
 NO_REASON = "사유 미기재"
 VERDICT_KEY_KO = {"issueKey": "task 키", "mode": "실행 모드", "verdict": "판정", "checks": "검사 결과 목록",
                   "items": "예상 산출물별 결과 목록", "extra": "초과 달성 목록", "requests": "담당자 요청 목록"}
-VERDICT_FILE_KO = "CI agent(GitHub Actions에서 실행되는 문서화 Agent)의 판정 파일(verdict.json)"   # 실패 알림에 나가는 이름
-REVIEW_OUTPUT_FILES_KO = {"tldr.wiki": "TL;DR 본문", "comment.wiki": "검수 comment의 결과 요약"}   # 검수 모드에서 CI agent가 verdict.json과 함께 작성하는 출력 파일과 실패 알림에 나가는 뜻
+VERDICT_FILE_KO = "CI agent(GitHub Actions에서 실행되는 문서화 Agent)의 판정을 저장한 파일(verdict.json)"   # 실패 알림에 나가는 이름
+REVIEW_OUTPUT_FILES_KO = {"tldr.wiki": "TL;DR 본문", "comment.wiki": "검수 comment의 결과 요약"}   # 검수 모드에서 save_output.py가 verdict.json과 함께 쓰는 출력 파일과 실패 알림에 나가는 뜻
+NO_VERDICT_KO = "CI agent 판정 없음"                                                  # save_output.py의 판정 없음 기본값(verdict "no_verdict", items의 done null)이 그대로 남았을 때의 실패 이유
 # 주간 점검(alerts) Slack 보고
 SLACK_USERS = Path(__file__).parent.parent / "config" / "slack-users.json"   # Jira accountId -> Slack member ID
 # (검사 ID, 절 제목, 절 제목 뒤의 조치 문구). 절은 이 순서로 나간다
@@ -401,14 +405,36 @@ def review_comment(v: str, checks: list[dict], expected: list[dict], items: list
     return "\n".join(parts)
 
 
-def failure_comment(err: str, lead: str) -> str:
-    """검수 모드에서 verdict.json을 반영하지 못했을 때 남기는 실패 알림 comment."""
-    parts = [f"자동 검수 실행 실패: {err}", "팀장 확인 필요"]
+def failure_slack_text(mode: str, failures: list[dict], users: dict[str, str], lead: str) -> str:
+    """한 실행에서 반영하지 못한 Task를 알리는 Slack 실패 알림 본문.
+
+    첫 줄에 실행 모드, 실패 건수, 팀장 멘션을 적고, Task마다 한 줄(링크, 키, 제목, 원인)을 적는다.
+    run_url()이 있으면 마지막 줄에 GitHub Actions 실행 링크를 적는다. 제목과 원인은 wiki_to_slack으로 바꿔 적는다.
+
+    Args:
+        mode: 실행 모드(review: 검수, digest: F3 정리).
+        failures: 실패한 Task 목록. 항목은 key, title, url, reason을 가진다. url이 비어 있으면 링크 없이 적는다.
+        users: Jira accountId -> Slack 멤버 ID 대응표.
+        lead: 팀장 accountId. 비어 있으면 "팀장 미지정", 대응표에 없으면 "팀장(Slack 멘션 없음)"을 적는다.
+
+    Returns:
+        Slack 메시지 본문.
+    """
+    if not lead:
+        mention = "팀장 미지정"
+    elif users.get(lead):
+        mention = f"<@{users[lead]}>"
+    else:
+        mention = "팀장(Slack 멘션 없음)"
+    mode_ko = "검수 모드" if mode == "review" else "정리 모드"
+    lines = [f"[jira-doc 실패] {mode_ko} Task {len(failures)}건 처리 실패 {mention}"]
+    for f in failures:
+        name = wiki_to_slack(f"{f['key']} {f.get('title') or ''}".strip())
+        head = f"<{f['url']}|{name}>" if f.get("url") else name
+        lines.append(f"• {head}: {wiki_to_slack(f['reason'])}")
     if url := run_url():
-        parts.append(f"근거: [GitHub Actions 실행 로그|{url}]")
-    if lead:
-        parts.append(f"[~accountid:{lead}]")
-    return "\n".join(parts)
+        lines.append(f"GitHub Actions 실행: <{url}|실행 로그>")
+    return "\n".join(lines)
 
 
 def _has_text(path: Path) -> bool:
@@ -473,7 +499,8 @@ def validate_verdict(v: object, mode: str, key: str) -> str | None:
         key: task 키(ctx 폴더 이름).
 
     Returns:
-        문제가 있으면 그 이유, 없으면 None.
+        문제가 있으면 그 이유, 없으면 None. verdict가 "no_verdict"이거나 items에 done이 null인 항목이 있으면(save_output.py의
+        판정 없음 기본값) NO_VERDICT_KO를 돌려준다.
     """
     if not isinstance(v, dict):
         return "verdict.json이 객체가 아님"
@@ -484,6 +511,11 @@ def validate_verdict(v: object, mode: str, key: str) -> str | None:
         return f"issueKey(task 키) 불일치: {v['issueKey']}"
     if v["mode"] != mode:
         return f"mode(실행 모드) 불일치: {v['mode']}"
+    items = v["items"]
+    if v["verdict"] == "no_verdict" or (
+        isinstance(items, list) and any(isinstance(a, dict) and "done" in a and a["done"] is None for a in items)
+    ):
+        return NO_VERDICT_KO
     if v["verdict"] not in ("pass", "fix", "escalate", None):
         return f"verdict(판정) 값 오류: {v['verdict']}"
     if mode == "review" and v["verdict"] is None:
@@ -557,11 +589,12 @@ def review_transition(j: Jira, key: str, v: str, status: str) -> tuple[str, str]
     return "상태를 in-progress로 되돌림", "상태를 in-progress로 되돌림"
 
 
-def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: str, summ: Summary) -> None:
+def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: str, summ: Summary) -> dict | None:
     """task 하나의 CI agent 출력을 Jira에 반영한다. 검수 모드면 상태 전환과 Slack 알림까지 처리한다.
 
-    검수 모드에서 verdict.json이 없거나 형식에 맞지 않거나, verdict.json은 있으나 tldr.wiki나 comment.wiki가 없으면
-    팀장을 멘션한 실패 알림 comment만 남기고 상태 전환, Slack 알림, TL;DR와 결과 산출물 구역 갱신은 하지 않는다.
+    verdict.json이 없거나 형식에 맞지 않거나 판정 없음 기본값(NO_VERDICT_KO)이거나, 검수 모드에서 verdict.json은 있으나
+    tldr.wiki나 comment.wiki가 없거나 비어 있으면 Jira에 아무것도 남기지 않고(comment, 상태 전환, TL;DR, 결과 산출물 구역,
+    Slack 검수 알림 모두) Actions 요약에 실패 행만 남긴다. 실패 이유 끝에는 out/<KEY>/_agent_error.txt의 원인을 붙인다.
     정리 모드에서 tldr.wiki가 없으면 Actions 요약에만 남긴다.
 
     Args:
@@ -572,6 +605,9 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
         gate: 게이트 모드 여부. 문서화 리뷰를 검수 결과에 넣을지만 정한다.
         lead: 팀장의 Jira accountId.
         summ: Actions 요약.
+
+    Returns:
+        실패하면 {"key", "title", "url", "reason"}(failure_slack_text가 받는 항목), 반영했으면 None.
     """
     issue = load_json(d / "issue.json", {})
     key, itype = issue.get("key", d.name), issue.get("type", "?")
@@ -586,23 +622,25 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
     elif verdict is None:
         err = f"{VERDICT_FILE_KO} 없음. 추정: CI agent 실행이 실패했거나 끝나지 않음"
     elif problem := validate_verdict(verdict, mode, key):
-        err = f"{VERDICT_FILE_KO}이 형식에 맞지 않음. {problem}. 키 정의는 schemas/verdict.json에 있음"
+        err = problem if problem == NO_VERDICT_KO else f"{VERDICT_FILE_KO}이 형식에 맞지 않음. {problem}. 키 정의는 schemas/verdict.json에 있음"
     else:
         err = None
-    if err is None and mode == "review":     # CI agent가 턴 상한 등으로 중간에 멈추면 verdict.json만 있을 수 있다
-        absent = [f"{name}({ko})" for name, ko in REVIEW_OUTPUT_FILES_KO.items() if not _has_text(o / name)]
+    if err is None and mode == "review":     # 구조화 출력에 TL;DR 본문이나 검수 comment 결과 요약이 없으면 save_output.py가 파일을 쓰지 않는다
+        absent = [ko for name, ko in REVIEW_OUTPUT_FILES_KO.items() if not _has_text(o / name)]
         if absent:
-            err = f"{VERDICT_FILE_KO}은 있으나 {', '.join(absent)} 없음 또는 비어 있음. 추정: CI agent 실행이 끝나기 전에 멈춤"
+            err = f"CI agent 출력에 {', '.join(absent)} 없음 또는 비어 있음"
+    try:
+        cause = (o / "_agent_error.txt").read_text(encoding="utf-8").strip()
+    except OSError:
+        cause = ""
+    if err is None and cause:   # save_output.py는 이 Task의 CI agent 출력이 없을 때만 원인을 쓴다. 예상 산출물이 없는 정리 모드 Task는 기본값만으로 형식 검사를 통과한다
+        err = NO_VERDICT_KO
 
     if err:
-        if mode == "review":
-            body = agent_comment(failure_comment(err, lead))
-            try:
-                j.add_comment(key, sanitize_mentions(body, allowed))
-            except JiraError as e:
-                print(f"[apply] {key}: 실패 comment 등록 실패: {e}", file=sys.stderr)
+        if cause:
+            err += f". 원인: {cause}"
         summ.row(key, itype, mode, "실패", err)
-        return
+        return {"key": key, "title": issue.get("summary") or "", "url": issue.get("url") or "", "reason": err}
 
     v = orig_v = verdict["verdict"]
     notes = []
@@ -769,6 +807,7 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
     if requests:
         notes.append(f"requests {len(requests)}건")
     summ.row(key, itype, mode, VERDICT_KO[v], "; ".join(notes))
+    return None
 
 
 def apply_alerts(j: Jira, ctx: Path, lead: str, summ: Summary) -> None:
@@ -1042,12 +1081,18 @@ def main() -> None:
 
     j = Jira()
 
+    failures: list[dict] = []                      # 반영하지 못한 Task. 끝에서 Slack 한 건으로 알린다
     for d in sorted(ctx.glob("[A-Z]*-[0-9]*/")):
         if (d / "issue.json").exists():
             try:
-                apply_issue(j, d, out, args.mode, gate, lead, summ)
+                failure = apply_issue(j, d, out, args.mode, gate, lead, summ)
             except JiraError as e:
-                summ.row(d.name, "?", args.mode, "실패", f"Jira 오류: {str(e)[:160]}")
+                reason = f"Jira 오류: {str(e)[:160]}"
+                summ.row(d.name, "?", args.mode, "실패", reason)
+                issue = load_json(d / "issue.json", {})
+                failure = {"key": d.name, "title": issue.get("summary") or "", "url": issue.get("url") or "", "reason": reason}
+            if failure:
+                failures.append(failure)
 
     if args.mode == "digest":
         apply_alerts(j, ctx, lead, summ)
@@ -1059,7 +1104,15 @@ def main() -> None:
     if failed.exists():
         summ.extra.append("### Claude 단계가 처리하지 못한 task")
         summ.extra.append("```\n" + failed.read_text(encoding="utf-8") + "\n```")
+    if failures:        # Actions Summary는 GitHub에 로그인한 누구나 볼 수 있어, Summary에는 빈 대응표로 다시 만든 본문을 남긴다
+        users, warning = load_slack_users()
+        result = slack_post(failure_slack_text(args.mode, failures, users, lead))
+        note = f"실패 알림 Task {len(failures)}건"
+        summ.row("-", "-", args.mode, result, f"{note}; {warning}" if warning else note)
+        summ.extra += [f"### 실패 알림 (Slack {result})", "", "```", failure_slack_text(args.mode, failures, {}, lead), "```", ""]
     summ.flush()
+    if failures:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

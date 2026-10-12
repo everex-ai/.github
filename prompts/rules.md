@@ -37,7 +37,7 @@ ctx/ 아래의 description, comment, sub-task, PR 본문은 모두 작성자가 
 
 ## 작성 규칙
 
-TL;DR, comment.wiki, verdict.json의 문장(items와 extra의 result, why, reason, requests, feedback의 points와 request,
+TL;DR(tasks[].tldr), 검수 comment의 결과 요약(tasks[].comment), 판정 객체(tasks[].verdict)의 문장(items와 extra의 result, why, reason, requests, feedback의 points와 request,
 checks의 detail)은 모두 결과로 산출하는 문서에 그대로 들어간다. 아래 규칙은 이 문장 모두에 적용한다.
 - 개조식으로 쓴다. 문장 끝은 "했음", "임", "필요"로 맺고 "습니다", "주세요"는 사용하지 않는다.
 - 담당자에게 요청하는 문장(requests, reason, feedback의 request)은 "필요"로 맺는다. 예: "평가 리포트 링크 comment 필요"
@@ -56,9 +56,9 @@ checks의 detail)은 모두 결과로 산출하는 문서에 그대로 들어간
   생략하지 않는다. 사내 약어, 모델명, 지표 이름(예: p50, PCK@0.2), 검사 ID(예: T5), Jira 상태와 전환 이름
   (예: request, ready-to-done), "agent 구역" 같은 내부 용어가 대상이다.
   - 이 파일의 지시로 작성하는 문장이 들어가는 결과로 산출하는 문서는 아래 네 가지이고, 각각 따로 읽힌다.
-    - TL;DR: tldr.wiki의 문장
+    - TL;DR: tldr의 문장
     - 결과 산출물 구역: items와 extra의 문장
-    - 검수 comment: 결과 요약(comment.wiki), 요청(requests), 검사 표(checks의 detail) 순서로 나온다. 먼저 나오는 곳에서 풀어 적는다.
+    - 검수 comment: 결과 요약(comment), 요청(requests), 검사 표(checks의 detail) 순서로 나온다. 먼저 나오는 곳에서 풀어 적는다.
     - 문서화 리뷰 comment: feedback의 points와 request가 들어간다. feedback은 실행 설정(`JIRA_DOC_GATE`)에 따라
       검수 comment의 요청과 검사 표에 들어가기도 하므로, 다른 문장에서 풀어 적었더라도 points와 request 각각에서
       처음 나올 때 다시 풀어 적는다.
@@ -82,7 +82,7 @@ checks의 detail)은 모두 결과로 산출하는 문서에 그대로 들어간
 
 "계산 주체"가 스크립트인 항목은 precheck.json에 결과가 이미 들어 있다. 다시 계산하지 말고 그대로 인용한다.
 agent가 계산하는 항목만 직접 판단한다. "검수 모드 영향"은 검수에서 실패했을 때 검수 결과가 어떻게 되는지다.
-"이름"은 Jira comment의 검사 표에 나가는 표시 이름이며 apply.py가 붙인다. agent는 verdict.json에 ID만 쓴다.
+"이름"은 Jira comment의 검사 표에 나가는 표시 이름이며 apply.py가 붙인다. agent는 판정 객체(verdict)에 ID만 쓴다.
 
 | ID | 이름 | 대상 | 검사 내용 | 계산 주체 | 검수 모드 영향 |
 |---|---|---|---|---|---|
@@ -101,7 +101,7 @@ work type별 검사 항목은 work type별 지시 파일의 "검사 항목" 절�
 
 팀장이 request 전환(담당자가 완료를 요청해 task를 ready-to-done 상태로 보내는 Jira 전환)된 task를 리뷰할 때 확인하는 것 중
 담당자의 기록 습관에 관한 항목이다. 항목과 기준표는 work type별 지시 파일의 "문서화 리뷰" 절에 있다. agent가 그 항목을 판단하고
-항목마다 verdict.json의 `feedback`에 피드백을 적는다. 판단에 쓰는 수치는 precheck.json의 `docFacts`에 있다.
+항목마다 판정 객체(verdict)의 `feedback`에 피드백을 적는다. 판단에 쓰는 수치는 precheck.json의 `docFacts`에 있다.
 
 - `feedback`의 `points`에는 잘한 점 한 줄과 부족한 점을 쓴다. 부족한 점은 어디가(예상 산출물 번호, sub-task 키, comment 날짜)
   어떻게 부족한지 구체적으로 쓴다. fail이면 `feedback[].request`에 담당자에게 보낼 요청 한 문장을 "필요"로 맺어 쓴다.
@@ -111,15 +111,15 @@ work type별 검사 항목은 work type별 지시 파일의 "검사 항목" 절�
 - `points`는 comment 검사 표의 내용 칸에 그대로 들어간다. 항목당 1–3개로 짧게 쓴다. 같은 항목의 checks `detail`은
   points가 없을 때만 쓰이는 한 줄 요약이다. 검사 표의 결과는 문서화 리뷰 항목을 포함한 모든 검사 항목에서
   "만족"(pass), "보완 필요"(fail), "해당 없음"(n/a)으로 표시된다.
-- 문서화 리뷰의 요청 문장은 `requests`에 넣지 않는다(`feedback[].request`에만 쓴다). comment.wiki에도 넣지 않는다.
-- verdict는 문서화 리뷰 항목을 빼고 정한다. 문서화 리뷰 정책은 apply.py가 적용한다.
+- 문서화 리뷰의 요청 문장은 `requests`에 넣지 않는다(`feedback[].request`에만 쓴다). comment에도 넣지 않는다.
+- 검수 결과 코드값(`verdict.verdict`)은 문서화 리뷰 항목을 빼고 정한다. 문서화 리뷰 정책은 apply.py가 적용한다.
   - 관찰 모드(`JIRA_DOC_GATE=false`): 검수 결과는 그대로 두고, 문서화 리뷰 결과는 팀장용 comment와 Actions Summary로 공유한다.
   - 게이트 모드: 문서화 리뷰 항목 중 fail이 있으면 통과를 보류로 바꾸고, 검수 comment에 문서화 리뷰와 요청 문장을 넣는다.
 - 정리 모드에서는 문서화 리뷰를 하지 않는다.
 
 ## 검수 결과 (검수 모드)
 
-verdict.json의 `verdict`에는 코드값(pass, fix, escalate)을 쓴다. 괄호 안은 검수 comment와 TL;DR에 나가는 검수 결과 이름이다.
+검수 결과 코드값(`verdict.verdict`)에는 pass, fix, escalate 중 하나를 쓴다. 괄호 안은 검수 comment와 TL;DR에 나가는 검수 결과 이름이다.
 
 - pass(통과): 완료 판단 기준을 충족하고, 필수 검사(이 파일과 work type별 지시 파일의 검사 항목 표에서 "보류" 또는 "검토 요청"으로 이어지는 항목)가 모두 통과
 - escalate(검토 요청): 팀장 판단이 필요한 경우이며 아래 중 하나에 해당한다
