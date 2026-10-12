@@ -20,9 +20,15 @@ jira-doc(AI팀 업무 문서화 agent)은 Jira task의 기록을 근거로 결�
   1. 입력 수집
   2. 스크립트 검사. 스텝 이름은 "결정론적 검사 (precheck)"다.
   3. CI agent 문서화. 스텝 이름은 "Claude 문서화"다.
+     - 바로 뒤의 3-1 단계("3-1. Claude 실행 결과 요약")가 CI agent의 실행 결과를 로그에 남긴다. 자세한 내용은 "알아 둘 것" 절에 있다.
   4. 반영
 - Jira 워크플로: Jira task의 상태와 상태 사이 전환의 체계
 - CI agent: Actions 워크플로 3단계에서 실행되는 Claude. `ctx/`의 입력을 읽어 TL;DR과 판정 파일 verdict.json을 작성한다(3단계의 `--allowedTools`).
+  - 파일 쓰기는 `out/`에만 허용한다. 같은 폴더를 상대 경로 규칙 `Edit(out/**)`와 작업 디렉터리 절대 경로 규칙 `Edit(/${{ github.workspace }}/out/**)` 두 가지로 적는다.
+  - 절대 경로 규칙을 둔 이유: 2026-10-12 시험 실행 22회(실행 38223203394–38223731012) 중 11회가 Write 권한 거부 3회 뒤 verdict.json 없이 끝났다. 절대 경로 규칙을 추가한 뒤 같은 날 실행 12회(38226434145, 38258447642–38258742976의 10회, 38259344639)는 모두 verdict.json을 남겼다.
+    - 근거는 각 실행 로그(`gh run view <실행 ID> --log`)의 3-1 단계 `permission_denials=` 줄과 4단계 `[apply]` 줄이다.
+    - 추정: CI agent가 출력 파일을 절대 경로로 작성하려 했고, 상대 경로 규칙이 그 경로를 허용하지 않았다.
+  - 승인할 사람이 없는 실행이라 허용 규칙에 없는 도구 호출은 모두 자동으로 거부된다(https://code.claude.com/docs/en/headless.md: "In a `-p` run with no host, these requests are denied either way"). 거부되어도 CI agent는 멈추지 않고 실행을 끝낸다. 예: 실행 38223698527은 Write 거부 3회가 있었는데도 3-1 단계 결과가 `is_error=False`, `num_turns=13`이었다.
 - 스크립트 검사: CI agent의 판단 없이 precheck.py가 규칙대로 계산하는 검사. 목록은 "파일" 절에 있다.
 - 실행 모드: 아래 세 가지. 괄호 안은 Actions 워크플로 입력 `mode`의 값이다(`workflow_dispatch`의 `inputs`).
   - 검수 모드(review)
@@ -273,6 +279,15 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
     - 추정: 발급한 사람이 Team plan에서 빠지거나 좌석이 회수되면 만료 전이라도 동작하지 않는다. 그때는 팀장이 다른 좌석으로 다시 발급해, 등록된 repo의 secret을 모두 교체한다(`docs/pr-review-agent.md`의 "대상 repo에 설치" 절 2번).
 - 여러 task가 동시에 request 전환되면 task마다 Actions 워크플로 실행이 따로 생겨 동시에 실행된다(Actions 워크플로의 `concurrency`).
   - 같은 task의 실행은 앞 실행이 끝날 때까지 대기한다(`group`이 task 키 기준, `cancel-in-progress: false`).
+- 3-1 단계(Claude 실행 결과 요약)는 CI agent 실행 결과 파일(claude-code-action의 `execution_file` 출력)에서 아래만 로그에 남긴다(Actions 워크플로의 "3-1. Claude 실행 결과 요약" 단계).
+  - `is_error`, `num_turns`(턴 수), `total_cost_usd`(claude CLI가 계산한 API 환산 비용)
+  - `permission_denials`: 권한이 거부된 도구 이름. Write와 Edit는 거부된 파일 경로도 남긴다
+  - `result`: 실패했을 때만 남긴다. 예: 2026-10-12 실행 38221355521의 "Failed to authenticate: OAuth token revoked."
+  - 3단계의 전체 출력은 Jira 기록이 담겨 있어 public 로그에 남기지 않는다(3단계의 `show_full_output`은 기본값 false). 성공한 실행의 `result`도 같은 이유로 남기지 않는다.
+- claude-code-action은 워크플로 파일이 기본 브랜치(main)의 것과 같을 때만 3단계를 실행한다.
+  - 원문: "The workflow file must exist and have identical content to the version on the repository's default branch."(2026-10-12 실행 38221063946 로그)
+  - 그래서 다른 브랜치로 수동 실행해 시험할 때는 그 브랜치의 `.github/workflows/jira-doc.yml`이 main과 같아야 한다. 다르면 3단계가 건너뛰어지고 4단계가 verdict.json 없음 실패 알림을 남긴다(실행 38221063946: 3단계 로그 "Exiting due to workflow validation skip", 4단계 로그 `[apply] INNO-47: 실패 … verdict.json 없음`).
+- 4단계가 실패 알림 comment를 남겨도 Actions 실행 상태는 success로 보일 수 있다. apply.py가 실패를 기록한 뒤에도 종료 코드 0으로 끝나기 때문이다(`scripts/apply.py`의 `main`). 예: 실행 38221063946은 4단계가 실패를 기록했는데 실행 상태가 success였다(`gh run list -R everex-ai/.github -w jira-doc.yml`). 실패 여부는 4단계 로그의 `[apply]` 줄이나 Summary 탭의 결과 칸으로 확인한다.
 - Actions 워크플로 실행을 취소해도 4단계(반영)는 실행된다. 4단계의 실행 조건이 `always() && steps.collect.outcome == 'success'`이기 때문이다(Actions 워크플로 4단계의 `if`).
   - 검수 모드에서 3단계가 끝나기 전에 취소하면 verdict.json이 없어 실패 알림 comment가 달린다(예: INNO-29의 comment `57997`).
 - 영업일 수는 토요일과 일요일만 뺀 날 수이고, 공휴일은 빼지 않는다(`scripts/precheck.py`의 `business_days_since`).
