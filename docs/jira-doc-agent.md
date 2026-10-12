@@ -6,9 +6,9 @@ jira-doc(AI팀 업무 문서화 agent)은 Jira task의 기록을 근거로 결�
   - TL;DR: Jira task의 요약 필드
   - 결과 산출물 구역: Jira description 안의 `h2. 결과 산출물` 구역. 예상 산출물마다 달성 여부와 근거를 적는다.
   - 검수 comment: 검수 결과(통과, 검토 요청, 보류)와 검사 표를 담은 comment
-  - 문서화 리뷰 comment: 담당자의 기록 습관을 검사한 문서화 리뷰 결과를 팀장에게 공유하는 comment. 문서화 리뷰 항목은 Task 5개(T4–T8), Bug 3개(B5–B7), Issue 2개(I4–I5)다(`scripts/apply.py`의 `DOC_CHECKS`).
+  - 문서화 리뷰 comment: 담당자의 기록 습관을 검사한 문서화 리뷰 결과를 팀장에게 공유하는 comment. 문서화 리뷰 항목은 Task 6개(T4–T9), Bug 3개(B5–B7), Issue 2개(I4–I5)다(`scripts/apply.py`의 `DOC_CHECKS`).
   - 누락 알림 comment: stop 사유 comment가 없거나 영업일 기준 5일 이상 활동이 없는 task의 담당자에게 알리는 comment
-  - 실패 알림 comment: CI agent의 출력(verdict.json)이 없거나 형식이 틀려 검수하지 못했을 때 팀장에게 알리는 comment
+  - 실패 알림 comment: CI agent의 출력(verdict.json, 검수 모드의 tldr.wiki와 comment.wiki)이 없거나 verdict.json 형식이 틀려 검수하지 못했을 때 팀장에게 알리는 comment
   - 검수 뒤 Slack 알림과 주간 점검 메시지
 - 설계 문서는 claude.ai 프로젝트(claude.ai의 Projects 기능) "Jira 기반 AI팀 업무 프로세스 수립"의 `task-doc-agent/AI팀_업무문서화_agent_도입계획_v0.1.md`다.
 
@@ -32,7 +32,7 @@ jira-doc(AI팀 업무 문서화 agent)은 Jira task의 기록을 근거로 결�
   - 공통 검사(R2, R3, R4, A1): `prompts/rules.md`
   - work type별 검사: `prompts/types/<work type>/review.md`(work type은 task, bug, issue)
   - 앞 글자 T, B, I는 검사 대상 work type(Task, Bug, Issue)이고, R과 A는 여러 work type에 적용하는 검사다.
-- 관찰 모드와 게이트 모드: 문서화 리뷰(담당자의 기록 습관 검사. Task T4–T8, Bug B5–B7, Issue I4–I5) 결과를 다루는 두 방식. 변수 `JIRA_DOC_GATE`가 `false`이면 관찰 모드, `true`이면 게이트 모드다(`scripts/apply.py`의 `main`).
+- 관찰 모드와 게이트 모드: 문서화 리뷰(담당자의 기록 습관 검사. Task T4–T9, Bug B5–B7, Issue I4–I5) 결과를 다루는 두 방식. 변수 `JIRA_DOC_GATE`가 `false`이면 관찰 모드, `true`이면 게이트 모드다(`scripts/apply.py`의 `main`).
   - 관찰 모드: 문서화 리뷰 결과를 팀장용 문서화 리뷰 comment로만 공유하고 검수 결과에 넣지 않는다.
   - 게이트 모드: 문서화 리뷰 결과를 검수 comment에 넣고, 보완 필요 항목이 있으면 통과를 보류로 바꾼다.
 - Summary 탭: GitHub Actions 실행 화면의 요약 탭. apply.py가 task별 결과 표를 남긴다(`scripts/apply.py`의 `Summary`).
@@ -69,7 +69,7 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
 | `prompts/review.md`, `prompts/digest.md` | 검수 모드, 정리 모드의 공통 절차. issue.json(1단계가 `ctx/<task 키>/`에 저장하는 task 정보 파일)의 work type으로 아래 work type별 지시 파일을 가리킨다 |
 | `prompts/types/{task,bug,issue}/review.md` | work type별 검수 모드 지시: 구역, 검사 항목, 문서화 리뷰 항목, 출력 형식, 검수 결과 기준 |
 | `prompts/types/{task,bug,issue}/digest.md` | work type별 정리 모드 지시: items와 extra(verdict.json의 예상 산출물별 결과 목록과 초과 달성 목록), TL;DR 형식 |
-| `prompts/types/task/deliverables.md` | Task의 완료 판단 기준과 items, extra 작성 방법. CI agent가 Task의 검수 모드와 정리 모드에서 함께 읽는다 |
+| `prompts/types/task/deliverables.md` | Task의 완료 판단 기준, 예상 산출물 표현('개발', '적용')별 달성 근거, items와 extra 작성 방법. CI agent가 Task의 검수 모드와 정리 모드에서 함께 읽는다 |
 | `schemas/verdict.json` | verdict.json의 스키마 |
 | `config/slack-users.json` | `SLACK_USERS_JSON`이 비어 있을 때 apply.py가 읽는 Jira accountId와 Slack 멤버 ID 대응표 파일(`scripts/apply.py`의 `load_slack_users`). Actions 실행에서 사용하는 대응표는 secret `SLACK_USERS_JSON`에 있어 이 파일에는 설명만 둠 |
 
@@ -163,8 +163,11 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
     - 원인과 해결의 근거 링크 (B3), To-Be 동작 확인 comment (B4)
     - 대응 결과의 근거 (I3), 1년 뒤에도 이해 가능한 기록 (R2)
   - 바꾼 이유는 검수 comment의 검수 결과 줄 아래에 적힌다.
-- verdict.json이 없거나 형식이 틀리면 결과를 "실패"로 처리한다(`scripts/apply.py`의 `apply_issue`, `failure_comment`).
-  - 팀장을 멘션한 실패 알림 comment만 달고, 상태 전환과 Slack 알림은 하지 않는다.
+- 아래 경우에는 결과를 "실패"로 처리한다(`scripts/apply.py`의 `apply_issue`, `failure_comment`).
+  - verdict.json이 없거나 형식이 틀림
+  - 검수 모드에서 verdict.json은 있으나 tldr.wiki(TL;DR 본문)나 comment.wiki(검수 comment의 결과 요약)가 없음. 예: INNO-43 실행 38188818467(2026-10-12)에서 CI agent가 턴 상한(`--max-turns` 40)에 걸려 verdict.json만 쓰고 멈춤(로그의 `"subtype": "error_max_turns"`, 4단계의 "TL;DR 출력 없음")
+  - 실패면 팀장을 멘션한 실패 알림 comment만 달고, 상태 전환, Slack 알림, TL;DR 갱신, 결과 산출물 구역 갱신은 하지 않는다.
+  - 정리 모드에서 tldr.wiki가 없으면 실패로 처리하지 않고 Summary 탭에 "TL;DR 출력 없음"만 남긴다.
 - 보류로 In Progress가 된 task는 담당자가 요청대로 기록하거나 미달성 사유를 comment로 남긴 뒤 다시 request 전환을 한다. 그러면 F1이 다시 검수한다.
 - 사유 없이 stop했다가 다시 진행한 task는 stop 사유 comment (R4)가 보완 필요가 되어 검수 결과가 보류가 된다(`scripts/precheck.py`의 `check_r4`, `scripts/apply.py`의 `apply_issue`).
   - 늦은 사유: stop 뒤 다음 상태 변경 이후에 남긴, "stop 사유:"로 시작하는 사람 comment. precheck.py는 이 comment를 stop 뒤 언제 남겼든 그 stop의 사유로 센다(`scripts/precheck.py`의 `stop_events`).
@@ -174,6 +177,7 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
   - 이때 검수 결과는 R4가 만족인 상태에서 위 표의 조건대로 정해진다(`scripts/apply.py`의 `apply_issue`, `recheck_verdict`).
   - 통과와 검토 요청의 Slack 알림에도 R4의 "늦게 기록" 줄이 들어가 팀장이 확인할 수 있다(`scripts/apply.py`의 `review_slack_reasons`).
 - "근거 부족으로 확인 불가"는 CI agent가 근거를 찾지 못했다는 표시라 담당자의 사유로 세지 않는다(`scripts/apply.py`의 `owner_reason`).
+  - 초과 달성·미달성 사유 (T8) 판정도 같은 기준으로 센다(`scripts/apply.py`의 `check_t8`).
 - 검수 결과가 보류인데 지금 상태가 ready-to-done이 아니면(예: Actions 수동 실행) 상태를 바꾸지 않는다(`scripts/apply.py`의 `review_transition`).
   - 그 사실은 검수 comment와 Summary 탭에 남는다.
 - 상태 전환이나 Slack 전송에 실패하면 실패 내용이 Summary 탭에 남는다(`scripts/apply.py`의 `apply_issue`, `slack_post`).
@@ -208,7 +212,7 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
 7. 관찰 모드에서는 문서화 리뷰 comment가 하나 더 달린다(`scripts/apply.py`의 `doc_review_comment`).
    - 둘째 줄은 `문서화 리뷰 결과(관찰 모드): 통과` 또는 `문서화 리뷰 결과(관찰 모드): 보완 필요`다.
    - 그 아래에 문서화 리뷰 항목의 검사 표와 항목별 피드백이 나온다. 항목은 work type마다 아래와 같다(`scripts/apply.py`의 `DOC_CHECKS`).
-     - Task 5개: 진행 배경 충실도 (T4), 예상 산출물 분할 단위 (T5), 진행 기록 comment (T6), sub-task 기록 (T7), 초과 달성·미달성 사유 (T8)
+     - Task 6개: 진행 배경 충실도 (T4), 예상 산출물 분할 단위 (T5), 진행 기록 comment (T6), sub-task 기록 (T7), 초과 달성·미달성 사유 (T8), 진행 배경부터 결과 산출물까지의 연결 (T9)
      - Bug 3개: 문제(As-Is) 재현 정보 (B5), 원인 분석 기록 (B6), 해결 확인 기록 (B7)
      - Issue 2개: 이슈 내용 충실도 (I4), 논의와 결정 기록 (I5)
    - 마지막에 담당자에게 보낼 요청 후보(게이트 모드였다면 검수 comment의 요청에 들어갈 문장)와 팀장 멘션이 나온다.
@@ -225,7 +229,7 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
 - 담당자의 정정 comment를 바로 반영하거나 진행 중에 중간 정리: Jira task 화면의 Automation(번개) 버튼에서 "문서 정리 지금 실행"(F3)을 누른다.
   - TL;DR과 결과 산출물 구역이 함께 다시 작성된다.
 - 게이트 모드로 바꾸기: 변수 `JIRA_DOC_GATE`를 `true`로 바꾼다.
-  - 문서화 리뷰(Task T4–T8, Bug B5–B7, Issue I4–I5)가 담당자용 검수 comment에 들어가고, 보완 필요 항목이 있으면 통과가 보류로 바뀐다(`scripts/apply.py`의 `apply_issue`).
+  - 문서화 리뷰(Task T4–T9, Bug B5–B7, Issue I4–I5)가 담당자용 검수 comment에 들어가고, 보완 필요 항목이 있으면 통과가 보류로 바뀐다(`scripts/apply.py`의 `apply_issue`).
   - 팀장용 문서화 리뷰 comment는 달리지 않는다.
 - jira-doc 기록 지우기: `scripts/jira.sh prop-del <task 키>`를 실행한다(`scripts/jira.sh`의 `prop-del`).
   - jira-doc 기록은 task마다 저장하는 Jira issue property `ai-doc-agent`다. 마지막 실행 시각, 사람 입력의 해시, 마지막 검수 결과, 보낸 누락 알림 코드가 들어 있다(`scripts/apply.py`의 `apply_issue`).

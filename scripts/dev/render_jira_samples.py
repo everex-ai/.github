@@ -95,6 +95,7 @@ class FakeJira:
         self.comments: list[tuple[str, str]] = []
         self.fields: dict[str, dict] = {}
         self.transitioned_to: list[tuple[str, str]] = []
+        self.props_set: list[tuple[str, dict]] = []
 
     def issue(self, key: str, fields: list[str]) -> dict:
         """description 필드만 돌려준다.
@@ -142,12 +143,13 @@ class FakeJira:
         return {}
 
     def prop_set(self, key: str, prop: dict) -> None:
-        """property 쓰기를 무시한다.
+        """property 쓰기 요청을 모아 둔다.
 
         Args:
             key: task 키.
             prop: property 값.
         """
+        self.props_set.append((key, prop))
 
     def transition_to(self, key: str, status: str) -> None:
         """도착 상태 이름으로 한 상태 전환 요청을 모아 둔다.
@@ -253,6 +255,13 @@ TASK_FEEDBACK = [
             "PR([PR #47 export 테스트 추가|https://github.com/everex-ai/repo/pull/47])이 있음"
         ],
     },
+    {
+        "id": "T9",
+        "points": [
+            "진행 배경의 export 오류 재발 방지 요구에 예상 산출물 1번(재현 테스트 추가)이 대응하고, 결과도 "
+            "[PR #42 export 오류 수정|https://github.com/everex-ai/repo/pull/42]의 테스트 병합으로 이어짐"
+        ],
+    },
 ]
 TASK_CHECKS = [
     {"id": "R2", "result": "pass", "detail": "결과마다 PR 또는 comment 링크 있음"},
@@ -261,6 +270,7 @@ TASK_CHECKS = [
     {"id": "T5", "result": "fail", "detail": "3번 항목의 완료 기준 없음"},
     {"id": "T6", "result": "fail", "detail": "작업 기간 중 사람 comment 1건"},
     {"id": "T7", "result": "pass", "detail": "sub-task 기록 있음"},
+    {"id": "T9", "result": "pass", "detail": "진행 배경, 예상 산출물, 결과 산출물이 이어짐"},
 ]
 TASK_REQUESTS = [
     "평가 리포트 링크, 데이터 규모, 오류율 계산 방법 comment 필요",

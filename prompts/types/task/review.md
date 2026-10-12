@@ -19,7 +19,8 @@
 | T5 | 예상 산출물 분할 단위 | 아래 "문서화 리뷰" 참고 | agent | 문서화 리뷰 정책 |
 | T6 | 진행 기록 comment | 아래 "문서화 리뷰" 참고 | agent | 문서화 리뷰 정책 |
 | T7 | sub-task 기록 | 아래 "문서화 리뷰" 참고 (sub-task가 없으면 n/a) | agent | 문서화 리뷰 정책 |
-| T8 | 초과 달성·미달성 사유 | 미달성 items와 extra마다 why가 채워져 있음 | apply.py. agent는 checks에 넣지 않는다 | 문서화 리뷰 정책 |
+| T8 | 초과 달성·미달성 사유 | 미달성 items와 extra마다 why가 채워져 있음. 미달성 items의 why가 "근거 부족으로 확인 불가"이면 비어 있는 것으로 셈 | apply.py. agent는 checks에 넣지 않는다 | 문서화 리뷰 정책 |
+| T9 | 진행 배경부터 결과 산출물까지의 연결 | 아래 "문서화 리뷰" 참고 | agent | 문서화 리뷰 정책 |
 | A2 | 완료 기준의 사후 변경 | 가장 최근 request 전환 이후에 완료 기준 구역(예상 산출물)이 바뀜 | 스크립트 | 실패 시 검토 요청 |
 
 ## 할 일
@@ -37,18 +38,25 @@
 - 문서화 리뷰: 진행 배경, 예상 산출물, 사람 comment, sub-task의 description과 comment를 팀장이 리뷰하듯 확인한다.
 
 ## 문서화 리뷰 (검수 모드)
-검수 모드(review 실행 모드)에서는 rules.md의 "문서화 리뷰" 기준으로 아래 네 검사를 checks(verdict.json의 검사별 결과 목록)에 넣고, 항목마다 feedback을 작성한다.
+검수 모드(review 실행 모드)에서는 rules.md의 "문서화 리뷰" 기준으로 아래 다섯 검사를 checks(verdict.json의 검사별 결과 목록)에 넣고, 항목마다 feedback을 작성한다.
 - 진행 배경 충실도 (T4)
 - 예상 산출물 분할 단위 (T5)
 - 진행 기록 comment (T6)
 - sub-task 기록 (T7)
+- 진행 배경부터 결과 산출물까지의 연결 (T9)
 
 | ID | pass 기준 | fail 예 |
 |---|---|---|
 | T4 진행 배경 충실도 | 왜 이 일을 하는지(문제, 요구, 동기)가 있고, 1년 뒤 처음 보는 사람이 대상(데이터, 모델, 서비스)과 맥락(선행 task, 관련 문서 링크)을 알 수 있음 | "test", "모델 개선"처럼 왜가 없음. 대상과 맥락을 전혀 알 수 없음 |
-| T5 예상 산출물 분할 단위 | 항목마다 결과 하나이고, 무엇이 나오면 끝인지(수치, 산출물 형태, 대상) 판단할 수 있음 | "데이터 정제 및 모델 재학습"처럼 따로 달성 여부가 갈릴 결과가 한 항목에 묶임. "성능 개선", "검토"처럼 끝을 판단할 기준이 없음 |
-| T6 진행 기록 comment | 작업 기간 중 중간 결과, 인사이트, 방향 변경과 그 이유가 comment로 남아 있음 | 작업 기간 중 사람 comment가 없음. 작업이 영업일 기준 3일 이상인데 comment가 request 직전에만 몰려 있음. 방향이나 범위가 바뀌었는데 이유가 없음 |
+| T5 예상 산출물 분할 단위 | 항목마다 결과 하나이고, 무엇이 나오면 끝인지(수치, 산출물 형태, 대상) 판단할 수 있음. '<대상> 개발', '<대상> 적용'처럼 끝 기준이 없는 문구는 아래 둘 중 하나가 있으면 pass임: 하위 항목(들여쓰기)으로 무엇을 산출하면 끝인지 구체화함, comment에 그 항목의 중간 진행상황 기록(무엇을 했고 결과나 판단이 무엇인지 적힌 comment)이 있음 | "데이터 정제 및 모델 재학습"처럼 따로 달성 여부가 갈릴 결과가 한 항목에 묶임. "성능 개선", "검토"처럼 끝을 판단할 기준이 없음. 하위 항목 없는 "캐시 기능 개발"에 comment가 완료 기록("개발 완료", "적용 완료"처럼 무엇을 했고 어떻게 확인했는지 없이 완료만 적은 comment)뿐임 |
+| T6 진행 기록 comment | 작업 기간 중 중간 결과, 인사이트, 방향 변경과 그 이유가 comment로 남아 있음. 중간 진행상황 기록으로 세는 것은 무엇을 했고 결과나 판단이 무엇인지 적힌 comment뿐이고, 완료 기록과 상태만 적은 기록("진행 중", "작업함"처럼 상태만 적은 comment)은 세지 않음. comment를 남긴 시점은 작업 기간이 영업일 기준 3일 미만이면 판단하지 않고, 3일 이상이면 precheck.json의 comment를 남긴 날 수(`commentDaysDuringWork`)로 판단함 | 작업 기간 중 사람 comment가 없음. 작업이 영업일 기준 3일 이상인데 comment가 request 직전에만 몰려 있음. 방향이나 범위가 바뀌었는데 이유가 없음 |
 | T7 sub-task 기록 | sub-task마다 description에 무엇을 왜 하는지가 있고, 끝난 sub-task에는 결과 comment나 PR(sub-task의 prs 포함)이 있음 | description이 비었거나 요약만 반복함. done인데 결과 기록이 없음 |
+| T9 진행 배경부터 결과 산출물까지의 연결 | 예상 산출물이 진행 배경의 문제나 요구를 해결하는 결과임. 중간 진행상황 기록이 어느 예상 산출물을 향한 작업인지 알 수 있음. 결과 산출물이 진행 배경의 문제나 요구에 어떻게 답했는지 알 수 있음 | 진행 배경은 GPU 사용 시간 절감이 목적인데 결과에는 재추론 비율만 있어 GPU 사용 시간이 어떻게 됐는지 알 수 없음. 진행 배경과 관계없는 예상 산출물이 있음. 예상 산출물에 없는 작업이 중간 진행상황 기록의 대부분인데 이유가 없음 |
+
+- T9는 T4, T5와 검사 대상이 다르다.
+  - T4는 진행 배경이 충실한지만 검사한다.
+  - T5는 예상 산출물 항목 하나하나의 단위와 끝 기준만 검사한다.
+  - T9는 진행 배경, 예상 산출물, 중간 진행상황 기록, 결과 산출물 사이가 이어지는지만 검사한다.
 
 ```json
 "feedback": [
@@ -59,7 +67,9 @@
   { "id": "T6", "points": ["작업 기간(첫 in-progress(진행 중 상태) 전환부터 마지막 request 전환(담당자의 완료 요청)까지) 영업일 기준 8일 동안 사람 comment 1건(request 전환 당일)뿐이라 중간 결과와 방향 변경 이유를 알 수 없음"],
     "request": "진행 중 나온 중간 수치와 방향을 바꾼 이유 comment 필요" },
   { "id": "T7", "points": ["INNO-18은 결과 comment([comment 2026-09-14|https://<site>/browse/INNO-18?focusedCommentId=10150])와 PR([PR #47 export 테스트 추가|https://github.com/everex-ai/repo/pull/47])이 있음", "INNO-19는 description이 비어 있어 무엇을 했는지 알 수 없음"],
-    "request": "INNO-19 description에 무엇을 왜 했는지 작성 필요" }
+    "request": "INNO-19 description에 무엇을 왜 했는지 작성 필요" },
+  { "id": "T9", "points": ["진행 배경의 목적은 export 오류 재발 방지인데 결과 산출물에는 오류 재현 테스트 추가([PR #42 export 오류 수정|https://github.com/everex-ai/repo/pull/42])만 있고, 재발 여부를 어떻게 확인했는지 알 수 없음"],
+    "request": "결과 산출물에 재발 여부를 확인한 방법과 결과를 알 수 있는 comment 필요" }
 ]
 ```
 - points는 comment 검사 표의 내용 칸에 들어가므로 항목당 1–3개로 짧게 적는다(`scripts/apply.py`의 `check_table`).
@@ -90,7 +100,7 @@ h2. Summary
 
 ## 검수 결과
 verdict(verdict.json의 검수 결과 키)에는 코드값을 적고, 괄호 안은 검수 결과 이름이다.
-- 문서화 리뷰(T4–T8)는 검수 결과에 넣지 않는다. apply.py가 모드에 따라 적용한다(`scripts/apply.py`의 `apply_issue`, `recheck_verdict`).
+- 문서화 리뷰(T4–T9)는 검수 결과에 넣지 않는다. apply.py가 모드에 따라 적용한다(`scripts/apply.py`의 `apply_issue`, `recheck_verdict`).
   - 관찰 모드(Actions 변수 `JIRA_DOC_GATE`가 `false`)에서는 apply.py가 문서화 리뷰 결과를 팀장용 comment와 Actions Summary로 공유한다(`scripts/apply.py`의 `doc_review_comment`).
   - 게이트 모드(`JIRA_DOC_GATE`가 `true`)에서는 fail이 있으면 통과를 보류로 바꾼다.
 - pass(통과): items가 모두 done이고, 아래 검사가 모두 pass 또는 n/a다.

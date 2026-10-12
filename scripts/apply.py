@@ -5,11 +5,12 @@ alerts 모드(주간 점검)는 Jira에 쓰지 않고 ctx/_scan/*.alerts.json을
 
 반영 순서: 구역 교체(결과 산출물) -> TL;DR -> 상태 전환(검수 모드) -> comment -> property -> Slack 알림(검수 모드)
 - verdict.json이 없거나 형식이 틀리면 반영하지 않고 실패로 기록한다 (검수 모드면 팀장 멘션 comment).
+  검수 모드에서 verdict.json은 있으나 tldr.wiki나 comment.wiki가 없으면(CI agent가 턴 상한 등으로 중간에 멈춤) 같은 실패로 처리한다.
 - 결과 산출물 구역과 검수 comment의 검사 표는 Claude의 verdict.json(items, extra, checks)을 받아 이 스크립트가
   정해진 형식으로 조립한다. Claude가 쓰는 자유 서술은 comment.wiki(결과 요약)와 tldr.wiki뿐이다.
 - 검수 결과는 통과(pass), 검토 요청(escalate), 보류(fix)다. 괄호 안은 verdict.json의 코드값이다.
 - T3: verdict.items의 번호가 precheck의 예상 산출물 번호(1..n)와 1:1이 아니면 검수 결과를 검토 요청으로 바꾼다.
-- 문서화 리뷰 항목(Task T4–T8, Bug B5–B7, Issue I4–I5. 검수 모드): 관찰 모드는 검수 결과를 바꾸지 않고 팀장용 comment와 Actions Summary로 공유하고,
+- 문서화 리뷰 항목(Task T4–T9, Bug B5–B7, Issue I4–I5. 검수 모드): 관찰 모드는 검수 결과를 바꾸지 않고 팀장용 comment와 Actions Summary로 공유하고,
   게이트 모드는 미달이면 통과를 보류로 바꾼다. T8(초과 달성·미달성 사유)은 이 스크립트가 계산한다.
 - Task 검수는 미달성 항목마다 담당자가 남긴 사유가 있으면 검토 요청으로, 통과인데 미달성 항목이 있으면 보류로 바꾼다.
 - 상태 전환(검수 모드): 보류이고 지금 상태가 ready-to-done이면 In Progress로 되돌린다. 통과와 검토 요청은 상태를
@@ -60,6 +61,7 @@ CHECK_NAMES = {
     "T6": "진행 기록 comment",
     "T7": "sub-task 기록",
     "T8": "초과 달성·미달성 사유",
+    "T9": "진행 배경부터 결과 산출물까지의 연결",
     "B1": "기본 정보와 문제(As-Is) 작성, 첨부 파일",
     "B2": "개선(To-Be) 작성",
     "B3": "원인과 해결의 근거 링크",
@@ -82,7 +84,7 @@ CHECK_NAMES = {
 CHECK_ORDER = {cid: i for i, cid in enumerate(CHECK_NAMES)}
 RESULT_KO = {"pass": "✅ 만족", "fail": "❌ 보완 필요", "n/a": "➖ 해당 없음"}   # 검사 표 결과 칸. 모든 검사 항목에 같은 표시
 # 문서화 리뷰(검수 모드)의 work type별 항목. 관찰 모드에서는 검수 결과를 바꾸지 않고 팀장용 comment로, 게이트 모드에서는 보류로 이어진다
-DOC_CHECKS = {"Task": ("T4", "T5", "T6", "T7", "T8"), "Bug": ("B5", "B6", "B7"), "Issue": ("I4", "I5")}
+DOC_CHECKS = {"Task": ("T4", "T5", "T6", "T7", "T8", "T9"), "Bug": ("B5", "B6", "B7"), "Issue": ("I4", "I5")}
 ALL_DOC_CHECKS = tuple(cid for ids in DOC_CHECKS.values() for cid in ids)          # 세 work type의 문서화 리뷰 항목 전체
 FEEDBACK_DOC_CHECKS = tuple(cid for cid in ALL_DOC_CHECKS if cid != "T8")         # CI agent가 feedback에 적는 항목. T8은 이 스크립트가 계산(check_t8)
 CELL_BREAK = " \\\\ "                                                              # Jira wiki 표 칸 안의 줄바꿈
@@ -90,6 +92,7 @@ NO_REASON = "사유 미기재"
 VERDICT_KEY_KO = {"issueKey": "task 키", "mode": "실행 모드", "verdict": "판정", "checks": "검사 결과 목록",
                   "items": "예상 산출물별 결과 목록", "extra": "초과 달성 목록", "requests": "담당자 요청 목록"}
 VERDICT_FILE_KO = "CI agent(GitHub Actions에서 실행되는 문서화 Agent)의 판정 파일(verdict.json)"   # 실패 알림에 나가는 이름
+REVIEW_OUTPUT_FILES_KO = {"tldr.wiki": "TL;DR 본문", "comment.wiki": "검수 comment의 결과 요약"}   # 검수 모드에서 CI agent가 verdict.json과 함께 작성하는 출력 파일과 실패 알림에 나가는 뜻
 # 주간 점검(alerts) Slack 보고
 SLACK_USERS = Path(__file__).parent.parent / "config" / "slack-users.json"   # Jira accountId -> Slack member ID
 # (검사 ID, 절 제목, 절 제목 뒤의 조치 문구). 절은 이 순서로 나간다
@@ -219,22 +222,33 @@ def short_name(text: str, limit: int = 40) -> str:
 
 
 def check_t8(expected: list[dict], items: list[dict], extra: list[dict]) -> dict:
-    """초과 달성마다 추가 사유, 미달성 항목마다 미달성 사유가 채워졌는지 (Task 검수만)."""
+    """초과 달성마다 추가 사유, 미달성 항목마다 담당자가 남긴 사유가 있는지 계산한다 (Task 검수만).
+
+    미달성 항목의 why가 비었거나 CI agent가 넣는 NOT_A_REASON이면 담당자의 사유가 없는 것으로 센다(owner_reason).
+
+    Args:
+        expected: precheck.json의 예상 산출물 목록.
+        items: verdict.json의 items.
+        extra: verdict.json의 extra.
+
+    Returns:
+        T8 검사 결과(id, result, detail, 보완 필요이면 request).
+    """
     if not expected:
         return {"id": "T8", "result": "n/a", "detail": "예상 산출물이 없어 대응할 수 없음"}
-    no_why_miss = [str(it["id"]) for it in items if not it.get("done") and not (it.get("why") or "").strip()]
+    no_why_miss = [str(it["id"]) for it in items if not it.get("done") and not owner_reason(it)]
     no_why_extra = [short_name(x["result"]) for x in extra if not (x.get("why") or "").strip()]
     if not no_why_miss and not no_why_extra:
         return {"id": "T8", "result": "pass", "detail": "미달성·초과 달성 항목 모두 사유 있음"}
     parts, asks = [], []
     if no_why_miss:
         parts.append(f"사유 없는 미달성 항목 {', '.join(no_why_miss)}번")
-        asks.append(f"미달성 항목 {', '.join(no_why_miss)}번의 미달성 사유")
+        asks.append(f"미달성 항목 {', '.join(no_why_miss)}번의 달성 근거 또는 미달성 사유")
     if no_why_extra:
         names = ", ".join(f"'{r}'" for r in no_why_extra)
         parts.append(f"사유 없는 초과 달성 {len(no_why_extra)}건({names})")
         asks.append(f"초과 달성 {names}의 추가 사유")
-    return {"id": "T8", "result": "fail", "detail": ", ".join(parts), "request": f"{'와 '.join(asks)} comment 필요"}
+    return {"id": "T8", "result": "fail", "detail": ", ".join(parts), "request": f"{', '.join(asks)} comment 필요"}
 
 
 def doc_requests(doc_checks: list[dict], feedback: list[dict]) -> list[str]:
@@ -324,7 +338,7 @@ def doc_review_result(doc_checks: list[dict]) -> str:
     """문서화 리뷰 결과 값. 문서화 리뷰 항목에 보완 필요가 하나라도 있으면 "보완 필요", 없으면 "통과".
 
     Args:
-        doc_checks: 문서화 리뷰 항목(Task T4–T8, Bug B5–B7, Issue I4–I5)의 검사 결과 목록.
+        doc_checks: 문서화 리뷰 항목(Task T4–T9, Bug B5–B7, Issue I4–I5)의 검사 결과 목록.
 
     Returns:
         "보완 필요" 또는 "통과".
@@ -336,7 +350,7 @@ def doc_review_comment(doc_checks: list[dict], feedback: list[dict], lead: str) 
     """관찰 모드의 팀장용 문서화 리뷰 comment. 첫 줄에 문서화 리뷰 결과 값(doc_review_result)을 적는다.
 
     Args:
-        doc_checks: 문서화 리뷰 항목(Task T4–T8, Bug B5–B7, Issue I4–I5)의 검사 결과 목록.
+        doc_checks: 문서화 리뷰 항목(Task T4–T9, Bug B5–B7, Issue I4–I5)의 검사 결과 목록.
         feedback: verdict.json의 feedback(문서화 리뷰 항목별 피드백).
         lead: 팀장의 Jira accountId. 비어 있으면 멘션하지 않는다.
 
@@ -357,7 +371,7 @@ def doc_review_md(key: str, doc_checks: list[dict], feedback: list[dict]) -> lis
 
     Args:
         key: task 키.
-        doc_checks: 문서화 리뷰 항목(Task T4–T8, Bug B5–B7, Issue I4–I5)의 검사 결과 목록.
+        doc_checks: 문서화 리뷰 항목(Task T4–T9, Bug B5–B7, Issue I4–I5)의 검사 결과 목록.
         feedback: verdict.json의 feedback(문서화 리뷰 항목별 피드백).
 
     Returns:
@@ -395,6 +409,14 @@ def failure_comment(err: str, lead: str) -> str:
     if lead:
         parts.append(f"[~accountid:{lead}]")
     return "\n".join(parts)
+
+
+def _has_text(path: Path) -> bool:
+    """파일이 있고 공백이 아닌 내용이 있는지 확인한다. CI agent가 파일만 만들고 멈춘 경우를 없는 것과 같이 다루기 위함."""
+    try:
+        return bool(path.read_text(encoding="utf-8").strip())
+    except OSError:
+        return False
 
 
 def now_stamp() -> str:
@@ -443,7 +465,7 @@ def load_slack_users() -> tuple[dict[str, str], str | None]:
 def validate_verdict(v: object, mode: str, key: str) -> str | None:
     """schemas/verdict.json의 핵심 제약만 검사한다.
 
-    feedback의 id는 CI agent가 적는 문서화 리뷰 항목(FEEDBACK_DOC_CHECKS: T4–T7, B5–B7, I4–I5) 중 하나여야 한다.
+    feedback의 id는 CI agent가 적는 문서화 리뷰 항목(FEEDBACK_DOC_CHECKS: T4–T7, T9, B5–B7, I4–I5) 중 하나여야 한다.
 
     Args:
         v: verdict.json을 JSON으로 읽은 값.
@@ -538,6 +560,10 @@ def review_transition(j: Jira, key: str, v: str, status: str) -> tuple[str, str]
 def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: str, summ: Summary) -> None:
     """task 하나의 CI agent 출력을 Jira에 반영한다. 검수 모드면 상태 전환과 Slack 알림까지 처리한다.
 
+    검수 모드에서 verdict.json이 없거나 형식에 맞지 않거나, verdict.json은 있으나 tldr.wiki나 comment.wiki가 없으면
+    팀장을 멘션한 실패 알림 comment만 남기고 상태 전환, Slack 알림, TL;DR와 결과 산출물 구역 갱신은 하지 않는다.
+    정리 모드에서 tldr.wiki가 없으면 Actions 요약에만 남긴다.
+
     Args:
         j: Jira 클라이언트.
         d: 수집 단계가 만든 ctx/<KEY>/ 폴더(issue.json, precheck.json, meta.json).
@@ -563,6 +589,10 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
         err = f"{VERDICT_FILE_KO}이 형식에 맞지 않음. {problem}. 키 정의는 schemas/verdict.json에 있음"
     else:
         err = None
+    if err is None and mode == "review":     # CI agent가 턴 상한 등으로 중간에 멈추면 verdict.json만 있을 수 있다
+        absent = [f"{name}({ko})" for name, ko in REVIEW_OUTPUT_FILES_KO.items() if not _has_text(o / name)]
+        if absent:
+            err = f"{VERDICT_FILE_KO}은 있으나 {', '.join(absent)} 없음 또는 비어 있음. 추정: CI agent 실행이 끝나기 전에 멈춤"
 
     if err:
         if mode == "review":
@@ -612,7 +642,7 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
                 notes.append(changes[-1])
             v = "escalate"
 
-    # 문서화 리뷰 (검수 모드, 문서화 리뷰 항목이 있는 work type): Claude가 그 work type의 항목(Task T4–T7, Bug B5–B7,
+    # 문서화 리뷰 (검수 모드, 문서화 리뷰 항목이 있는 work type): Claude가 그 work type의 항목(Task T4–T7과 T9, Bug B5–B7,
     # Issue I4–I5)과 feedback을 내고, Task의 T8은 여기서 계산한다. 검수 comment의 검사 표에서는 세 work type의 항목을 모두 뺀다.
     # 관찰 모드는 검수 결과를 그대로 두고 팀장용 comment로 공유, 게이트 모드는 미달이면 통과를 보류로 바꾼다
     requests = list(verdict["requests"])
@@ -685,7 +715,7 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
     if mode == "review":
         state_note, state_line = review_transition(j, key, v, issue.get("status") or "?")
         notes.append(state_note)                       # 검수 comment의 검수 결과 줄 아래에 나간다
-        summary = strip_claude_header((o / "comment.wiki").read_text(encoding="utf-8")) if (o / "comment.wiki").exists() else ""
+        summary = strip_claude_header((o / "comment.wiki").read_text(encoding="utf-8"))   # 검수 모드는 위에서 comment.wiki가 있음을 확인함
         text = review_comment(v, checks, expected if itype == "Task" else [], items, extra, summary, requests, notes,
                               feedback if gate else None)   # 게이트 모드에서만 검수 표에 문서화 리뷰 항목이 들어간다
         if v == "escalate" and lead and f"[~accountid:{lead}]" not in text:

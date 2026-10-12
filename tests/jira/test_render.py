@@ -118,7 +118,10 @@ def test_t8_names_items_and_request(ja):
     t8 = ja.check_t8(EXPECTED, ITEMS, EXTRA)
     assert t8["result"] == "fail"
     assert t8["detail"] == "사유 없는 미달성 항목 2번, 사유 없는 초과 달성 1건('대시보드 추가')"
-    assert t8["request"] == "미달성 항목 2번의 미달성 사유와 초과 달성 '대시보드 추가'의 추가 사유 comment 필요"
+    assert (
+        t8["request"]
+        == "미달성 항목 2번의 달성 근거 또는 미달성 사유, 초과 달성 '대시보드 추가'의 추가 사유 comment 필요"
+    )
     feedback = [{"id": "T5", "points": [], "request": "3번 항목의 완료 기준 추가 필요"}]
     checks = [t8, {"id": "T5", "result": "fail"}, {"id": "T6", "result": "pass"}]
     assert ja.doc_requests(checks, feedback) == [t8["request"], "3번 항목의 완료 기준 추가 필요"]
@@ -137,7 +140,7 @@ def test_doc_review_comment_first_line(ja):
     t8 = ja.check_t8(EXPECTED, ITEMS, EXTRA)
     text = ja.doc_review_comment([t8], [], "acc-lead")
     assert text.startswith("문서화 리뷰 결과(관찰 모드): *보완 필요*\n\n|| 검사 || 결과 || 내용 ||")
-    assert "*담당자에게 보낼 요청 후보*\n# 미달성 항목 2번의 미달성 사유" in text
+    assert "*담당자에게 보낼 요청 후보*\n# 미달성 항목 2번의 달성 근거 또는 미달성 사유" in text
     assert text.endswith("\n\n[~accountid:acc-lead]")
     ok = ja.doc_review_comment([{"id": "T4", "result": "pass", "detail": "a"}], [], "")
     assert ok.startswith("문서화 리뷰 결과(관찰 모드): *통과*\n\n")
@@ -534,7 +537,7 @@ def test_validate_verdict_message_names_doc_review_checks(ja):
     err = ja.validate_verdict(v, "review", "INNO-1")
     assert (
         "진행 배경 충실도 (T4), 예상 산출물 분할 단위 (T5), 진행 기록 comment (T6), sub-task 기록 (T7), "
-        "문제(As-Is) 재현 정보 (B5), 원인 분석 기록 (B6), 해결 확인 기록 (B7), "
+        "진행 배경부터 결과 산출물까지의 연결 (T9), 문제(As-Is) 재현 정보 (B5), 원인 분석 기록 (B6), 해결 확인 기록 (B7), "
         "이슈 내용 충실도 (I4), 논의와 결정 기록 (I5) 중 하나"
     ) in err
     assert "~" not in err
@@ -897,16 +900,94 @@ def test_gate_note_names_doc_review_checks(render, ja, tmp_path):
     assert body.index("(T5)") < body.index("*검사 항목*")
 
 
+def run_without_output(render, ja, work, mode, missing, verdict="fix", blank=False):
+    """INNO-17(Task, ready-to-done)을 가짜 Jira로 실행하되 CI agent 출력 파일 하나를 지운다.
+
+    blank가 True이면 지우지 않고 공백만 남긴다. (FakeJira, Summary)를 돌려준다.
+    """
+    ctx, out = work / "ctx", work / "out"
+    render.write_issue(ctx, "INNO-17", "Task", EXPECTED, {})
+    v = render.task_verdict("INNO-17", mode, verdict if mode == "review" else None) | {"items": ITEMS, "extra": []}
+    render.write_out(out, "INNO-17", v, "* 요약")
+    if blank:
+        (out / "INNO-17" / missing).write_text(" \n", encoding="utf-8")
+    else:
+        (out / "INNO-17" / missing).unlink()
+    j = render.FakeJira({"INNO-17": ""})
+    summ = ja.Summary(str(work / "summary.md"))
+    ja.apply_issue(j, ctx / "INNO-17", out, mode, False, "acc-lead", summ)
+    return j, summ
+
+
 def test_tldr_missing_note_stays_out_of_comment(render, ja, tmp_path):
+    """검수 모드에서 tldr.wiki가 없으면 실패로 처리하므로, 검수 comment에 넣지 않던 "TL;DR 출력 없음" 메모도 나가지 않는다."""
+    j, summ = run_without_output(render, ja, tmp_path, "review", "tldr.wiki")
+    assert all("TL;DR 출력 없음" not in body for _, body in j.comments)
+    assert "TL;DR 출력 없음" not in summ.rows[0]
+    assert "판정 파일(verdict.json)은 있으나 tldr.wiki(TL;DR 본문) 없음 또는 비어 있음" in summ.rows[0]
+
+
+def test_t8_counts_not_a_reason_as_missing_reason(ja):
+    t8 = ja.check_t8(EXPECTED, [ITEMS[0], NOT_A_REASON], [])
+    assert t8["result"] == "fail"
+    assert t8["detail"] == "사유 없는 미달성 항목 2번"
+    assert t8["request"] == "미달성 항목 2번의 달성 근거 또는 미달성 사유 comment 필요"
+
+
+def test_t8_passes_with_owner_reason(ja):
+    t8 = ja.check_t8(EXPECTED, [ITEMS[0], REASONED], [])
+    assert t8["result"] == "pass"
+    assert "request" not in t8
+
+
+def test_doc_review_comment_lists_t9_after_t8(ja):
+    t8 = ja.check_t8(EXPECTED, [ITEMS[0], REASONED], [])
+    t9 = {"id": "T9", "result": "pass", "detail": "진행 배경, 예상 산출물, 결과 산출물이 이어짐"}
+    text = ja.doc_review_comment([t9, t8], [], "")  # 넘긴 순서와 달리 표는 T8 다음에 T9를 보인다
+    assert "| 진행 배경부터 결과 산출물까지의 연결 (T9) | ✅ 만족 |" in text
+    assert text.index("초과 달성·미달성 사유 (T8)") < text.index("진행 배경부터 결과 산출물까지의 연결 (T9)")
+    assert ja.DOC_CHECKS["Task"][-2:] == ("T8", "T9")
+
+
+def test_validate_verdict_accepts_t9_feedback_and_reports_missing_t9(render, ja, tmp_path):
+    v = {"issueKey": "INNO-1", "mode": "review", "verdict": "pass", "checks": [], "items": [], "extra": []}
+    v |= {"requests": [], "feedback": [{"id": "T9", "points": ["a"], "request": "b 필요"}]}
+    assert ja.validate_verdict(v, "review", "INNO-1") is None
+    no_t9 = render.task_verdict("INNO-17", "review", "fix") | {"items": ITEMS, "extra": []}
+    no_t9["checks"] = [c for c in no_t9["checks"] if c["id"] != "T9"]
     ctx, out = tmp_path / "ctx", tmp_path / "out"
     render.write_issue(ctx, "INNO-17", "Task", EXPECTED, {})
-    render.write_out(out, "INNO-17", render.task_verdict("INNO-17", "review", "fix"), "* 요약")
-    (out / "INNO-17" / "tldr.wiki").unlink()
-    j = render.FakeJira({"INNO-17": ""})
+    render.write_out(out, "INNO-17", no_t9, "* 요약")
     summ = ja.Summary(str(tmp_path / "summary.md"))
-    ja.apply_issue(j, ctx / "INNO-17", out, "review", False, "", summ)
-    assert all("TL;DR 출력 없음" not in body for _, body in j.comments)
+    ja.apply_issue(render.FakeJira({"INNO-17": ""}), ctx / "INNO-17", out, "review", False, "acc-lead", summ)
+    assert "문서화 리뷰 항목 누락: 진행 배경부터 결과 산출물까지의 연결 (T9)" in summ.rows[0]
+
+
+@pytest.mark.parametrize("blank", [False, True], ids=["파일 없음", "빈 파일"])
+@pytest.mark.parametrize(
+    ("missing", "label"),
+    [("tldr.wiki", "tldr.wiki(TL;DR 본문)"), ("comment.wiki", "comment.wiki(검수 comment의 결과 요약)")],
+)
+def test_review_without_output_file_posts_only_failure_comment(render, ja, tmp_path, slack, missing, label, blank):
+    j, summ = run_without_output(render, ja, tmp_path, "review", missing, blank=blank)
+    [(key, body)] = j.comments  # 검수 comment와 문서화 리뷰 comment 없이 실패 알림 comment 하나만 남음
+    assert key == "INNO-17"
+    assert body.startswith("[ai-doc-agent]\n자동 검수 실행 실패: ")
+    assert (
+        f"판정 파일(verdict.json)은 있으나 {label} 없음 또는 비어 있음. 추정: CI agent 실행이 끝나기 전에 멈춤" in body
+    )
+    assert "[~accountid:acc-lead]" in body and "검수 결과:" not in body
+    assert j.transitioned_to == [] and j.fields == {}  # 상태 전환, TL;DR와 결과 산출물 구역 갱신 없음
+    assert j.props_set == []  # jira-doc 기록(property)도 남기지 않음
+    assert slack == []
+    assert summ.rows[0].startswith("| INNO-17 | Task | review | 실패 |")
+
+
+def test_digest_without_tldr_keeps_note_in_summary_only(render, ja, tmp_path, slack):
+    j, summ = run_without_output(render, ja, tmp_path, "digest", "tldr.wiki")
+    assert j.comments == [] and slack == []
     assert "TL;DR 출력 없음" in summ.rows[0]
+    assert "결과 산출물" in j.fields["INNO-17"]["description"]  # 정리 모드는 결과 산출물 구역을 그대로 갱신함
 
 
 def test_failure_comment_reasons(render, ja, tmp_path):

@@ -264,7 +264,7 @@ def check_a2(changelog: list[dict], desc_section: str, label: str | None = None)
 
 
 def doc_facts(d: Path, itype: str, desc: str, changelog: list[dict], human: list[dict], now: dt.datetime) -> dict:
-    """문서화 리뷰(Task T4–T7, Bug B5–B7, Issue I4–I5)를 agent가 판단할 때 인용하는 사실. 판단은 하지 않고 수치만 모은다.
+    """문서화 리뷰(Task T4–T7과 T9, Bug B5–B7, Issue I4–I5)를 agent가 판단할 때 인용하는 사실. 판단은 하지 않고 수치만 모은다.
 
     배경 줄 수는 work type별 배경 구역(DOC_BACKGROUND_SECTIONS: Task 진행 배경, Bug 문제(As-Is), Issue 이슈 내용)에서 센다.
 
