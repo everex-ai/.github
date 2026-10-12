@@ -27,6 +27,9 @@ STRUCK_ITEM = re.compile(r"^\s*(?:[*#-]+\s+)?-(?=[^\s-])[^\n]*[^\s-]-\s*$", re.M
 STOP_TO, WORK_STATUS, RTD = "Backlog", "In Progress", "ready-to-done"     # Jira 상태 이름. 비교는 is_status로 대소문자 무시
 REQUEST_KO = "request 전환(담당자가 완료를 요청해 task를 ready-to-done 상태로 보내는 Jira 전환)"   # 검사 표에 나가는 전환 이름. 프롬프트의 "request 전환"과 같은 이름
 LINES_NOTE = "(안내문과 빈 줄을 뺀 줄 수)"
+# 주간 점검 A3: ready-to-done 진입 뒤 이 영업일 수 이상 done 전환이 없으면 알림.
+# 값을 바꾸면 scripts/apply.py의 CHECK_NAMES["A3"]와 ALERT_SECTIONS 절 제목의 일수도 바꿔야 함
+READY_WAIT_DAYS = 3
 # 문서화 리뷰의 배경 구역. 구역은 제목 앞부분으로 찾으므로 "문제"로 Bug의 "문제(As-Is)"를 찾는다
 DOC_BACKGROUND_SECTIONS = {"Task": "진행 배경", "Bug": "문제", "Issue": "이슈 내용"}
 
@@ -261,7 +264,7 @@ def check_a2(changelog: list[dict], desc_section: str, label: str | None = None)
 
 
 def doc_facts(d: Path, itype: str, desc: str, changelog: list[dict], human: list[dict], now: dt.datetime) -> dict:
-    """문서화 리뷰(Task T4–T7, Bug B5–B7, Issue I4–I5)를 agent가 판단할 때 인용하는 사실. 판단은 하지 않고 수치만 모은다.
+    """문서화 리뷰(Task T4–T7과 T9, Bug B5–B7, Issue I4–I5)를 agent가 판단할 때 인용하는 사실. 판단은 하지 않고 수치만 모은다.
 
     배경 줄 수는 work type별 배경 구역(DOC_BACKGROUND_SECTIONS: Task 진행 배경, Bug 문제(As-Is), Issue 이슈 내용)에서 센다.
 
@@ -348,6 +351,15 @@ def run_issue_dir(d: Path, now: dt.datetime) -> None:
 
 
 def run_scan(p: Path, now: dt.datetime) -> None:
+    """주간 점검 데이터 ctx/_scan/<KEY>.json으로 알림을 계산해 ctx/_scan/<KEY>.alerts.json에 쓴다.
+
+    알림은 R4(stop 사유 미기재), A1(영업일 기준 5일 이상 활동 없음), A3(ready-to-done 영업일 기준
+    READY_WAIT_DAYS일 이상 대기)다. A3는 팀장이 할 조치라 apply.py가 Slack 주간 메시지에만 넣는다.
+
+    Args:
+        p: 수집 단계가 만든 ctx/_scan/<KEY>.json.
+        now: 지금 시각.
+    """
     s = json.loads(p.read_text(encoding="utf-8"))
     itype, status = s["type"], s["status"]
     changes = s.get("statusChanges", [])
@@ -356,7 +368,7 @@ def run_scan(p: Path, now: dt.datetime) -> None:
     alerts = []
 
     # 템플릿 누락(T1, T2, B1, B2, I1, I2)은 Jira 전환 검증이 막고 있어 알림에서 다룬다.
-    # 주간 점검은 사람이 보지 않으면 드러나지 않는 두 가지(stop 사유, 무활동)만 본다.
+    # 주간 점검은 사람이 보지 않으면 드러나지 않는 세 가지(stop 사유, 무활동, ready-to-done 대기)만 본다.
 
     # R4: stop 뒤 24시간이 지나도 사유 comment가 없으면 알림
     stops = stop_events(changes, s.get("humanComments", []), now)
@@ -376,6 +388,18 @@ def run_scan(p: Path, now: dt.datetime) -> None:
             alerts.append({"code": f"STALE:{(last_activity.date() if last_activity else now.date()).isoformat()}", "check": "A1",
                            "detail": f"마지막 활동 {last_activity.date().isoformat() if last_activity else '기록 없음'} 뒤 영업일 기준 {idle}일 경과(토요일과 일요일 제외)",
                            "message": f"마지막 활동(사람 comment, In Progress 전환, task 생성 중 가장 늦은 것) 뒤 영업일(토요일과 일요일을 뺀 날) 기준 {idle}일 동안 활동 없음. 진행 상황 comment, 또는 멈춘 task면 stop 전환으로 Backlog에 보내는 것 필요"})
+
+    # A3: ready-to-done에서 READY_WAIT_DAYS영업일 이상 done 전환이 없으면 알림. 진입 시각은 마지막 ready-to-done 전환
+    if is_status(status, RTD):
+        entered = [t for t in (parse_ts(c.get("created")) for c in changes if is_status(c.get("to"), RTD)) if t]
+        if entered:
+            ready_at = max(entered)
+            waited = business_days_since(ready_at, now)
+            if waited >= READY_WAIT_DAYS:
+                day = ready_at.date().isoformat()
+                alerts.append({"code": f"READY_WAIT:{day}", "check": "A3",
+                               "detail": f"ready-to-done 진입 {day} 뒤 영업일 기준 {waited}일 경과(토요일과 일요일 제외)",
+                               "message": f"ready-to-done 진입 뒤 영업일 기준 {waited}일 동안 done 전환 없음. 팀장의 done 전환 또는 보류 comment 필요"})
 
     out = {"key": s["key"], "type": itype, "status": status, "summary": s.get("summary"), "url": s.get("url"),
            "assignee": s.get("assignee"), "alerts": alerts, "clear": []}

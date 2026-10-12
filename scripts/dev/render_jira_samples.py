@@ -95,6 +95,7 @@ class FakeJira:
         self.comments: list[tuple[str, str]] = []
         self.fields: dict[str, dict] = {}
         self.transitioned_to: list[tuple[str, str]] = []
+        self.props_set: list[tuple[str, dict]] = []
 
     def issue(self, key: str, fields: list[str]) -> dict:
         """description 필드만 돌려준다.
@@ -142,12 +143,13 @@ class FakeJira:
         return {}
 
     def prop_set(self, key: str, prop: dict) -> None:
-        """property 쓰기를 무시한다.
+        """property 쓰기 요청을 모아 둔다.
 
         Args:
             key: task 키.
             prop: property 값.
         """
+        self.props_set.append((key, prop))
 
     def transition_to(self, key: str, status: str) -> None:
         """도착 상태 이름으로 한 상태 전환 요청을 모아 둔다.
@@ -253,6 +255,13 @@ TASK_FEEDBACK = [
             "PR([PR #47 export 테스트 추가|https://github.com/everex-ai/repo/pull/47])이 있음"
         ],
     },
+    {
+        "id": "T9",
+        "points": [
+            "진행 배경의 export 오류 재발 방지 요구에 예상 산출물 1번(재현 테스트 추가)이 대응하고, 결과도 "
+            "[PR #42 export 오류 수정|https://github.com/everex-ai/repo/pull/42]의 테스트 병합으로 이어짐"
+        ],
+    },
 ]
 TASK_CHECKS = [
     {"id": "R2", "result": "pass", "detail": "결과마다 PR 또는 comment 링크 있음"},
@@ -261,6 +270,7 @@ TASK_CHECKS = [
     {"id": "T5", "result": "fail", "detail": "3번 항목의 완료 기준 없음"},
     {"id": "T6", "result": "fail", "detail": "작업 기간 중 사람 comment 1건"},
     {"id": "T7", "result": "pass", "detail": "sub-task 기록 있음"},
+    {"id": "T9", "result": "pass", "detail": "진행 배경, 예상 산출물, 결과 산출물이 이어짐"},
 ]
 TASK_REQUESTS = [
     "평가 리포트 링크, 데이터 규모, 오류율 계산 방법 comment 필요",
@@ -763,6 +773,24 @@ def render(out_dir: Path) -> list[Path]:
                 "statusChanges": [{"created": "2026-09-02T10:00:00.000+0900", "field": "status", "to": "In Progress"}],
             },
         )
+        # A3(ready-to-done 영업일 기준 3일 이상 대기): 팀장 멘션은 주간 점검 Slack에만 나가고 누락 알림 comment에는 없음
+        write_json(
+            scan / "INNO-42.json",
+            {
+                "key": "INNO-42",
+                "type": "Task",
+                "status": "ready-to-done",
+                "summary": "추론 지연 개선",
+                "url": f"{SITE}/browse/INNO-42",
+                "created": "2026-09-01T10:00:00.000+0900",
+                "assignee": {"accountId": ASSIGNEE, "displayName": "담당자A"},
+                "humanComments": [],
+                "statusChanges": [
+                    {"created": "2026-09-02T10:00:00.000+0900", "field": "status", "to": "In Progress"},
+                    {"created": "2026-09-23T14:00:00.000+0900", "field": "status", "to": "ready-to-done"},
+                ],
+            },
+        )
         for p in sorted(scan.glob("INNO-*.json")):
             if not p.name.endswith(".alerts.json"):
                 with contextlib.redirect_stdout(io.StringIO()):
@@ -774,7 +802,7 @@ def render(out_dir: Path) -> list[Path]:
 
         weekly_summ = ja.Summary(str(work / "weekly-summary.md"))
         with contextlib.redirect_stdout(io.StringIO()):
-            ja.slack_weekly(ctx, weekly_summ)
+            ja.slack_weekly(ctx, weekly_summ, LEAD)
         weekly_summ.flush()
         save("weekly-slack.txt", sent[-1])  # 검수 알림도 sent에 쌓이므로 마지막에 보낸 주간 점검 본문을 쓴다
         # Actions Summary 탭에 남기는 주간 점검 사본. Slack 멤버 ID 대신 Jira 표시 이름이 들어간다
