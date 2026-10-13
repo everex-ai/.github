@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from jira_api import AGENT_MARK, STOP_REASON_PREFIX, Jira, JiraError, set_section  # noqa: E402
 
 VERDICT_KO = {"pass": "통과", "fix": "보류", "escalate": "검토 요청", None: "정리"}
-# 검수 결과를 다시 정하는 규칙(recheck_verdict)과 상태 전환. 검사 이름은 CHECK_NAMES, prompts/rules.md와 prompts/types/<work type>/review.md의 검사 항목 표와 같다
+# 검수 결과를 다시 정하는 규칙(recheck_verdict)과 상태 전환. 검사 이름은 CHECK_NAMES, prompts/review.md와 prompts/types/<work type>/review.md의 검사 항목 표와 같다
 OWNER_FIXABLE_CHECKS = ("T1", "T2", "R2", "R4", "B1", "B2", "B3", "B4", "I1", "I2", "I3")   # 담당자가 고칠 수 있는 검사. 실패하면 보류
 SENTENCE_DETAIL_CHECKS = ("R4",)                                              # detail이 이유 문장이라 Slack 보류 이유에 검사 이름 없이 적는 검사
 SLACK_INDENT = "    "                                                         # Slack 메시지의 묶음 항목 들여쓰기(공백 4칸). 검수 알림과 주간 점검에 사용
@@ -54,7 +54,7 @@ SECTION_NOTE = {"Task": "agent가 comment, sub-task, PR 기록을 근거로 작�
 SOURCE_KO = {"review": "검수", "digest": "F3 정리: Jira task 화면의 문서 정리 버튼"}     # 결과 산출물 구역의 안내 줄 끝에 붙여 출처를 보인다
 
 # 검사 항목의 표시 순서와 이름. Jira comment의 검사 표는 항상 이 순서로, 이 이름으로 나간다 (ID는 괄호로 덧붙인다).
-# 정의는 prompts/rules.md와 prompts/types/<work type>/review.md의 검사 항목 표와 같다.
+# 정의는 prompts/review.md와 prompts/types/<work type>/review.md의 검사 항목 표와 같다(A1, A3는 docs/jira-doc-agent.md의 실행 모드 표).
 CHECK_NAMES = {
     "T1": "예상 산출물 작성",
     "T2": "진행 배경 작성",
