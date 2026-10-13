@@ -69,7 +69,7 @@ work type이 Task인 ticket의 완료 판단 기준과, 예상 산출물에 결�
     "result": "ONNX(신경망 모델 교환 형식) 변환 스크립트 초안까지 작성",
     "why": "배포 대상 기기 사양이 확정되지 않아 변환 옵션을 정하지 못함([comment 2026-09-13|https://<site>/browse/INNO-17?focusedCommentId=10140])",
     "evidence": "[comment 2026-09-13|https://<site>/browse/INNO-17?focusedCommentId=10140]",
-    "reason": "기기 사양 확정 뒤 후속 task 키 comment 필요" }
+    "reason": "기기 사양 확정 뒤 후속 ticket 키 comment 필요" }
 ],
 "extra": [
   { "result": "export 오류율을 매일 집계하는 대시보드 추가",

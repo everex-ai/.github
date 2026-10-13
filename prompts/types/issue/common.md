@@ -21,8 +21,8 @@ work type이 Issue인 ticket의 구조와, 검수 모드와 정리 모드에 공
 
 ```
 h2. Summary
-* (대응 결과: 수용 / 반려 / task INNO-000으로 이관, 이유 한 줄)
-* (근거: [comment 링크] 또는 이관해서 만든 task의 키)
+* (대응 결과: 수용 / 반려 / ticket INNO-000으로 이관, 이유 한 줄)
+* (근거: [comment 링크] 또는 이관해서 만든 ticket의 키)
 * {color:#6b778c}상태: <issue.json의 status>, 검수 결과: <통과|보류|검토 요청>, 갱신: <meta.json의 collectedAt, YYYY-MM-DD HH:MM>{color}
 ```
 

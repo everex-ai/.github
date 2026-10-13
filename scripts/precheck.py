@@ -25,7 +25,7 @@ CHECKBOX_ANY = re.compile(r"\[\s*[xX✓✔ ]?\s*\]|\(\s*[xX ]?\s*\)|☐|☑")
 # Jira 체크 목록(ADF taskList)에서 선택한 항목은 REST API v2의 wiki markup에 취소선 "-제안-"으로 나온다(INNO-36 검수, 2026-10-08)
 STRUCK_ITEM = re.compile(r"^\s*(?:[*#-]+\s+)?-(?=[^\s-])[^\n]*[^\s-]-\s*$", re.M)
 STOP_TO, WORK_STATUS, RTD = "Backlog", "In Progress", "ready-to-done"     # Jira 상태 이름. 비교는 is_status로 대소문자 무시
-REQUEST_KO = "request 전환(담당자가 완료를 요청해 task를 ready-to-done 상태로 보내는 Jira 전환)"   # 검사 표에 나가는 전환 이름. 프롬프트의 "request 전환"과 같은 이름
+REQUEST_KO = "request 전환(담당자가 완료를 요청해 ticket을 ready-to-done 상태로 보내는 Jira 전환)"   # 검사 표에 나가는 전환 이름. 프롬프트의 "request 전환"과 같은 이름
 LINES_NOTE = "(안내문과 빈 줄을 뺀 줄 수)"
 # 주간 점검 A3: ready-to-done 진입 뒤 이 영업일 수 이상 done 전환이 없으면 알림.
 # 값을 바꾸면 scripts/apply.py의 CHECK_NAMES["A3"]와 ALERT_SECTIONS 절 제목의 일수도 바꿔야 함
@@ -387,7 +387,7 @@ def run_scan(p: Path, now: dt.datetime) -> None:
         if idle >= 5:
             alerts.append({"code": f"STALE:{(last_activity.date() if last_activity else now.date()).isoformat()}", "check": "A1",
                            "detail": f"마지막 활동 {last_activity.date().isoformat() if last_activity else '기록 없음'} 뒤 영업일 기준 {idle}일 경과(토요일과 일요일 제외)",
-                           "message": f"마지막 활동(사람 comment, In Progress 전환, task 생성 중 가장 늦은 것) 뒤 영업일(토요일과 일요일을 뺀 날) 기준 {idle}일 동안 활동 없음. 진행 상황 comment, 또는 멈춘 task면 stop 전환으로 Backlog에 보내는 것 필요"})
+                           "message": f"마지막 활동(사람 comment, In Progress 전환, ticket 생성 중 가장 늦은 것) 뒤 영업일(토요일과 일요일을 뺀 날) 기준 {idle}일 동안 활동 없음. 진행 상황 comment, 또는 멈춘 ticket이면 stop 전환으로 Backlog에 보내는 것 필요"})
 
     # A3: ready-to-done에서 READY_WAIT_DAYS영업일 이상 done 전환이 없으면 알림. 진입 시각은 마지막 ready-to-done 전환
     if is_status(status, RTD):

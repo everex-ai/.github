@@ -280,7 +280,7 @@ def save_task(d: Path, out: Path, mode: str, structured: dict | None, error: str
     if structured is None:
         reason = error
     elif agent is None:
-        reason = f"CI agent가 처리하지 못함: {failed[key]}" if key in failed else "구조화 출력에 이 Task 결과 없음"
+        reason = f"CI agent가 처리하지 못함: {failed[key]}" if key in failed else "구조화 출력에 이 ticket 결과 없음"
     else:
         reason = ""
     if reason:

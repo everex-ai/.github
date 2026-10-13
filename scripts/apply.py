@@ -43,15 +43,15 @@ SENTENCE_DETAIL_CHECKS = ("R4",)                                              # 
 SLACK_INDENT = "    "                                                         # Slack 메시지의 묶음 항목 들여쓰기(공백 4칸). 검수 알림과 주간 점검에 사용
 NOT_A_REASON = "근거 부족으로 확인 불가"                             # CI agent가 why에 넣는 문구. 담당자가 남긴 사유로 세지 않는다
 READY_STATUS, IN_PROGRESS = "ready-to-done", "In Progress"           # Jira 상태 이름. READY_STATUS는 대소문자 무시로 비교
-SLACK_CLOSING = {"escalate": "팀장이 task를 확인한 뒤 in-progress 또는 done으로 직접 전환 필요",
-                 "pass": "팀장이 task를 확인한 뒤 done으로 직접 전환 필요"}
+SLACK_CLOSING = {"escalate": "팀장이 ticket을 확인한 뒤 in-progress 또는 done으로 직접 전환 필요",
+                 "pass": "팀장이 ticket을 확인한 뒤 done으로 직접 전환 필요"}
 MENTION_RE = re.compile(r"\[~(?:accountid:)?([^\]]+)\]")
 WIKI_LINK_RE = re.compile(r"\[([^|\]]+)\|[^\]]*\]")                 # [제목|URL]
 WIKI_LINK_PARTS_RE = re.compile(r"\[([^|\]]+)\|([^\]]*)\]")          # [제목|URL]에서 제목과 URL을 함께 잡는다 (Slack 링크로 바꿀 때)
 WIKI_COLOR_RE = re.compile(r"\{color(?::[^}]*)?\}")                  # {color:#6b778c}, {color}
 LIST_MARK_RE = re.compile(r"^[*#-]+\s+")                             # wiki 목록 표식("* ", "# ", "#* ")
 SECTION_NOTE = {"Task": "agent가 comment, sub-task, PR 기록을 근거로 작성함. 고칠 내용은 직접 수정하지 않고 \"정정:\"으로 시작하는 comment로 요청 필요."}
-SOURCE_KO = {"review": "검수", "digest": "F3 정리: Jira task 화면의 문서 정리 버튼"}     # 결과 산출물 구역의 안내 줄 끝에 붙여 출처를 보인다
+SOURCE_KO = {"review": "검수", "digest": "F3 정리: Jira ticket 화면의 문서 정리 버튼"}     # 결과 산출물 구역의 안내 줄 끝에 붙여 출처를 보인다
 
 # 검사 항목의 표시 순서와 이름. Jira comment의 검사 표는 항상 이 순서로, 이 이름으로 나간다 (ID는 괄호로 덧붙인다).
 # 정의는 prompts/review.md와 prompts/types/<work type>/review.md의 검사 항목 표와 같다(A1, A3는 docs/jira-doc-agent.md의 실행 모드 표).
@@ -92,7 +92,7 @@ ALL_DOC_CHECKS = tuple(cid for ids in DOC_CHECKS.values() for cid in ids)       
 FEEDBACK_DOC_CHECKS = tuple(cid for cid in ALL_DOC_CHECKS if cid != "T8")         # CI agent가 feedback에 적는 항목. T8은 이 스크립트가 계산(check_t8)
 CELL_BREAK = " \\\\ "                                                              # Jira wiki 표 칸 안의 줄바꿈
 NO_REASON = "사유 미기재"
-VERDICT_KEY_KO = {"issueKey": "task 키", "mode": "실행 모드", "verdict": "판정", "checks": "검사 결과 목록",
+VERDICT_KEY_KO = {"issueKey": "ticket 키", "mode": "실행 모드", "verdict": "판정", "checks": "검사 결과 목록",
                   "items": "예상 산출물별 결과 목록", "extra": "초과 달성 목록", "requests": "담당자 요청 목록"}
 VERDICT_FILE_KO = "CI agent(GitHub Actions에서 실행되는 문서화 Agent)의 판정을 저장한 파일(verdict.json)"   # 실패 알림에 나가는 이름
 REVIEW_OUTPUT_FILES_KO = {"tldr.wiki": "TL;DR 본문", "comment.wiki": "검수 comment의 결과 요약"}   # 검수 모드에서 save_output.py가 verdict.json과 함께 쓰는 출력 파일과 실패 알림에 나가는 뜻
@@ -101,7 +101,7 @@ NO_VERDICT_KO = "CI agent 판정 없음"                                        
 SLACK_USERS = Path(__file__).parent.parent / "config" / "slack-users.json"   # Jira accountId -> Slack member ID
 # (검사 ID, 절 제목, 절 제목 뒤의 조치 문구). 절은 이 순서로 나간다
 ALERT_SECTIONS = [("R4", "stop 사유 미기재", "담당자: stop 사유 comment 필요"),
-                  ("A1", "영업일 기준 5일 이상 활동 없음", "담당자: 진행 상황 comment, 또는 멈춘 task면 stop 전환 필요"),
+                  ("A1", "영업일 기준 5일 이상 활동 없음", "담당자: 진행 상황 comment, 또는 멈춘 ticket이면 stop 전환 필요"),
                   ("A3", "ready-to-done 영업일 기준 3일 이상 대기", "팀장: done 전환, 또는 미루는 이유 comment 필요")]
 LEAD_ALERTS = ("A3",)   # 팀장이 할 조치의 알림. 주간 점검 Slack에만 넣고 정리 모드의 담당자 멘션 comment(apply_alerts)에서는 뺀다
 ALERT_LIMIT = 15
@@ -427,7 +427,7 @@ def failure_slack_text(mode: str, failures: list[dict], users: dict[str, str], l
     else:
         mention = "팀장(Slack 멘션 없음)"
     mode_ko = "검수 모드" if mode == "review" else "정리 모드"
-    lines = [f"[jira-doc 실패] {mode_ko} Task {len(failures)}건 처리 실패 {mention}"]
+    lines = [f"[jira-doc 실패] {mode_ko} ticket {len(failures)}건 처리 실패 {mention}"]
     for f in failures:
         name = wiki_to_slack(f"{f['key']} {f.get('title') or ''}".strip())
         head = f"<{f['url']}|{name}>" if f.get("url") else name
@@ -508,7 +508,7 @@ def validate_verdict(v: object, mode: str, key: str) -> str | None:
         if k not in v:
             return f"필수 키 없음: {k}({VERDICT_KEY_KO[k]})"
     if v["issueKey"] != key:
-        return f"issueKey(task 키) 불일치: {v['issueKey']}"
+        return f"issueKey(ticket 키) 불일치: {v['issueKey']}"
     if v["mode"] != mode:
         return f"mode(실행 모드) 불일치: {v['mode']}"
     items = v["items"]
@@ -557,7 +557,7 @@ class Summary:
         print(f"[apply] {key}: {result} {note}")
 
     def flush(self) -> None:
-        lines = ["## jira-doc 실행 결과", "", "| task | type | mode | 결과 | 비고 |", "|---|---|---|---|---|", *self.rows, "", *self.extra]
+        lines = ["## jira-doc 실행 결과", "", "| ticket | type | mode | 결과 | 비고 |", "|---|---|---|---|---|", *self.rows, "", *self.extra]
         text = "\n".join(lines) + "\n"
         if self.path:
             with open(self.path, "a", encoding="utf-8") as f:
@@ -652,7 +652,7 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
     checks = [c for c in checks if c["id"] not in script_checks] + [{"id": cid, **c} for cid, c in script_checks.items()]
     if mode == "review":
         if script_checks.get("A2", {}).get("result") == "fail" and v != "escalate":
-            changes.append(f"{check_label('A2')} 결과에 따라 {VERDICT_KO[v]}에서 검토 요청으로 바꿈: 마지막 request 전환(담당자가 완료를 요청해 task를 ready-to-done 상태로 보내는 Jira 전환) 이후 완료 기준이 바뀜")
+            changes.append(f"{check_label('A2')} 결과에 따라 {VERDICT_KO[v]}에서 검토 요청으로 바꿈: 마지막 request 전환(담당자가 완료를 요청해 ticket을 ready-to-done 상태로 보내는 Jira 전환) 이후 완료 기준이 바뀜")
             notes.append(changes[-1])
             v = "escalate"
         elif v == "pass" and (fails := [cid for cid in ("T1", "T2", "B1", "B2", "I1", "I2", "R4") if script_checks.get(cid, {}).get("result") == "fail"]):
@@ -716,7 +716,7 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
             days = list(dict.fromkeys(s["at"][:10] for s in pre.get("stops") or [] if not s.get("hasReason")))
             when = f"({', '.join(days)})" if days else ""
             r4_request = (f"stop{when}의 사유를 '{STOP_REASON_PREFIX}'로 시작하는 comment로 남긴 뒤 다시 "
-                          "request 전환(담당자가 완료를 요청해 task를 ready-to-done 상태로 보내는 Jira 전환) 필요")
+                          "request 전환(담당자가 완료를 요청해 ticket을 ready-to-done 상태로 보내는 Jira 전환) 필요")
             if r4_request not in requests:
                 requests.append(r4_request)
 
@@ -842,7 +842,7 @@ def apply_alerts(j: Jira, ctx: Path, lead: str, summ: Summary) -> None:
             allowed = {x for x in (assignee, lead) if x}
             lines = [f"* {al['message']}" for al in new]
             head = f"[~accountid:{assignee}] " if assignee else ""
-            body = agent_comment(f"{head}정리 모드(task 키 없이 실행한 문서 정리)에서 확인한 누락 항목 {len(new)}건\n" + "\n".join(lines))
+            body = agent_comment(f"{head}정리 모드(ticket 키 없이 실행한 문서 정리)에서 확인한 누락 항목 {len(new)}건\n" + "\n".join(lines))
             try:
                 j.add_comment(key, sanitize_mentions(body, allowed))
                 notified.update(al["code"] for al in new)
@@ -1098,16 +1098,16 @@ def main() -> None:
         apply_alerts(j, ctx, lead, summ)
         unlinked = load_json(ctx / "_org" / "unlinked_prs.json", [])
         if unlinked:
-            summ.extra.append(f"### 미연결 PR (최근 3일 병합, 제목에 task 키 없음): {len(unlinked)}건")
+            summ.extra.append(f"### 미연결 PR (최근 3일 병합, 제목에 ticket 키 없음): {len(unlinked)}건")
             summ.extra.extend(f"- {p['repo']} [{p['title']}]({p['url']}) by {p.get('author')}" for p in unlinked)
     failed = out / "_failed.txt"
     if failed.exists():
-        summ.extra.append("### Claude 단계가 처리하지 못한 task")
+        summ.extra.append("### Claude 단계가 처리하지 못한 ticket")
         summ.extra.append("```\n" + failed.read_text(encoding="utf-8") + "\n```")
     if failures:        # Actions Summary는 GitHub에 로그인한 누구나 볼 수 있어, Summary에는 빈 대응표로 다시 만든 본문을 남긴다
         users, warning = load_slack_users()
         result = slack_post(failure_slack_text(args.mode, failures, users, lead))
-        note = f"실패 알림 Task {len(failures)}건"
+        note = f"실패 알림 ticket {len(failures)}건"
         summ.row("-", "-", args.mode, result, f"{note}; {warning}" if warning else note)
         summ.extra += [f"### 실패 알림 (Slack {result})", "", "```", failure_slack_text(args.mode, failures, {}, lead), "```", ""]
     summ.flush()

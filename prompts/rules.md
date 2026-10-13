@@ -8,6 +8,7 @@
 - 용어
   - CI agent: 이 지시 파일을 읽고 ticket을 처리하는 Claude. GitHub Actions의 jira-doc 워크플로에서 실행된다
   - ticket: Jira에 등록된 업무 하나. work type(Task, Bug, Issue)과 관계없이 부르는 이름이다
+    - 결과로 산출하는 문서(TL;DR, 검수 comment 등 Jira에 나가는 문장)에서도 ticket으로 적고 "task"로 적지 않는다
 
 ---
 

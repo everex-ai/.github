@@ -187,9 +187,9 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
   - 실패 이유 끝에 `out/<task 키>/_agent_error.txt`의 내용이 ". 원인: …"으로 붙는다.
     - save_output.py는 구조화 출력이 없을 때 실행 결과 파일이 없으면 "실행 결과 파일 없음(Claude 문서화 단계(Actions 워크플로 3단계) 결과: …)"을, 있으면 "Claude 문서화 단계 종료 종류(subtype): …"로 result 메시지의 `subtype`(종료 종류, 예: `error_max_turns`)을 작성한다(`scripts/save_output.py`의 `no_output_reason`).
     - result 메시지의 `is_error`가 true일 때만 `result` 앞 300자를 "실패 문구"로 덧붙인다. 성공한 실행의 `result`는 Jira 기록이 담길 수 있어 옮기지 않는다.
-    - 구조화 출력은 있으나 그 task가 `tasks`에 없으면 `failed`의 이유("CI agent가 처리하지 못함: …") 또는 "구조화 출력에 이 Task 결과 없음"을 적는다(`scripts/save_output.py`의 `save_task`). `failed`의 이유는 앞 300자만 옮긴다(`failed_reasons`).
+    - 구조화 출력은 있으나 그 task가 `tasks`에 없으면 `failed`의 이유("CI agent가 처리하지 못함: …") 또는 "구조화 출력에 이 ticket 결과 없음"을 적는다(`scripts/save_output.py`의 `save_task`). `failed`의 이유는 앞 300자만 옮긴다(`failed_reasons`).
   - 한 실행에서 실패한 task(Jira 오류로 반영하지 못한 task 포함)를 모아 Slack 한 건으로 팀장에게 알린다(`scripts/apply.py`의 `failure_slack_text`, `main`).
-    - 첫 줄은 "[jira-doc 실패] 검수 모드(또는 정리 모드) Task n건 처리 실패"와 팀장 멘션이다.
+    - 첫 줄은 "[jira-doc 실패] 검수 모드(또는 정리 모드) ticket n건 처리 실패"와 팀장 멘션이다.
     - task마다 Jira 링크, task 키, 제목, 원인이 한 줄씩 나오고, 마지막 줄에 GitHub Actions 실행 링크가 나온다.
     - Summary 탭에는 Slack 멤버 ID 대신 "팀장(Slack 멘션 없음)"으로 적은 사본을 남긴다(`scripts/apply.py`의 `main`).
   - 실패가 하나라도 있으면 apply.py가 종료 코드 1로 끝나 Actions 실행 상태가 failure가 된다(`scripts/apply.py`의 `main`).
@@ -199,7 +199,7 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
 - 사유 없이 stop했다가 다시 진행한 task는 stop 사유 comment (R4)가 보완 필요가 되어 검수 결과가 보류가 된다(`scripts/precheck.py`의 `check_r4`, `scripts/apply.py`의 `apply_issue`).
   - 늦은 사유: stop 뒤 다음 상태 변경 이후에 남긴, "stop 사유:"로 시작하는 사람 comment. precheck.py는 이 comment를 stop 뒤 언제 남겼든 그 stop의 사유로 센다(`scripts/precheck.py`의 `stop_events`).
   - "stop 사유:" 머리말을 요구하는 이유는 다시 진행한 뒤에 남긴 진행 상황 comment를 stop 사유로 세지 않기 위해서다. precheck.py는 다음 상태 변경 뒤의 사람 comment 중 머리말이 있는 comment만 확인한다(`scripts/precheck.py`의 `stop_events`).
-  - 보류의 요청에는 "stop(<날짜>)의 사유를 'stop 사유:'로 시작하는 comment로 남긴 뒤 다시 request 전환(담당자가 완료를 요청해 task를 ready-to-done 상태로 보내는 Jira 전환) 필요"가 들어간다(`scripts/apply.py`의 `apply_issue`).
+  - 보류의 요청에는 "stop(<날짜>)의 사유를 'stop 사유:'로 시작하는 comment로 남긴 뒤 다시 request 전환(담당자가 완료를 요청해 ticket을 ready-to-done 상태로 보내는 Jira 전환) 필요"가 들어간다(`scripts/apply.py`의 `apply_issue`).
   - 늦은 사유를 남기고 다시 request 전환하면 R4는 만족이 된다. 검수 comment의 검사 표에는 R4 내용 칸에 "늦게 기록", stop 날짜, 늦은 사유 comment 링크가 표시된다(`scripts/precheck.py`의 `check_r4`).
   - 이때 검수 결과는 R4가 만족인 상태에서 위 표의 조건대로 정해진다(`scripts/apply.py`의 `apply_issue`, `recheck_verdict`).
   - 통과와 검토 요청의 Slack 알림에도 R4의 "늦게 기록" 줄이 들어가 팀장이 확인할 수 있다(`scripts/apply.py`의 `review_slack_reasons`).
@@ -220,7 +220,7 @@ jira-doc의 파일은 아래 표와 같다. Actions 워크플로에서 Jira에 �
    - 2단계: `[precheck] INNO-29 (Task): 예상 산출물 n개, 실패 …`(`scripts/precheck.py`의 `run_issue_dir`)
 3. Summary 탭의 "jira-doc 실행 결과" 표에서 Jira 반영을 확인한다.
    - 행은 `| INNO-29 | Task | review | 통과 | … |` 꼴이고, 결과 칸은 통과, 검토 요청, 보류, 실패 중 하나다(`scripts/apply.py`의 `Summary.row`).
-   - 실패 행이 있으면 Slack 실패 알림 한 건이 가고 실행 상태가 failure가 된다. 마지막 행 `| - | - | review | 전송 완료 | 실패 알림 Task n건 |`이 실패 알림 전송 결과다(`scripts/apply.py`의 `main`).
+   - 실패 행이 있으면 Slack 실패 알림 한 건이 가고 실행 상태가 failure가 된다. 마지막 행 `| - | - | review | 전송 완료 | 실패 알림 ticket n건 |`이 실패 알림 전송 결과다(`scripts/apply.py`의 `main`).
 4. INNO-29를 열어 아래를 확인한다.
    - TL;DR과 결과 산출물 구역이 바뀌었고, 진행 배경과 예상 산출물은 그대로다. apply.py는 description에서 결과 산출물 구역만 바꾼다(`scripts/jira_api.py`의 `set_section`, `scripts/apply.py`의 `apply_issue`).
    - 첫 줄이 `[ai-doc-agent]`인 검수 comment가 달렸다.
