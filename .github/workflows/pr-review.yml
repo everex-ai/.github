@@ -4,7 +4,7 @@ name: pr-review
 #   1단 스크립트: collect -> classify -> precheck   (반려면 Claude를 부르지 않는다)
 #   2단 Claude  : claude-code-action (orchestrator + subagent 4개, plugins/everex-review). 로컬은 run_claude.sh
 #   3단 스크립트: apply (PR comment, 라벨. gate=true면 반려/오류 시 check 실패)
-# 문서: docs/pr-review-agent.md
+# 문서: docs/pr-review-agent/README.md
 
 on:
   workflow_call:

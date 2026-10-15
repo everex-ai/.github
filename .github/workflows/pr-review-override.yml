@@ -3,7 +3,7 @@ name: pr-review-override
 # review/override 라벨 처리 (재사용 워크플로). 대상 repo의 호출 yml(workflow-templates/pr-review-override.yml)이
 # pull_request labeled 이벤트에서 부른다. pr-review 와 따로 두는 이유: 같은 워크플로에서 labeled 를 받으면
 # 무관한 라벨에서 검수 job이 skipped 되고, skipped 는 필수 check에서 통과로 취급되어 게이트를 우회할 수 있다.
-# 문서: docs/pr-review-agent.md
+# 문서: docs/pr-review-agent/README.md
 
 on:
   workflow_call:

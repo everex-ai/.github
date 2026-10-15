@@ -147,7 +147,8 @@ def test_missing_task_gets_no_verdict_defaults_and_apply_fails(render, so, ja, t
         encoding="utf-8"
     ).strip() == "구조화 출력에 이 ticket 결과 없음"
     j, summ, failure = apply_one(ja, render, tmp_path, out)
-    assert j.comments == [] and j.fields == {} and j.transitioned_to == [] and j.props_set == []
+    assert j.comments == [] and j.fields == {}
+    assert [(k, set(p), p["runs"][0]["verdict"]) for k, p in j.props_set] == [("INNO-17", {"runs"}, "failed")]
     assert failure["reason"] == "CI agent 판정 없음. 원인: 구조화 출력에 이 ticket 결과 없음"
     assert failure["key"] == "INNO-17" and failure["title"] == "제목" and failure["url"].endswith("/browse/INNO-17")
     assert summ.rows[0].startswith("| INNO-17 | Task | review | 실패 |")
@@ -412,3 +413,179 @@ def test_digest_task_without_expected_items_fails_when_exec_file_is_missing(rend
     with pytest.raises(SystemExit) as e:
         ja.main()
     assert e.value.code == 1
+
+
+# ---------------------------------------------------------------------- Claude 사용량
+MODEL_USAGE = {
+    "claude-sonnet-5-5": {
+        "inputTokens": 100,
+        "outputTokens": 200,
+        "cacheReadInputTokens": 3000,
+        "cacheCreationInputTokens": 400,
+    },
+    "claude-haiku-5": {
+        "inputTokens": 1,
+        "outputTokens": 2,
+        "cacheReadInputTokens": 3,
+        "cacheCreationInputTokens": 4,
+    },
+}
+USAGE = {"input_tokens": 7, "output_tokens": 8, "cache_creation_input_tokens": 9, "cache_read_input_tokens": 10}
+
+
+def write_usage_exec(work: Path, name: str = "usage-exec.json", **fields) -> str:
+    """result 메시지에 사용량 필드를 넣은 실행 결과 파일을 만들고 경로를 돌려준다."""
+    msg = {"type": "result", "subtype": "success", "is_error": False, "num_turns": 5} | fields
+    path = work / name
+    path.write_text(json.dumps([{"type": "system"}, msg]), encoding="utf-8")
+    return str(path)
+
+
+def test_usage_is_read_from_model_usage(so):
+    got = so.usage_of([{"type": "result", "total_cost_usd": 0.5, "modelUsage": MODEL_USAGE, "usage": USAGE}])
+    assert got == {
+        "costUsd": 0.5,
+        "tokens": {"input": 101, "output": 202, "cacheWrite": 404, "cacheRead": 3003},
+        "models": ["claude-sonnet-5-5", "claude-haiku-5"],
+    }
+
+
+def test_usage_falls_back_to_usage_without_model_usage(so):
+    for msg in ({"usage": USAGE}, {"modelUsage": {}, "usage": USAGE}):
+        got = so.usage_of([{"type": "result", **msg}])
+        assert got == {
+            "costUsd": None,
+            "tokens": {"input": 7, "output": 8, "cacheWrite": 9, "cacheRead": 10},
+            "models": [],
+        }
+
+
+def test_usage_sums_result_messages_and_ignores_bad_values(so):
+    results = [
+        {"total_cost_usd": 0.25, "usage": USAGE},
+        {"total_cost_usd": "비용", "usage": {"input_tokens": "많음", "output_tokens": 1}},
+    ]
+    got = so.usage_of(results)
+    assert got["costUsd"] == 0.25 and got["tokens"] == {"input": 7, "output": 9, "cacheWrite": 9, "cacheRead": 10}
+    assert so.usage_of([]) == {
+        "costUsd": None,
+        "tokens": {"input": 0, "output": 0, "cacheWrite": 0, "cacheRead": 0},
+        "models": [],
+    }
+
+
+def test_exec_summary_keeps_workflow_lines_and_adds_token_line(so, tmp_path):
+    denials = [
+        {"tool_name": "Write", "tool_input": {"file_path": "out/INNO-17/tldr.wiki"}},
+        {"tool_name": "Bash", "tool_input": {"command": SECRET}},
+        {"tool_name": "Edit", "tool_input": {"file_path": "ctx/x"}},
+    ]
+    path = write_usage_exec(
+        tmp_path, is_error=True, subtype="error_max_turns", total_cost_usd=1.5, result="실패 문구",
+        permission_denials=denials, modelUsage=MODEL_USAGE,
+    )  # fmt: skip
+    assert so.exec_summary(path) == [
+        "is_error=True subtype=error_max_turns num_turns=5 total_cost_usd=1.5",
+        "permission_denials=Write,Bash,Edit",
+        "denied Write: out/INNO-17/tldr.wiki",
+        "denied Edit: ctx/x",
+        "result=실패 문구",
+        "tokens input=101 output=202 cache_write=404 cache_read=3003",
+    ]
+    ok = write_usage_exec(tmp_path, "ok.json", total_cost_usd=0.1, result=SECRET, usage=USAGE)
+    assert so.exec_summary(ok) == [
+        "is_error=False subtype=success num_turns=5 total_cost_usd=0.1",
+        "permission_denials=",
+        "tokens input=7 output=8 cache_write=9 cache_read=10",
+    ]
+
+
+def test_exec_summary_cli_prints_lines_without_other_arguments(so, tmp_path, capsys):
+    path = write_usage_exec(tmp_path, total_cost_usd=0.1, result=SECRET, usage=USAGE)
+    so.main(["--exec-summary", path])  # --mode 없이 동작함
+    out = capsys.readouterr().out
+    assert out.splitlines()[-1] == "tokens input=7 output=8 cache_write=9 cache_read=10" and SECRET not in out
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("kind", ["missing", "empty", "no_result"])
+def test_exec_summary_cli_prints_nothing_for_missing_or_empty_file(so, tmp_path, capsys, kind):
+    path = tmp_path / "exec.json"
+    if kind == "empty":
+        path.write_text("", encoding="utf-8")
+    elif kind == "no_result":
+        path.write_text(json.dumps([{"type": "system"}]), encoding="utf-8")
+    so.main(["--exec-summary", str(path)])
+    assert capsys.readouterr().out == ""
+
+
+def test_exec_summary_runs_as_script_with_exit_code_0(tmp_path):
+    import subprocess
+
+    path = write_usage_exec(tmp_path, usage=USAGE)
+    for target in (path, str(tmp_path / "none.json")):
+        res = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "save_output.py"), "--exec-summary", target],
+            capture_output=True, text=True, cwd=tmp_path,
+        )  # fmt: skip
+        assert res.returncode == 0
+    assert "tokens input=7" in subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "save_output.py"), "--exec-summary", path],
+        capture_output=True, text=True, cwd=tmp_path,
+    ).stdout  # fmt: skip
+
+
+def test_save_appends_usage_entry_and_retry_marks_it(render, so, tmp_path):
+    make_ctx(render, tmp_path)
+    agent = {"tasks": [task("INNO-17", agent_verdict(render))], "failed": []}
+    first = write_usage_exec(
+        tmp_path, "first.json", structured_output=agent, total_cost_usd=0.5, modelUsage=MODEL_USAGE
+    )
+    out = run_save(so, tmp_path, exec_file=first)
+    entries = json.loads((out / "_usage.json").read_text(encoding="utf-8"))
+    assert entries == [
+        {
+            "retry": False,
+            "costUsd": 0.5,
+            "tokens": {"input": 101, "output": 202, "cacheWrite": 404, "cacheRead": 3003},
+            "models": ["claude-sonnet-5-5", "claude-haiku-5"],
+        }
+    ]
+    second = write_usage_exec(tmp_path, "second.json", structured_output=agent, total_cost_usd=0.25, usage=USAGE)
+    so.main(["--ctx", str(tmp_path / "ctx"), "--out", str(out), "--mode", "review", "--exec-file", second, "--retry"])
+    entries = json.loads((out / "_usage.json").read_text(encoding="utf-8"))
+    assert [e["retry"] for e in entries] == [False, True]
+    assert entries[1] == {
+        "retry": True,
+        "costUsd": 0.25,
+        "tokens": {"input": 7, "output": 8, "cacheWrite": 9, "cacheRead": 10},
+        "models": [],
+    }
+
+
+def test_save_without_exec_file_adds_no_usage_entry(render, so, tmp_path):
+    make_ctx(render, tmp_path)
+    out = run_save(so, tmp_path, exec_file=str(tmp_path / "none.json"))
+    assert not (out / "_usage.json").exists()
+
+
+def test_apply_sums_usage_file(ja, tmp_path):
+    (tmp_path / "_usage.json").write_text(json.dumps(USAGE_ENTRIES), encoding="utf-8")
+    assert ja.usage_total(tmp_path) == {
+        "retry": True,
+        "costUsd": 0.75,
+        "tokens": {"input": 11, "output": 22, "cacheWrite": 33, "cacheRead": 44},
+        "models": ["a", "b"],
+    }
+    assert ja.usage_total(tmp_path / "none") == {
+        "retry": False,
+        "costUsd": None,
+        "tokens": {"input": 0, "output": 0, "cacheWrite": 0, "cacheRead": 0},
+        "models": [],
+    }
+
+
+USAGE_ENTRIES = [
+    {"retry": False, "costUsd": 0.25, "tokens": {"input": 10, "output": 20, "cacheWrite": 30, "cacheRead": 40}, "models": ["a"]},
+    {"retry": True, "costUsd": 0.5, "tokens": {"input": 1, "output": 2, "cacheWrite": 3, "cacheRead": 4}, "models": ["a", "b"]},
+]  # fmt: skip
