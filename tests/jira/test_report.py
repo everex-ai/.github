@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib.util
 import re
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -61,6 +62,24 @@ def rp(ja):
 def project(monkeypatch):
     monkeypatch.setenv("JIRA_PROJECT_KEY", "INNO")
     monkeypatch.setenv("GH_ORG", "everex-ai")
+
+
+@pytest.fixture(autouse=True)
+def clock(rp, monkeypatch):
+    """Report의 실행 시각 기본값(dt.datetime.now)을 2027-01-01 09:00(한국 시간)으로 고정한다.
+
+    매월 1일 cron 실행처럼 2026년 대상 달이 모두 끝난 뒤 시각이라 팀장 확인 대기는 대상 기간 끝까지 센다.
+    report.py의 dt만 바꾸고 datetime 모듈 자체는 바꾸지 않는다.
+    """
+    real = rp.dt
+    fixed = real.datetime(2027, 1, 1, 9, tzinfo=rp.KST)
+
+    class Clock(real.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed.astimezone(tz) if tz else fixed.replace(tzinfo=None)
+
+    monkeypatch.setattr(rp, "dt", types.SimpleNamespace(**{**vars(real), "datetime": Clock}))
 
 
 @pytest.fixture(autouse=True)
@@ -121,10 +140,19 @@ def run(when: str, no: int | None = 1, cost: float | None = 1.0, mode: str = "re
 
 
 def ticket(
-    itype="Task", who=None, parent=None, desc="", changelog=(), comments=(), runs=(), created=None, status=None
+    itype="Task",
+    who=None,
+    parent=None,
+    desc="",
+    changelog=(),
+    comments=(),
+    runs=(),
+    created=None,
+    status=None,
+    title="",
 ) -> dict:
-    """가짜 Jira의 ticket 하나. created는 'YYYY-MM-DDTHH:MM'(한국 시간), status는 지금 상태 이름."""
-    fields = {"issuetype": {"name": itype}, "assignee": who, "parent": parent, "description": desc}
+    """가짜 Jira의 ticket 하나. created는 'YYYY-MM-DDTHH:MM'(한국 시간), status는 지금 상태 이름, title은 제목."""
+    fields = {"issuetype": {"name": itype}, "assignee": who, "parent": parent, "description": desc, "summary": title}
     fields |= {"created": ts(created) if created else None, "status": {"name": status} if status else None}
     return {"fields": fields, "changelog": list(changelog), "comments": list(comments), "runs": list(runs)}
 
@@ -214,6 +242,7 @@ def sample(ja) -> dict[str, dict]:
     return {
         "INNO-101": ticket(
             created="2026-11-20T09:00",
+            title="PoseNet-S 경량화로 엣지 기기 실시간 추론 달성",
             status="Done",
             who=KIM,
             parent=KR23,
@@ -240,6 +269,7 @@ def sample(ja) -> dict[str, dict]:
         ),
         "INNO-102": ticket(
             created="2026-11-25T09:00",
+            title="검색 결과 & 정렬 개선",
             status="Done",
             who=LEE,
             parent=KR23,
@@ -260,6 +290,7 @@ def sample(ja) -> dict[str, dict]:
         ),
         "INNO-103": ticket(
             created="2026-11-01T09:00",
+            title="로그인 실패 버그",
             status="In Progress",
             itype="Bug",
             who=PARK,
@@ -626,17 +657,17 @@ def test_kr_rows(rp):
     ]
 
 
-SECTIONS = ["*팀장 업무*", "*팀 전체*", "*팀원별*", "*Claude 사용량(API 환산 비용)*"]
+SECTIONS = ["*팀장 업무*", "*팀 전체*", "*팀원별*", "*Claude 활용 요약*"]
 DEF_LINE = "지표 정의: docs/jira-doc-agent/alerts.md"
 
 
 def assert_shape(msg: str, title: str, span: str) -> None:
-    """메시지 하나의 공통 규칙: 제목, 대상 기간, 절 순서, 끝 줄, 30줄 이내, 줄마다 50자 이내."""
+    """메시지 하나의 공통 규칙: 제목, 대상 기간, 절 순서, 끝 줄, 40줄 이내, 줄마다 50자 이내."""
     lines = msg.splitlines()
     assert lines[:2] == [title, f"대상 기간: {span}"]
     assert [x for x in lines if x.startswith("*")] == SECTIONS
     assert lines[-1] == DEF_LINE
-    assert len(lines) <= 30
+    assert len(lines) <= 40
     assert_line_length(msg)
 
 
@@ -654,8 +685,7 @@ def test_bundles_by_month_and_empty_data(rp, m):
     body = "\n".join(msgs)
     assert "기록 없음임" not in body
     assert "PR 검색 실패" not in body
-    assert block(msgs[0], "*팀장 업무*", 5) == [
-        "• 피드백 대기 시간: -",
+    assert block(msgs[0], "*팀장 업무*", 4) == [
         "• 판정 일치율: -",
         "    ◦ 최근 20건: -",
         "• 팀장 확인 대기: 0건",
@@ -671,8 +701,20 @@ def test_bundles_by_month_and_empty_data(rp, m):
         "• stop 사유 기록률: -",
     ]
     assert block(msgs[0], "*팀원별*", 2)[1] == "• 기록 없음"
-    assert "• 사용량 많음: 판정 불가(전월 검수 실행 0건 < 10건)" in msgs[0]
-    since = {1: "2025-11-30", 3: "2025-12-31", 6: "2026-03-31", 9: "2026-06-30", 11: "2026-09-30", 12: "2025-12-31"}
+    for i, msg in enumerate(msgs):
+        want = [
+            "• 자동 검수 소요 시간: -",
+            "• API 환산 금액: 0.00 USD(직전 기록 없음)",
+            "• 토큰: input 0, output 0",
+            "    ◦ cache 쓰기(지시·기록 저장) 0",
+            "    ◦ cache 읽기(저장분 재사용) 0",
+            "• Claude 사용 ticket Top3: -",
+        ]
+        if i == 2:  # 연간 묶음
+            want.insert(2, "    ◦ 분기별: Q1 -, Q2 -, Q3 -, Q4 -")
+        assert block(msg, "*Claude 활용 요약*", len(want)) == want
+    # 읽기 시작 달: 전월, 분기 묶음이 붙는 달은 전 분기 첫 달, 연간 묶음이 붙는 달은 전년 1월(JQL은 하루 앞선 날)
+    since = {1: "2025-11-30", 3: "2025-09-30", 6: "2025-12-31", 9: "2026-03-31", 11: "2026-09-30", 12: "2024-12-31"}
     if m in since:
         assert fake.jql[0] == (
             "project = INNO AND issuetype in (Task, Bug, Issue) "
@@ -722,7 +764,7 @@ def test_state_at(rp):
 
 
 def test_ticket_overview_update_records_and_causes(rp, ja):
-    """업데이트 기록 다섯 가지를 하나씩 세고, 업데이트 없는 기존 ticket은 기간 끝 상태로 원인을 나눔."""
+    """업데이트 기록 다섯 가지를 하나씩 세고, 업데이트 없는 기존 ticket은 기간 끝 상태 이름별로 셈."""
     old = "2026-11-01T09:00"
     specs = {
         "COMMENT": ticket(created=old, status="In Progress", comments=[human("2026-12-03T10:00")]),
@@ -730,13 +772,13 @@ def test_ticket_overview_update_records_and_causes(rp, ja):
         "STATUS": ticket(created=old, status="done", changelog=[change("2026-12-03T10:00", "ready-to-done", "done")]),
         "SUB": ticket(created=old, status="In Progress"),
         "INNO-5": ticket(created=old, status="In Progress"),  # PR 추가
-        "AGENT": ticket(  # agent comment(검수 comment)만 있음 -> 업데이트 아님, 담당자
+        "AGENT": ticket(  # agent comment(검수 comment)만 있음 -> 업데이트 아님, In Progress
             created=old, status="In Progress", comments=[review(ja, "2026-12-03T10:00", "pass", checks(T1="pass"))]
         ),
-        "WAIT": ticket(  # 11월 request 전환 뒤 기록 없음 -> 팀장 확인 대기
+        "WAIT": ticket(  # 11월 request 전환 뒤 기록 없음 -> ready-to-done
             created=old, status="ready-to-done", changelog=[change("2026-11-20T10:00", "In Progress", "ready-to-done")]
         ),
-        "TODO": ticket(created=old, status="To Do", comments=[human("2026-11-30T23:59")]),  # 11월 comment -> 기타
+        "TODO": ticket(created=old, status="To Do", comments=[human("2026-11-30T23:59")]),  # 11월 comment -> To Do
         "DONE": ticket(created=old, status="done", changelog=[change("2026-11-30T10:00", "In Progress", "done")]),
         "BACKLOG": ticket(  # 1일 0시 Backlog, 12월에 다시 진행 -> 기존 ticket 아님
             created=old, status="In Progress", changelog=[change("2026-12-05T10:00", "Backlog", "In Progress")]
@@ -763,7 +805,7 @@ def test_ticket_overview_update_records_and_causes(rp, ja):
         assert not rp.updated_in(by_key[key], sp), key
     ov = rp.ticket_overview(tickets, sp, sp[0])
     assert (ov.existing, ov.updated, ov.updated_done) == (8, 5, 1)
-    assert dict(ov.idle) == {"팀장 확인 대기": 1, "담당자": 1, "기타": 1}
+    assert dict(ov.idle) == {"ready-to-done": 1, "In Progress": 1, "To Do": 1}
     assert dict(ov.new) == {"To Do": 1, "In Progress": 2, "done": 1}
     # PR 검색이 실패하면(PR 시각 없음) PR 추가만 있는 ticket은 업데이트 없음
     rp.attach_updates(tickets, {}, {})
@@ -796,8 +838,11 @@ def test_max_request_count_and_members(rp, ja):
     assert "박담당" in {r.name for r in rp.member_rows(tickets, sp, include=["acc-park"])}
 
 
-def test_lead_wait_and_confirm(rp):
-    """팀장 확인 대기는 기간 끝 ready-to-done ticket, 팀장 확인 시간은 팀장 계정의 전환만 셈."""
+def test_lead_wait_and_confirm(rp, ja):
+    """팀장 확인 대기는 기간 끝 ready-to-done ticket, 팀장 확인 시간은 팀장 계정의 전환만 셈.
+
+    팀장 확인 시간에서 자동 보류 전환(진입 뒤 전환 전 마지막 검수 comment가 자동 보류)은 뺌.
+    """
     rtd, ip = "ready-to-done", "In Progress"
     tickets = load(
         rp,
@@ -826,14 +871,68 @@ def test_lead_wait_and_confirm(rp):
                 status="done",
                 changelog=[change("2026-11-30T10:00", ip, rtd, KIM), change("2026-12-01T10:00", rtd, "done", LEAD)],
             ),
+            "HOLD": ticket(  # 자동 보류 검수 뒤 팀장 계정 전환은 뺌. 다음 진입의 보통 보류 뒤 전환(30분)은 셈
+                status=ip,
+                changelog=[
+                    change("2026-12-07T09:00", ip, rtd, KIM),
+                    change("2026-12-07T09:11", rtd, ip, LEAD),
+                    change("2026-12-08T09:00", ip, rtd, KIM),
+                    change("2026-12-08T09:30", rtd, ip, LEAD),
+                ],
+                comments=[
+                    review(ja, "2026-12-07T09:05", "pass", checks(T1="pass")),
+                    review(ja, "2026-12-07T09:10", "fix", checks(T1="fail"), HOLD_NOTE),
+                    review(ja, "2026-12-08T09:10", "fix", checks(T1="fail")),
+                ],
+            ),
+            "LATE": ticket(  # 실제 순서: 자동 보류 전환(09:05) 뒤에 auto_hold 검수 comment(09:06) -> 뺌
+                status=ip,
+                changelog=[change("2026-12-09T09:00", ip, rtd, KIM), change("2026-12-09T09:05", rtd, ip, LEAD)],
+                comments=[review(ja, "2026-12-09T09:06", "fix", checks(T1="fail"), HOLD_NOTE)],
+            ),
         },
     )
     sp = month(rp, "2026-12")
     assert rp.lead_wait(tickets, sp[1]) == (3, 5)
     assert rp.lead_wait([], sp[1]) == (0, 0)
-    assert sorted(rp.lead_confirm_minutes(tickets, sp, LEAD_ID)) == [60, 180, 1440]
+    assert sorted(rp.lead_confirm_minutes(tickets, sp, LEAD_ID)) == [30, 60, 180, 1440]
     assert rp.lead_confirm_minutes(tickets, sp, "") == []
     assert rp.business_days(rp.dt.datetime(2026, 12, 4, 18, tzinfo=rp.KST), sp[1]) == 19  # precheck와 같은 규칙
+
+
+def test_lead_wait_counts_until_now(rp):
+    """달 중간 실행이면 팀장 확인 대기의 최장 영업일을 실행 시각까지만 셈. 실행 시각 뒤 진입과 생성은 뺌."""
+    rtd, ip = "ready-to-done", "In Progress"
+    tickets = load(
+        rp,
+        {
+            "W1": ticket(created="2026-11-02T09:00", status=rtd, changelog=[change("2026-12-01T09:00", ip, rtd, KIM)]),
+            "W2": ticket(created="2026-11-02T09:00", status=rtd, changelog=[change("2026-12-20T09:00", ip, rtd, KIM)]),
+            "NEW": ticket(created="2026-12-15T09:00", status=rtd),
+        },
+    )
+    mid = rp.Report(tickets, "2026-12", LEAD_ID, now=rp.dt.datetime(2026, 12, 10, 12, tzinfo=rp.KST))
+    assert "• 팀장 확인 대기: 1건(최장 7영업일)" in mid.monthly_message()  # 12-02–12-10의 영업일
+    assert "- 팀장 확인 대기: 1건(최장 7영업일)" in mid.summary_lines()
+    full = rp.Report(tickets, "2026-12", LEAD_ID)  # 실행 시각 2027-01-01(clock fixture): 기간 끝까지 셈
+    assert "• 팀장 확인 대기: 3건(최장 22영업일)" in full.monthly_message()  # 12-02–12-31의 영업일
+
+
+def test_idle_status_names(rp):
+    """업데이트 없음은 기간 끝 상태 이름으로 STATUS_ORDER 순(목록 밖 상태는 뒤에 이름 순), 두 줄 이내로 적음."""
+    old = "2026-10-01T09:00"
+    names = ["QA", "ready-to-done", "To Do", "In Progress", "In Progress"]
+    tickets = load(rp, {f"INNO-{i}": ticket(created=old, status=n) for i, n in enumerate(names)})
+    lines = rp.Report(tickets, "2026-12", LEAD_ID).overview_lines(month(rp, "2026-12"))
+    assert lines[2:4] == ["    ◦ 업데이트 없음 5개: To Do 1, In Progress 2", "    ◦ ready-to-done 1, QA 1"]
+    many = [f"상태{i:02d}" for i in range(12)]
+    tickets = load(rp, {f"INNO-{i}": ticket(created=old, status=n) for i, n in enumerate(many)})
+    lines = rp.Report(tickets, "2026-12", LEAD_ID).overview_lines(month(rp, "2026-12"))
+    assert lines[2:5] == [
+        "    ◦ 업데이트 없음 12개: 상태00 1, 상태01 1, 상태02 1, 상태03 1",
+        "    ◦ 상태04 1, 상태05 1, 상태06 1, 상태07 1, 상태08 1, 외 3종",
+        "• 새 ticket 0개",
+    ]
 
 
 def test_pr_search_failure(rp, sample, monkeypatch, no_gh):
@@ -867,7 +966,7 @@ def test_pr_search_failure(rp, sample, monkeypatch, no_gh):
     assert block(msgs[0], "*팀 전체*", 4) == [
         "• 기존 ticket 10개",
         "    ◦ 업데이트 6개(그중 done 전환 2개)",  # PR 추가만 있는 INNO-113이 빠짐
-        "    ◦ 업데이트 없음 4개: 팀장 확인 대기 1, 담당자 3",
+        "    ◦ 업데이트 없음 4개: In Progress 3, ready-to-done 1",
         "• PR 검색 실패: PR 추가는 업데이트에서 뺌",
     ]
     assert all("PR 검색 실패" not in m for m in msgs[1:])
@@ -875,9 +974,9 @@ def test_pr_search_failure(rp, sample, monkeypatch, no_gh):
 
 
 def test_many_members_fold_into_others(rp, ja):
-    """담당자가 많으면 메시지가 30줄을 넘지 않게 앞 담당자만 적고 나머지는 "외 n명"으로 줄임."""
+    """담당자가 많으면 메시지가 40줄을 넘지 않게 앞 담당자만 적고 나머지는 "외 n명"으로 줄임."""
     people = [
-        {"accountId": f"acc-{i:02d}", "displayName": f"담당{i:02d}", "accountType": "atlassian"} for i in range(20)
+        {"accountId": f"acc-{i:02d}", "displayName": f"담당{i:02d}", "accountType": "atlassian"} for i in range(30)
     ]
     specs = {
         f"INNO-{i + 1}": ticket(who=who, comments=[review(ja, "2026-12-03T10:00", "pass", checks(T1="pass"))])
@@ -885,12 +984,12 @@ def test_many_members_fold_into_others(rp, ja):
     }
     for msg in rp.run_report(FakeJira(specs), "2026-12", LEAD_ID, Summ()):
         lines = msg.splitlines()
-        assert len(lines) <= 30
+        assert len(lines) <= 40
         assert_line_length(msg)
         shown = [x for x in lines if x.startswith("• 담당")]
         rest = [x for x in lines if x.startswith("• 외 ")]
         assert len(rest) == 1
-        assert len(shown) + int(re.fullmatch(r"• 외 (\d+)명", rest[0]).group(1)) == 20
+        assert len(shown) + int(re.fullmatch(r"• 외 (\d+)명", rest[0]).group(1)) == 30
         assert shown[0].startswith("• 담당00: 1/1")
 
 
@@ -915,7 +1014,7 @@ def test_description_edit_outside_deliverables_only(rp):
 
 
 def test_new_ticket_statuses_and_worst_case_lines(rp):
-    """새 ticket 상태가 많아도 줄마다 50자 이내이고, 선택 줄이 모두 나와도 메시지는 30줄 이내."""
+    """새 ticket 상태가 많아도 줄마다 50자 이내이고, 하위 줄은 두 줄 이내."""
     statuses = ["To Do", "In Progress", "ready-to-done", "done", "Backlog"]
     five = {f"INNO-{i}": ticket(created="2026-12-10T10:00", status=st) for i, st in enumerate(statuses, 1)}
     monthly = rp.run_report(FakeJira(five), "2026-11", LEAD_ID, Summ())[0]  # 12월 생성: 11월 보고에는 안 나옴
@@ -928,8 +1027,12 @@ def test_new_ticket_statuses_and_worst_case_lines(rp):
     assert_line_length(monthly)
 
 
-def test_worst_case_stays_within_30_lines(rp, ja, monkeypatch):
-    """검색 상한, PR 상한, 비용 기록 없음, 늘어난 갈래 네 개, 상태 12종, 담당자 20명이 모두 나와도 30줄 이내."""
+def test_worst_case_stays_within_40_lines(rp, ja, monkeypatch):
+    """선택 줄이 모두 나와도 월간 묶음은 40줄이고, 팀원별 절에 담당자 한 명과 "외 n명"이 남음.
+
+    선택 줄: 업데이트 없음 두 줄, PR 상한, 새 ticket 하위 두 줄, 검색 상한, 비용 기록 없음, Top3 세 ticket.
+    담당자는 20명이다.
+    """
     monkeypatch.setattr(rp, "SEARCH_LIMIT", 1)
     people = [
         {"accountId": f"acc-{i:02d}", "displayName": f"담당{i:02d}", "accountType": "atlassian"} for i in range(20)
@@ -939,34 +1042,49 @@ def test_worst_case_stays_within_30_lines(rp, ja, monkeypatch):
         f"INNO-{i + 1}": ticket(who=who, comments=first, runs=[run("2026-11-05T10:00", 1, 0.01)])
         for i, who in enumerate(people)
     }
-    specs["INNO-90"] = ticket(
-        runs=[
-            run("2026-12-02T10:00", 1, 1.0),
-            run("2026-12-03T10:00", 2, 1.0),
-            run("2026-12-04T10:00", 3, 1.0, verdict="failed"),
-            run("2026-12-05T10:00", None, 1.0, mode="digest", verdict="digest"),
-            run("2026-12-06T10:00", 4, None),
-        ]
-    )
+    runs = [
+        run("2026-12-02T10:00", 1, 1.0),
+        run("2026-12-03T10:00", 2, 1.0),
+        run("2026-12-04T10:00", 3, 1.0, verdict="failed"),
+        run("2026-12-05T10:00", None, 1.0, mode="digest", verdict="digest"),
+        run("2026-12-06T10:00", 4, None),
+    ]
+    specs |= {f"INNO-{90 + i}": ticket(title="가" * 30, runs=runs) for i in range(3)}
     names = ["To Do", "In Progress", "ready-to-done", "done", "Backlog", "Deleted", "QA", "Review", "Hold"]
     names += ["Blocked", "Design", "Testing"]
     specs |= {f"INNO-{100 + i}": ticket(created="2026-12-10T10:00", status=n) for i, n in enumerate(names)}
+    # 업데이트 없는 기존 ticket: 진행 상태 9종
+    idle = [n for n in names if n not in ("done", "Backlog", "Deleted")]
+    specs |= {f"INNO-{200 + i}": ticket(created="2026-10-01T09:00", status=n) for i, n in enumerate(idle)}
     prs = [{"title": "x", "createdAt": "2026-12-01T00:00:00Z"}] * 1000
     msgs = rp.run_report(FakeJira(specs), "2026-12", LEAD_ID, Summ(), pr_search=lambda *a: prs)
     monthly = msgs[0]
     assert "• PR 검색이 상한 1000건에 닿음" in monthly
     assert "• 검색 결과 상한 1개에 닿음: 빠진 ticket 있을 수 있음" in monthly
+    assert block(monthly, "    ◦ 업데이트 0개(그중 done 전환 0개)", 3) == [
+        "    ◦ 업데이트 없음 9개: To Do 1, In Progress 1",
+        "    ◦ ready-to-done 1, Blocked 1, Design 1, Hold 1, 외 3종",
+        "• PR 검색이 상한 1000건에 닿음",
+    ]
     new = block(monthly, "• 새 ticket 12개", 3)
     assert re.search(r", 외 \d+종$", new[1]) and not new[2].startswith("    ◦")  # 하위 줄 두 줄 이내
-    assert "    ◦ 비용 기록 없는 실행 1건은 0 USD로 셈" in monthly
-    assert len([x for x in monthly.splitlines() if x.startswith("    ◦ ") and "+" in x]) == 2  # 늘어난 갈래 두 줄
-    assert block(monthly, "*팀원별*", 2)[1] == "• 외 20명"  # 남은 3줄: 절 제목, 순서 줄, 외 n명
-    assert len(monthly.splitlines()) == 30
+    assert "    ◦ 비용 기록 없는 실행 3건은 0 USD로 셈" in monthly
+    # 제목에 남길 자리가 4자 미만이면 사유만 적음
+    assert block(monthly, "    ◦ (1) INNO-90 Task - 4.00 USD", 1) == [
+        "        ◦ 첫 검수 1회, 반려 cycle 재검수 2회, 재실행·실패 1회, 정리 모드 1회"
+    ]
+    assert block(monthly, "*팀원별*", 4) == [
+        "• 순서: 첫 검수 통과율 / 최대 검수 반복 횟수 / stop 사유 기록률",
+        "• 담당00: 1/1 / - / -",
+        "    ◦ 업데이트 없음 0개",
+        "• 외 19명",
+    ]
+    assert len(monthly.splitlines()) == 40
     # 남은 줄이 3줄 미만이면 절 제목과 요약 한 줄만 적음
     assert rp._fit_members("순서", [["• a"]] * 4, 2) == ["*팀원별*", "• 담당자 4명: 줄 수 상한으로 생략"]
     assert rp._fit_members("순서", [], 2) == ["*팀원별*", "• 기록 없음"]
     for msg in msgs:
-        assert len(msg.splitlines()) <= 30
+        assert len(msg.splitlines()) <= 40
         assert [x for x in msg.splitlines() if x.startswith("*")] == SECTIONS
         assert_line_length(msg)
 
@@ -986,7 +1104,6 @@ def test_monthly_message(rp, sample):
     assert_shape(monthly, "[2026-12 jira-doc 월간 보고]", "2026-12-01–2026-12-31")
     assert monthly.splitlines()[2:] == [
         "*팀장 업무*",
-        "• 피드백 대기 시간: 중앙값 30분(5건)",
         "• 판정 일치율: 3/3건, 100.0%",
         "    ◦ 최근 20건: 5/6건, 83.3%",
         "• 팀장 확인 대기: 1건(최장 29영업일)",  # INNO-109: 11-20(금) 진입
@@ -994,7 +1111,7 @@ def test_monthly_message(rp, sample):
         "*팀 전체*",
         "• 기존 ticket 10개",
         "    ◦ 업데이트 7개(그중 done 전환 2개)",
-        "    ◦ 업데이트 없음 3개: 팀장 확인 대기 1, 담당자 2",
+        "    ◦ 업데이트 없음 3개: In Progress 2, ready-to-done 1",
         "• 새 ticket 2개",
         "    ◦ To Do 1, In Progress 1",
         "• 첫 검수 통과율: 1/3건, 33.3%",
@@ -1008,10 +1125,19 @@ def test_monthly_message(rp, sample):
         "    ◦ 업데이트 없음 0개, 지난달 후보: 개선",
         "• 박담당: 0/1 / 1회 / 0/1",
         "    ◦ 업데이트 없음 2개",
-        "*Claude 사용량(API 환산 비용)*",
-        "• 합계 5.80 USD(실행 7건), 전월 3.20 USD",
-        "• 사용량 많음: 해당함(전월의 1.5배 이상)",
-        "    ◦ 늘어난 갈래: 재실행·실패 +1.40, 첫 검수 +0.75, 정리 모드 +0.50",
+        "*Claude 활용 요약*",
+        "• 자동 검수 소요 시간: 평균 1740초(600–2700초, 5건)",  # 20, 30, 40, 10, 45분
+        "• API 환산 금액: 5.80 USD(전월 대비 +81%, 사용량 많음)",  # 전월 3.20 USD
+        "• 토큰: input 700, output 350",
+        "    ◦ cache 쓰기(지시·기록 저장) 70",
+        "    ◦ cache 읽기(저장분 재사용) 7.0천",
+        "• Claude 사용 ticket Top3(API 환산 금액 순)",
+        "    ◦ (1) INNO-101 Task 김담당 3.00 USD",
+        "        ◦ PoseNet-S 경량화로 엣지 기기… | 첫 검수 1회, 반려 cycle 재검수 2회",
+        "    ◦ (2) INNO-102 Task 이담당 1.70 USD",
+        "        ◦ 검색 결과 &amp; 정렬 개선 | 첫 검수 1회, 재실행·실패 1회, 정리 모드 1회",
+        "    ◦ (3) INNO-103 Bug 박담당 1.10 USD",
+        "        ◦ 로그인 실패 버그 | 재실행·실패 1회",
         DEF_LINE,
     ]
 
@@ -1024,8 +1150,7 @@ def test_quarterly_and_yearly_messages(rp, sample):
         "• 판정 일치율: 5/6건, 83.3%",
         "    ◦ 최근 20건: 5/6건, 83.3%",
         "• 검토 요청 비율: 1/9건, 11.1%",
-        "• 피드백 대기 시간: 중앙값 20분(9건)",
-        "• 팀장 확인 시간: 중앙값 1.5시간(8건)",  # 5, 60, 60, 60, 120, 180, 360, 1440분
+        "• 팀장 확인 시간: 중앙값 2시간(7건)",  # 60, 60, 60, 120, 180, 360, 1440분. INNO-108 자동 보류는 뺌
         "*팀 전체*",
         "• KR별 하위 Task",
         "    ◦ INNO-23: done 2개, 달성률 4/5개",
@@ -1038,10 +1163,19 @@ def test_quarterly_and_yearly_messages(rp, sample):
         "• 김담당: 0/1 / 3회 / 2/3",
         "• 박담당: 0/3 / 1회 / 0/1",
         "• 이담당: 1/2 / 2회 / -",
-        "*Claude 사용량(API 환산 비용)*",
-        "• 합계 10.70 USD(실행 19건)",
-        "    ◦ 첫 검수 4.75, 반려 cycle 재검수 4.05",
-        "    ◦ 재실행·실패 1.40, 정리 모드 0.50",
+        "*Claude 활용 요약*",
+        "• 자동 검수 소요 시간: 평균 1473초(360–2700초, 9건)",
+        "• API 환산 금액: 10.70 USD(직전 기록 없음)",  # 전 분기(Q3) 실행 없음. 사용량 많음은 월간에만
+        "• 토큰: input 1.9천, output 950",
+        "    ◦ cache 쓰기(지시·기록 저장) 190",
+        "    ◦ cache 읽기(저장분 재사용) 1.9만",
+        "• Claude 사용 ticket Top3(API 환산 금액 순)",
+        "    ◦ (1) INNO-101 Task 김담당 3.00 USD",
+        "        ◦ PoseNet-S 경량화로 엣지 기기… | 첫 검수 1회, 반려 cycle 재검수 2회",
+        "    ◦ (2) INNO-106 Task 이담당 2.00 USD",
+        "        ◦ 첫 검수 1회, 반려 cycle 재검수 1회",  # 제목 없음
+        "    ◦ (3) INNO-102 Task 이담당 1.70 USD",
+        "        ◦ 검색 결과 &amp; 정렬 개선 | 첫 검수 1회, 재실행·실패 1회, 정리 모드 1회",
         DEF_LINE,
     ]
     assert_shape(year, "[2026 jira-doc 연간 보고]", "2026-01-01–2026-12-31")
@@ -1061,24 +1195,133 @@ def test_quarterly_and_yearly_messages(rp, sample):
         "• 김담당: 0/1 / 3회",
         "• 박담당: 0/3 / 1회",
         "• 이담당: 1/2 / 2회",
-        "*Claude 사용량(API 환산 비용)*",
-        "• 합계 10.70 USD(실행 19건)",
+        "*Claude 활용 요약*",
+        "• 자동 검수 소요 시간: 평균 1473초(360–2700초, 9건)",
+        "• API 환산 금액: 10.70 USD(직전 기록 없음)",
         "    ◦ 분기별: Q1 -, Q2 -, Q3 -, Q4 10.70",
+        "• 토큰: input 1.9천, output 950",
+        "    ◦ cache 쓰기(지시·기록 저장) 190",
+        "    ◦ cache 읽기(저장분 재사용) 1.9만",
+        "• Claude 사용 ticket Top3(API 환산 금액 순)",
+        "    ◦ (1) INNO-101 Task 김담당 3.00 USD",
+        "        ◦ PoseNet-S 경량화로 엣지 기기… | 첫 검수 1회, 반려 cycle 재검수 2회",
+        "    ◦ (2) INNO-106 Task 이담당 2.00 USD",
+        "        ◦ 첫 검수 1회, 반려 cycle 재검수 1회",  # 제목 없음
+        "    ◦ (3) INNO-102 Task 이담당 1.70 USD",
+        "        ◦ 검색 결과 &amp; 정렬 개선 | 첫 검수 1회, 재실행·실패 1회, 정리 모드 1회",
         DEF_LINE,
     ]
 
 
-def test_candidate_mark_and_judgement_reasons(rp):
+def test_candidate_mark_and_wrap(rp):
     mark = rp.Report.candidate_mark
     assert mark(rp.Candidate("a", [("INNO-1", 2)], [])) == "후보(A)"
     assert mark(rp.Candidate("a", [], [("T2", 3), ("R4", 2), ("T4", 2)])) == "후보(B: T2, R4 외 1)"
     assert rp._wrap("갈래: ", ["a" * 20, "b" * 20, "c" * 20]) == ["갈래: " + "a" * 20 + ", " + "b" * 20, "c" * 20]
     assert rp._wrap("갈래: ", []) == []
-    rep = rp.Report([], "2026-12", LEAD_ID)
-    rep.high = (False, "해당하지 않음", [])
-    assert "• 사용량 많음: 해당하지 않음(전월의 1.5배 미만)" in rep.usage_lines()
-    rep.high = (None, "판정 불가", ["전월 API 환산 비용 기록 없음"])
-    assert "• 사용량 많음: 판정 불가(전월 API 환산 비용 기록 없음)" in rep.usage_lines()
+    assert rp._capped_wrap(["a" * 20, "b" * 20, "c" * 20], 1, "앞: ") == ["앞: " + "a" * 20 + ", 외 2종"]
+    assert rp._capped_wrap([], 2, "앞: ") == []
+
+
+def test_seconds_and_token_count(rp):
+    """자동 검수 소요 시간(평균, 최소, 최대 초, 건수)과 토큰 단위 표기."""
+    assert rp._seconds([2, 6.5, 15]) == "평균 470초(120–900초, 3건)"
+    assert rp._seconds([0.25]) == "평균 15초(15–15초, 1건)"
+    assert rp._seconds([]) == "-"
+    nums = [0, 999, 1000, 1300, 5000, 61000, 235000, 10**8, 123_000_000]
+    assert [rp._count(n) for n in nums] == ["0", "999", "1.0천", "1.3천", "5.0천", "6.1만", "23.5만", "1.0억", "1.2억"]
+
+
+def test_claude_cost_change_and_high_mark(rp):
+    """API 환산 금액의 직전 기간 대비 %(+, -, 0), 직전 기록 없음. 사용량 많음 표시는 월간 묶음에만 붙음."""
+
+    def rep(prev: float, cur: float):
+        runs = [run("2026-11-10T10:00", 1, prev)] if prev else []
+        return rp.Report(load(rp, {"INNO-1": ticket(runs=[*runs, run("2026-12-10T10:00", 2, cur)])}), "2026-12", "")
+
+    def cost_line(r, monthly: bool = True) -> str:
+        return r.claude_lines(r.cur, r.prev, "전월", monthly=monthly)[2]
+
+    assert cost_line(rep(2.0, 3.62)) == "• API 환산 금액: 3.62 USD(전월 대비 +81%)"
+    assert cost_line(rep(2.0, 1.76)) == "• API 환산 금액: 1.76 USD(전월 대비 -12%)"
+    assert cost_line(rep(2.0, 2.0)) == "• API 환산 금액: 2.00 USD(전월 대비 +0%)"
+    assert cost_line(rep(0.0, 1.0)) == "• API 환산 금액: 1.00 USD(직전 기록 없음)"
+    r = rep(2.0, 3.62)
+    r.high = (True, "해당함", [])
+    assert cost_line(r) == "• API 환산 금액: 3.62 USD(전월 대비 +81%, 사용량 많음)"
+    assert cost_line(r, monthly=False) == "• API 환산 금액: 3.62 USD(전월 대비 +81%)"
+    r.high = (None, "판정 불가", [])
+    assert cost_line(r) == "• API 환산 금액: 3.62 USD(전월 대비 +81%)"
+
+
+def test_quarterly_and_yearly_compare_previous_period(rp):
+    """분기 묶음은 전 분기, 연간 묶음은 전년과 비교하고 연간 묶음은 분기별 줄을 둠."""
+    runs = [run("2025-06-01T10:00", 1, 1.0), run("2026-09-01T10:00", 2, 2.0), run("2026-12-01T10:00", 3, 3.0)]
+    r = rp.Report(load(rp, {"INNO-1": ticket(runs=runs)}), "2026-12", LEAD_ID)
+    quarter, year = r.quarterly_message(), r.yearly_message()
+    assert "• API 환산 금액: 3.00 USD(전 분기 대비 +50%)" in quarter.splitlines()
+    assert block(year, "*Claude 활용 요약*", 3)[1:] == [
+        "• API 환산 금액: 5.00 USD(전년 대비 +400%)",
+        "    ◦ 분기별: Q1 -, Q2 -, Q3 2.00, Q4 3.00",
+    ]
+
+
+def test_top_ticket_lines(rp):
+    """Top3: 비용 합 순, 같은 비용이면 키 순, 0회 갈래 뺌, 제목 20자 자르기, 둘째 줄 50자에 맞춰 제목 줄이기/빼기."""
+    sp = month(rp, "2026-12")
+    tickets = load(
+        rp,
+        {
+            "INNO-10": ticket(  # 1.00 USD(비용 없는 실행은 0)
+                who=KIM, title="가" * 25, runs=[run("2026-12-01T10:00", 1, 1.0), run("2026-12-02T10:00", 2, None)]
+            ),
+            "INNO-9": ticket(  # 담당자 없음. 11월 실행은 뺌
+                itype="Bug", title="짧은 제목", runs=[run("2026-11-30T10:00", 2, 9.0), run("2026-12-01T10:00", 1, 0.5)]
+            ),
+            "INNO-11": ticket(who=LEE, title="나" * 20, runs=[run("2026-12-03T10:00", 1, 0.5)]),  # 같은 비용: 키 순
+            "INNO-2": ticket(who=PARK, title="x", runs=[run("2026-12-03T10:00", 1, 0.1)]),  # 4위: 빠짐
+            "INNO-3": ticket(who=PARK, runs=[run("2026-11-03T10:00", 1, 5.0)]),  # 기간 안 실행 없음
+        },
+    )
+    assert rp.top_ticket_lines(tickets, sp) == [
+        "• Claude 사용 ticket Top3(API 환산 금액 순)",
+        "    ◦ (1) INNO-10 Task 김담당 1.00 USD",
+        "        ◦ " + "가" * 20 + "… | 첫 검수 1회, 반려 cycle 재검수 1회",
+        "    ◦ (2) INNO-9 Bug - 0.50 USD",
+        "        ◦ 짧은 제목 | 첫 검수 1회",
+        "    ◦ (3) INNO-11 Task 이담당 0.50 USD",
+        "        ◦ " + "나" * 20 + " | 첫 검수 1회",
+    ]
+    three = [
+        run("2026-12-01T10:00", 1, 0.3, verdict="failed"),
+        run("2026-12-01T10:05", 1, 0.3),
+        run("2026-12-02T10:00", None, 0.3, mode="digest", verdict="digest"),
+    ]
+    four = [*three, run("2026-12-03T10:00", 2, 0.3), run("2026-12-04T10:00", 3, 0.3)]
+    tickets = load(
+        rp,
+        {
+            "INNO-1": ticket(title="다" * 25, runs=three),  # 사유 28자: 제목을 18자 + "…"로 줄임
+            "INNO-2": ticket(title="라" * 25, runs=four),  # 사유 45자: 제목 자리 2자라 사유만
+        },
+    )
+    lines = rp.top_ticket_lines(tickets, sp)
+    assert lines[1:] == [
+        "    ◦ (1) INNO-2 Task - 1.50 USD",
+        "        ◦ 첫 검수 1회, 반려 cycle 재검수 2회, 재실행·실패 1회, 정리 모드 1회",
+        "    ◦ (2) INNO-1 Task - 0.90 USD",
+        "        ◦ " + "다" * 18 + "… | 첫 검수 1회, 재실행·실패 1회, 정리 모드 1회",
+    ]
+    assert_line_length("\n".join(lines))
+    assert rp.top_ticket_lines(tickets, month(rp, "2026-11")) == ["• Claude 사용 ticket Top3: -"]
+    # 세 자리 횟수: 사유만으로 50자를 넘으면 뒤 갈래부터 "외 n종"으로 줄임
+    many = [run(f"2026-12-01T09:{i % 60:02d}", None, 0.01) for i in range(100)]  # 첫 검수 100회(requestNo 없음)
+    many += [run(f"2026-12-01T10:{i % 60:02d}", 2 + i, 0.01) for i in range(100)]  # 반려 cycle 재검수 100회
+    many += [run(f"2026-12-02T10:{i % 60:02d}", 1, 0.01, verdict="failed") for i in range(100)]  # 재실행·실패
+    many += [run(f"2026-12-03T10:{i % 60:02d}", None, 0.01, mode="digest", verdict="digest") for i in range(100)]
+    lines = rp.top_ticket_lines(load(rp, {"INNO-1": ticket(title="마" * 25, runs=many)}), sp)
+    assert lines[2] == "        ◦ 첫 검수 100회, 반려 cycle 재검수 100회, 재실행·실패 100회, 외 1종"
+    assert_line_length("\n".join(lines))
 
 
 def test_summary_extra_has_team_totals_only(rp, sample):
@@ -1093,7 +1336,12 @@ def test_summary_extra_has_team_totals_only(rp, sample):
     assert "구두 피드백 대상 후보는 팀장 채널 메시지에만 적음" in extra
     assert "- Claude 사용량: 실행 7건, API 환산 비용 5.80 USD" in extra
     assert "- 기존 ticket: 10개(업데이트 7개, 그중 done 전환 2개)" in extra
-    assert "- 업데이트 없는 기존 ticket: 3개(팀장 확인 대기 1, 담당자 2, 기타 0)" in extra
+    assert "- 업데이트 없는 기존 ticket: 3개(In Progress 2, ready-to-done 1)" in extra
+    assert "- 자동 검수 소요 시간: 평균 1740초(600–2700초, 5건)" in extra
+    assert "- 사용량 많음 판정: 해당함(이번 달 5.80 USD ≥ 전월 × 1.5(4.80 USD); 전월 검수 실행 10건 ≥ 10건)" in extra
+    # Claude 사용 ticket Top3(ticket 키, 제목, 담당자)는 Slack 본문에만 적음
+    assert "Top3" in body and "Top3" not in extra
+    assert "PoseNet" not in extra and "INNO-102" not in extra
     assert "- 최대 검수 반복 횟수: 3회(INNO-101)" in extra
     assert "- Claude 토큰: input 700, output 350, cache 쓰기 70, cache 읽기 7,000" in extra
     assert "- 분기 판정 일치율: 5/6건, 83.3%" in extra
@@ -1115,5 +1363,5 @@ def test_sample_body(rp, sample):
     assert "~" not in body
     assert "<@" not in body  # Slack 멘션 없음
     for msg in msgs:
-        assert len(msg.splitlines()) <= 30
+        assert len(msg.splitlines()) <= 40
         assert_line_length(msg)
