@@ -1,8 +1,8 @@
 """scripts/report.py(정기 보고 메시지)의 계산과 Slack 본문.
 
 검수 comment와 문서화 리뷰 comment는 scripts/apply.py의 review_comment, doc_review_comment, agent_comment로 만들어
-실제 형식과 같게 한다. Jira는 읽기 메서드(search, issue, changelog, comments, prop_get)만 가진 가짜 객체로 대신하고
-실제 API를 호출하지 않는다.
+실제 형식과 같게 한다. Jira는 읽기 메서드(search, changelog, comments, prop_get)만 가진 가짜 객체로 대신하고
+실제 API를 호출하지 않는다. PR 검색(gh search prs)은 가짜 함수로 바꿔 gh를 실행하지 않는다.
 """
 
 from __future__ import annotations
@@ -60,6 +60,18 @@ def rp(ja):
 @pytest.fixture(autouse=True)
 def project(monkeypatch):
     monkeypatch.setenv("JIRA_PROJECT_KEY", "INNO")
+    monkeypatch.setenv("GH_ORG", "everex-ai")
+
+
+@pytest.fixture(autouse=True)
+def no_gh(rp, monkeypatch):
+    """run_report가 기본으로 부르는 search_prs를 PR 0건을 돌려주는 가짜로 바꾼다(gh를 실행하지 않음).
+
+    바꾸기 전 search_prs를 돌려준다. search_prs 자체를 확인하는 테스트가 이 fixture 값으로 받는다.
+    """
+    real = rp.search_prs
+    monkeypatch.setattr(rp, "search_prs", lambda org, since, until: [])
+    return real
 
 
 def ts(when: str) -> str:
@@ -69,6 +81,21 @@ def ts(when: str) -> str:
 
 def change(when: str, src: str, dst: str, who: dict = LEAD) -> dict:
     return {"created": ts(when), "author": who, "items": [{"field": "status", "fromString": src, "toString": dst}]}
+
+
+def desc_edit(when: str, who: dict = KIM) -> dict:
+    """변경 이력의 description 항목."""
+    return {"created": ts(when), "author": who, "items": [{"field": "description", "fromString": "a", "toString": "b"}]}
+
+
+def human(when: str, who: dict = KIM) -> dict:
+    """사람 comment(agent 표식 없음)."""
+    return {"created": ts(when), "author": who, "body": "진행 상황 공유"}
+
+
+def subtask(key: str, parent: str, when: str) -> dict:
+    """sub-task 검색 결과 항목."""
+    return {"key": key, "fields": {"parent": {"key": parent}, "created": ts(when)}}
 
 
 def checks(**results: str) -> list[dict]:
@@ -93,22 +120,33 @@ def run(when: str, no: int | None = 1, cost: float | None = 1.0, mode: str = "re
     return entry
 
 
-def ticket(itype="Task", who=None, parent=None, desc="", changelog=(), comments=(), runs=()) -> dict:
+def ticket(
+    itype="Task", who=None, parent=None, desc="", changelog=(), comments=(), runs=(), created=None, status=None
+) -> dict:
+    """가짜 Jira의 ticket 하나. created는 'YYYY-MM-DDTHH:MM'(한국 시간), status는 지금 상태 이름."""
     fields = {"issuetype": {"name": itype}, "assignee": who, "parent": parent, "description": desc}
+    fields |= {"created": ts(created) if created else None, "status": {"name": status} if status else None}
     return {"fields": fields, "changelog": list(changelog), "comments": list(comments), "runs": list(runs)}
 
 
 class FakeJira:
     """report.py가 부르는 Jira 읽기 메서드만 흉내 낸다. 쓰기 메서드와 issue를 부르면 AttributeError가 난다."""
 
-    def __init__(self, tickets: dict[str, dict]):
+    def __init__(self, tickets: dict[str, dict], subtasks: list[dict] = ()):
         self.tickets = tickets
+        self.subtasks = list(subtasks)
         self.jql: list[str] = []
+        self.searches: list[tuple[str, list[str]]] = []
 
     def search(self, jql: str, fields: list[str], limit: int = 500) -> list[dict]:
-        """검색 결과에 요청한 필드만 담는다. ticket마다 Jira.issue를 부르지 않는지 확인하려고 issue는 두지 않는다."""
+        """검색 결과에 요청한 필드만 담는다. ticket마다 Jira.issue를 부르지 않는지 확인하려고 issue는 두지 않는다.
+
+        sub-task 검색(subTaskIssueTypes())이면 subtasks를 돌려준다.
+        """
         self.jql.append(jql)
-        self.fields = fields
+        self.searches.append((jql, fields))
+        if "subTaskIssueTypes()" in jql:
+            return self.subtasks
         return [{"key": k, "fields": {f: t["fields"].get(f) for f in fields}} for k, t in self.tickets.items()]
 
     def changelog(self, key: str) -> list[dict]:
@@ -167,9 +205,16 @@ def sample(ja) -> dict[str, dict]:
     INNO-106(이담당, KR INNO-33): 11월 R3 ❌ 2회 -> 11월 후보(조건 B). 12월에 R3 재발 없고 첫 검수 통과율이 오름.
     INNO-107(박담당, Issue): 11월 검수 실행 8건(전월 검수 실행 10건 조건을 채움).
     INNO-108(박담당, Task): 10월 자동 보류 전환이 있던 보류 검수 comment.
+
+    12월 ticket 현황(기존 ticket 10개, 1일 0시에 done이나 Backlog인 INNO-104, 106, 114는 뺌):
+    업데이트 7개(상태 변경 101, 102, 103, description 수정 110, 사람 comment 111, sub-task 112, PR 113),
+    그중 done 전환 101, 102. 업데이트 없음 3개(팀장 확인 대기 109, 담당자 107, 108).
+    새 ticket 2개(INNO-120 To Do, INNO-121 In Progress). sub-task와 PR은 SUBTASKS, PRS에 있다.
     """
     return {
         "INNO-101": ticket(
+            created="2026-11-20T09:00",
+            status="Done",
             who=KIM,
             parent=KR23,
             desc="예상 산출물 3개 중 3개 달성",
@@ -194,6 +239,8 @@ def sample(ja) -> dict[str, dict]:
             ],
         ),
         "INNO-102": ticket(
+            created="2026-11-25T09:00",
+            status="Done",
             who=LEE,
             parent=KR23,
             desc="예상 산출물 2개 중 1개 달성",
@@ -212,6 +259,8 @@ def sample(ja) -> dict[str, dict]:
             ],
         ),
         "INNO-103": ticket(
+            created="2026-11-01T09:00",
+            status="In Progress",
             itype="Bug",
             who=PARK,
             changelog=[
@@ -222,6 +271,8 @@ def sample(ja) -> dict[str, dict]:
             runs=[run("2026-12-10T09:45", 1, 1.1, verdict="escalate", retry=True)],
         ),
         "INNO-104": ticket(
+            created="2026-10-01T09:00",
+            status="Done",
             who=PARK,
             parent=KR33,
             desc="예상 산출물 4개 중 2개 달성",
@@ -233,6 +284,8 @@ def sample(ja) -> dict[str, dict]:
             runs=[run("2026-10-14T09:30", 1, 1.0, verdict="fix")],
         ),
         "INNO-106": ticket(
+            created="2026-11-01T09:00",
+            status="Done",
             who=LEE,
             parent=KR33,
             desc="예상 산출물 2개 중 2개 달성",
@@ -249,11 +302,15 @@ def sample(ja) -> dict[str, dict]:
             runs=[run("2026-11-10T09:20", 1, 1.0, verdict="fix"), run("2026-11-12T09:20", 2, 1.0)],
         ),
         "INNO-107": ticket(
+            created="2026-11-01T09:00",
+            status="In Progress",
             itype="Issue",
             who=PARK,
             runs=[run(f"2026-11-{d:02d}T10:00", d - 1, 0.15) for d in range(2, 10)],
         ),
         "INNO-108": ticket(
+            created="2026-10-01T09:00",
+            status="In Progress",
             who=PARK,
             changelog=[
                 change("2026-10-20T09:00", "In Progress", "ready-to-done", PARK),
@@ -262,7 +319,40 @@ def sample(ja) -> dict[str, dict]:
             comments=[review(ja, "2026-10-20T09:06", "fix", checks(T1="fail"), HOLD_NOTE)],
             runs=[run("2026-10-20T09:06", 1, 0.7, verdict="fix")],
         ),
+        "INNO-109": ticket(  # 11월 request 전환 뒤 12월 업데이트 없음 -> 팀장 확인 대기
+            who=KIM,
+            created="2026-10-01T09:00",
+            status="ready-to-done",
+            changelog=[change("2026-11-20T10:00", "In Progress", "ready-to-done", KIM)],
+            comments=[human("2026-11-21T10:00")],  # 11월 사람 comment는 12월 업데이트가 아님
+        ),
+        "INNO-110": ticket(
+            who=LEE, created="2026-11-03T09:00", status="In Progress", changelog=[desc_edit("2026-12-08T10:00")]
+        ),
+        "INNO-111": ticket(who=KIM, created="2026-11-03T09:00", status="To Do", comments=[human("2026-12-09T10:00")]),
+        "INNO-112": ticket(who=PARK, created="2026-11-04T09:00", status="In Progress"),  # SUBTASKS의 INNO-130
+        "INNO-113": ticket(who=LEE, created="2026-11-05T09:00", status="In Progress"),  # PRS의 PR
+        "INNO-114": ticket(  # 1일 0시에 Backlog -> 기존 ticket 아님
+            who=PARK,
+            created="2026-10-01T09:00",
+            status="Backlog",
+            changelog=[change("2026-10-30T10:00", "In Progress", "Backlog", PARK)],
+        ),
+        "INNO-120": ticket(who=KIM, created="2026-12-14T09:00", status="To Do"),
+        "INNO-121": ticket(who=LEE, created="2026-12-15T09:00", status="In Progress"),
     }
+
+
+SUBTASKS = [subtask("INNO-130", "INNO-112", "2026-12-11T10:00")]
+PRS = [
+    {"title": "INNO-113 검색 기능 추가", "createdAt": "2026-12-12T01:00:00Z"},
+    {"title": "INNO-1130 다른 ticket", "createdAt": "2026-12-12T01:00:00Z"},
+]
+
+
+def report(rp, sample: dict, m: str = "2026-12", prs=PRS, summ=None) -> list[str]:
+    """sample과 SUBTASKS, PRS로 run_report를 실행한 메시지 목록. prs가 None이면 PR 검색 실패."""
+    return rp.run_report(FakeJira(sample, SUBTASKS), m, LEAD_ID, summ or Summ(), pr_search=lambda o, a, b: prs)
 
 
 def test_comment_format_matches_apply(rp, ja):
@@ -536,162 +626,476 @@ def test_kr_rows(rp):
     ]
 
 
+SECTIONS = ["*팀장 업무*", "*팀 전체*", "*팀원별*", "*Claude 사용량(API 환산 비용)*"]
+DEF_LINE = "지표 정의: docs/jira-doc-agent/alerts.md"
+
+
+def assert_shape(msg: str, title: str, span: str) -> None:
+    """메시지 하나의 공통 규칙: 제목, 대상 기간, 절 순서, 끝 줄, 30줄 이내, 줄마다 50자 이내."""
+    lines = msg.splitlines()
+    assert lines[:2] == [title, f"대상 기간: {span}"]
+    assert [x for x in lines if x.startswith("*")] == SECTIONS
+    assert lines[-1] == DEF_LINE
+    assert len(lines) <= 30
+    assert_line_length(msg)
+
+
 @pytest.mark.parametrize("m", range(1, 13))
 def test_bundles_by_month_and_empty_data(rp, m):
     fake, summ = FakeJira({}), Summ()
     msgs = rp.run_report(fake, f"2026-{m:02d}", LEAD_ID, summ)
-    body = "\n".join(msgs)
-    assert len(msgs) == (2 if m == 12 else 1)
-    assert body.splitlines()[0] == f"[2026-{m:02d} jira-doc 정기 보고]"
-    assert "*월간*" in body
-    assert "기록 없음임" not in body
-    assert ("*분기(" in body) == (m % 3 == 0)
+    assert len(msgs) == (3 if m == 12 else 2 if m % 3 == 0 else 1)
+    last = (rp.months_span(f"2026-{m:02d}", f"2026-{m:02d}")[1] - rp.dt.timedelta(days=1)).date().isoformat()
+    assert_shape(msgs[0], f"[2026-{m:02d} jira-doc 월간 보고]", f"2026-{m:02d}-01–{last}")
     if m % 3 == 0:
-        assert f"*분기(2026 Q{m // 3})*" in body
-    assert ("*연간(2026)*" in body) == (m == 12)
-    assert "• 이번 달 실행 기록 없음" in body
-    assert "• 기록 없음\n    ◦ 이 기간 반려 0회, 검수 comment 0건" in body
-    assert "• 사용량 많음 판정: 판정 불가\n    ◦ 전월 검수 실행 0건 < 10건" in body
-    assert "• 피드백 대기 시간은 기록 없음" in body
-    assert_line_length(body)
+        assert_shape(msgs[1], f"[2026 Q{m // 3} jira-doc 분기 보고]", f"2026-{m - 2:02d}-01–{last}")
+    if m == 12:
+        assert_shape(msgs[2], "[2026 jira-doc 연간 보고]", "2026-01-01–2026-12-31")
+    body = "\n".join(msgs)
+    assert "기록 없음임" not in body
+    assert "PR 검색 실패" not in body
+    assert block(msgs[0], "*팀장 업무*", 5) == [
+        "• 피드백 대기 시간: -",
+        "• 판정 일치율: -",
+        "    ◦ 최근 20건: -",
+        "• 팀장 확인 대기: 0건",
+        "• 팀장 확인 시간: -",
+    ]
+    assert block(msgs[0], "*팀 전체*", 7) == [
+        "• 기존 ticket 0개",
+        "    ◦ 업데이트 0개(그중 done 전환 0개)",
+        "    ◦ 업데이트 없음 0개",
+        "• 새 ticket 0개",
+        "• 첫 검수 통과율: -",
+        "• 최대 검수 반복 횟수: -",
+        "• stop 사유 기록률: -",
+    ]
+    assert block(msgs[0], "*팀원별*", 2)[1] == "• 기록 없음"
+    assert "• 사용량 많음: 판정 불가(전월 검수 실행 0건 < 10건)" in msgs[0]
     since = {1: "2025-11-30", 3: "2025-12-31", 6: "2026-03-31", 9: "2026-06-30", 11: "2026-09-30", 12: "2025-12-31"}
     if m in since:
-        assert fake.jql == [f'project = INNO AND issuetype in (Task, Bug, Issue) AND updated >= "{since[m]}"']
+        assert fake.jql[0] == (
+            "project = INNO AND issuetype in (Task, Bug, Issue) "
+            f'AND (updated >= "{since[m]}" OR status not in ("done", "Backlog", "Deleted"))'
+        )
+    sp = rp.months_span(f"2026-{m:02d}", f"2026-{m:02d}")
+    sub_day = (sp[0] - rp.dt.timedelta(days=1)).date().isoformat()
+    assert fake.searches[1] == (
+        "project = INNO AND issuetype in subTaskIssueTypes() "
+        f'AND created >= "{sub_day}" AND created < "{(sp[1] + rp.dt.timedelta(days=1)).date().isoformat()}"',
+        ["parent", "created"],
+    )
     assert summ.extra and summ.rows == []
 
 
-def test_monthly_team_metrics_and_usage(rp, sample):
-    body = "\n".join(rp.run_report(FakeJira(sample), "2026-12", LEAD_ID, Summ()))
-    assert block(body, "• done ticket 수는 2개임", 1) == ["    ◦ 기준: 이 기간에 done으로 전환된 ticket 수"]
-    assert "• 첫 검수 통과율은 1/3건, 33.3%임" in body
-    assert block(body, "• 검사 ID별 ❌(보완 필요) 상위 3개는 아래와 같음", 5) == [
-        "    ◦ 대상: 검수 comment 5건, 문서화 리뷰 comment 2건",
-        "    ◦ 값: 검사 표의 ❌ 행 수",
-        "    1. stop 사유 comment (R4): ❌ 2회",
-        "    2. 진행 배경 작성 (T2): ❌ 2회",
-        "    3. 진행 배경 충실도 (T4): ❌ 2회",
-    ]
-    assert "• stop 사유 기록률은 2/4건, 50.0%임" in body
-    assert block(body, "• 피드백 대기 시간은 중앙값 30분임", 4) == [
-        "    ◦ 표본: request 전환 5건",
-        "    ◦ request 전환: 담당자가 완료를 요청하는 Jira 전환",
-        "    ◦ 범위: 10–45분",
-        "    ◦ 측정: request 전환부터 다음 첫 검수 comment까지",
-    ]
-    # INNO-102의 12-05 09:10 실행은 같은 request 전환 1의 앞선 실행이 반영 실패라 첫 검수로 남는다
-    assert block(body, "• API 환산 비용 합계는 5.80 USD임", 2) == ["    ◦ 실행 7건", "    ◦ 전월: 실행 10건, 3.20 USD"]
-    assert block(body, "• 사용량 많음 판정: 해당함", 2) == [
-        "    ◦ 이번 달 5.80 USD ≥ 전월 × 1.5(4.80 USD)",
-        "    ◦ 전월 검수 실행 10건 ≥ 10건",
-    ]
-    assert "    ◦ 첫 검수: 2건, 1.90 USD(전월 2건, 1.15 USD)" in body
-    assert "    ◦ 재실행·실패: 2건, 1.40 USD(전월 0건, 0.00 USD)" in body
-    assert block(body, "• 이번 달 토큰 수는 아래와 같음", 4) == [
-        "    ◦ input: 700",
-        "    ◦ output: 350",
-        "    ◦ cache 쓰기: 70",
-        "    ◦ cache 읽기: 7,000",
-    ]
-    assert block(body, "• 전월보다 API 환산 비용이 늘어난 갈래는 아래와 같음", 9) == [
-        "    ◦ 재실행·실패: +1.40 USD, 실행 +2건",
-        "    ◦ 첫 검수: +0.75 USD, 실행 +0건",
-        "    ◦ 정리 모드: +0.50 USD, 실행 +1건",
-        "• 추정: 재실행·실패 증가는 CI agent 쪽 문제 때문임",
-        "• 추정: 첫 검수 증가는 done 전환 ticket 증가 때문임",
-        "• 추정: 정리 모드 증가는 F3 요청 증가 때문임",
-        "• 참고: done ticket 2개(전월 1개)",
-        "• 참고: 반려 3회(전월 1회)",
-        "    ◦ 반려: ready-to-done에서 In Progress로 돌아간 전환",
-    ]
-    assert body.count("◦ 반려: ready-to-done") == 1  # 처음 나올 때만 풀어 적음
-    assert block(body, "• 김담당", 2) == ["    ◦ 조건 A: INNO-101 반려 2회", "    ◦ 조건 B: 진행 배경 작성 (T2) ❌ 2회"]
-    assert "이담당" not in body.split("지난달 후보의 개선 여부")[0]
-    assert block(body, "• 이담당: 개선", 3) == [
-        "    ◦ 기준: 재발이 없고 첫 검수 통과율이 지난달보다 높음",
-        "    ◦ 지난달 첫 검수 통과율 0/1건, 0.0%",
-        "    ◦ 이번 달 첫 검수 통과율 1/1건, 100.0%",
-    ]
+def test_build_jql(rp):
+    assert rp.build_jql("INNO", rp.dt.date(2026, 10, 1)) == (
+        'project = INNO AND issuetype in (Task, Bug, Issue) AND (updated >= "2026-09-30" '
+        'OR status not in ("done", "Backlog", "Deleted"))'
+    )
 
 
-def test_quarterly_and_yearly_bundles(rp, sample):
-    body = "\n".join(rp.run_report(FakeJira(sample), "2026-12", LEAD_ID, Summ()))
-    quarter = body.split("*분기(2026 Q4)*", 1)[1].split("*연간(2026)*", 1)[0]
-    assert block(quarter, "• INNO-23 문서화 품질 개선", 2) == [
-        "    ◦ done 2개",
-        "    ◦ 결과 산출물 달성률: 4/5개, 80.0%",
-    ]
-    assert block(quarter, "• INNO-33 검수 자동화", 2) == ["    ◦ done 2개", "    ◦ 결과 산출물 달성률: 4/6개, 66.7%"]
-    assert "    1. 진행 배경 작성 (T2): ❌ 3회" in quarter
-    assert "    5. 원인과 해결의 근거 링크 (B3): ❌ 1회" in quarter  # ❌ 1회끼리는 검사 ID 순
-    assert "• 분기값은 5/6건, 83.3%임" in quarter
-    assert "• 최근 20건 값은 5/6건, 83.3%임" in quarter
-    assert "• 검토 요청 비율은 1/9건, 11.1%임" in quarter
-    assert block(quarter, "• 일치율에서 뺀 검수 comment는 아래와 같음", 9) == [
-        "    ◦ 검토 요청: 1건",
-        "    ◦ 자동 보류: 1건",
-        "        ◦ 뜻: 자동 보류 전환을 없애기 전의 보류 판정",
-        "    ◦ 팀장 외 전환: 1건",
-        "        ◦ 뜻: 팀장이 아닌 계정이 한 첫 전환",
-        "    ◦ 전환 없음: 0건",
-        "        ◦ 뜻: 다음 검수 comment 전까지 전환이 없음",
-        "    ◦ 기타 전환: 0건",
-        "        ◦ 뜻: done, In Progress가 아닌 상태로 간 전환",
-    ]
-    year = body.split("*연간(2026)*", 1)[1]
-    assert block(year, "• 첫 실행 기록은 2026-10-14임", 1) == ["    ◦ 그 전 달은 기록 없음으로 적음"]
-    assert "• 2026-09: 기록 없음\n• 2026-10: 1.70 USD, 실행 2건" in year
-    assert block(year, "• 2026-12: 5.80 USD, 실행 7건", 4) == [
-        "    ◦ 첫 검수 1.90 USD",
-        "    ◦ 반려 cycle 재검수 2.00 USD",
-        "    ◦ 재실행·실패 1.40 USD",
-        "    ◦ 정리 모드 0.50 USD",
-    ]
-    assert "• 2026-10: 0/2건, 0.0%" in year
-    assert "• 2026-12: 1/3건, 33.3%" in year
-    assert "• 2026-05: 기록 없음" in year
-    assert "• 진행 배경 작성 (T2): 4/7건, 57.1%" in year
-
-
-def test_yearly_check_rates_monthly_for_top5(rp, sample):
-    """연간 만족률은 검사 ID마다 한 줄, 월별 값은 연간 ❌ 횟수 상위 5개 검사 ID에만 붙음."""
-    body = "\n".join(rp.run_report(FakeJira(sample), "2026-12", LEAD_ID, Summ()))
-    rates = body.split("\n검사 ID별 만족률\n", 1)[1]
-    assert block(rates, "• 해당 없음인 행은 뺌", 2) == [
-        "• 월별 값은 연간 ❌ 횟수 상위 5개 검사 ID에만 적음",
-        "    ◦ 같은 횟수면 검사 ID 순",
-    ]
-    # 연간 ❌: T2 3회, R3·R4·T4 2회, B3·T1·T6 1회 -> 상위 5개는 T2, R3, R4, T4, B3(1회끼리는 검사 ID 순)
-    heads = {
-        "T2": "• 진행 배경 작성 (T2): 4/7건, 57.1%",
-        "R3": "• 개조식 작성 (R3): 0/2건, 0.0%",
-        "R4": "• stop 사유 comment (R4): 2/4건, 50.0%",
-        "T4": "• 진행 배경 충실도 (T4): 0/2건, 0.0%",
-        "B3": "• 원인과 해결의 근거 링크 (B3): 0/1건, 0.0%",
+def test_state_at(rp):
+    """1일 0시 전 마지막 변경의 도착 상태, 없으면 뒤 첫 변경의 출발 상태, 변경이 없으면 지금 상태."""
+    tickets = {
+        t.key: t
+        for t in load(
+            rp,
+            {
+                "BEFORE": ticket(
+                    status="done",
+                    changelog=[
+                        change("2026-11-05T10:00", "To Do", "In Progress"),
+                        change("2026-11-30T23:59", "In Progress", "ready-to-done"),
+                        change("2026-12-02T10:00", "ready-to-done", "done"),
+                    ],
+                ),
+                "AFTER": ticket(status="In Progress", changelog=[change("2026-12-01T00:00", "Backlog", "In Progress")]),
+                "NONE": ticket(status="To Do"),
+            },
+        )
     }
-    for head in heads.values():
-        sub = block(rates, head, 13)
-        assert sub[0].startswith("    ◦ 연간 ❌ ")
-        assert [x.split(":")[0] for x in sub[1:]] == [f"    ◦ 2026-{m:02d}" for m in range(1, 13)]
-    t2 = block(rates, heads["T2"], 13)
-    assert t2[0] == "    ◦ 연간 ❌ 3회"
-    assert t2[1] == "    ◦ 2026-01: 기록 없음"
-    assert t2[10:] == ["    ◦ 2026-10: 0/1건, 0.0%", "    ◦ 2026-11: 2/2건, 100.0%", "    ◦ 2026-12: 2/4건, 50.0%"]
-    for other in ("• 예상 산출물 작성 (T1): 1/2건, 50.0%", "• 진행 기록 comment (T6): 0/1건, 0.0%"):
-        assert not block(rates, other, 1) or not block(rates, other, 1)[0].startswith("    ◦")
-    assert rates.count("◦ 연간 ❌") == 5
-    assert_line_length(body)
+    start = rp.months_span("2026-12", "2026-12")[0]
+    assert rp.state_at(tickets["BEFORE"], start) == "ready-to-done"
+    assert rp.state_at(tickets["AFTER"], start) == "Backlog"  # 0시 정각의 변경은 그 뒤 첫 변경으로 봄
+    assert rp.state_at(tickets["NONE"], start) == "To Do"
+
+
+def test_ticket_overview_update_records_and_causes(rp, ja):
+    """업데이트 기록 다섯 가지를 하나씩 세고, 업데이트 없는 기존 ticket은 기간 끝 상태로 원인을 나눔."""
+    old = "2026-11-01T09:00"
+    specs = {
+        "COMMENT": ticket(created=old, status="In Progress", comments=[human("2026-12-03T10:00")]),
+        "DESC": ticket(created=old, status="In Progress", changelog=[desc_edit("2026-12-03T10:00")]),
+        "STATUS": ticket(created=old, status="done", changelog=[change("2026-12-03T10:00", "ready-to-done", "done")]),
+        "SUB": ticket(created=old, status="In Progress"),
+        "INNO-5": ticket(created=old, status="In Progress"),  # PR 추가
+        "AGENT": ticket(  # agent comment(검수 comment)만 있음 -> 업데이트 아님, 담당자
+            created=old, status="In Progress", comments=[review(ja, "2026-12-03T10:00", "pass", checks(T1="pass"))]
+        ),
+        "WAIT": ticket(  # 11월 request 전환 뒤 기록 없음 -> 팀장 확인 대기
+            created=old, status="ready-to-done", changelog=[change("2026-11-20T10:00", "In Progress", "ready-to-done")]
+        ),
+        "TODO": ticket(created=old, status="To Do", comments=[human("2026-11-30T23:59")]),  # 11월 comment -> 기타
+        "DONE": ticket(created=old, status="done", changelog=[change("2026-11-30T10:00", "In Progress", "done")]),
+        "BACKLOG": ticket(  # 1일 0시 Backlog, 12월에 다시 진행 -> 기존 ticket 아님
+            created=old, status="In Progress", changelog=[change("2026-12-05T10:00", "Backlog", "In Progress")]
+        ),
+        "NEW1": ticket(created="2026-12-01T00:00", status="To Do"),
+        "NEW2": ticket(created="2026-12-20T10:00", status="In Progress"),
+        "NEW3": ticket(created="2026-12-21T10:00", status="Done"),
+        "NEW4": ticket(created="2026-12-22T10:00", status="In Progress"),
+        "LATER": ticket(created="2027-01-02T10:00", status="To Do"),  # 기간 뒤에 만듦 -> 세지 않음
+    }
+    tickets = load(rp, specs)
+    by_key = {t.key: t for t in tickets}
+    sp = month(rp, "2026-12")
+    rp.attach_updates(
+        tickets,
+        rp.fetch_subtasks(
+            FakeJira({}, [subtask("SUB-1", "SUB", "2026-12-04T10:00")]), "INNO", sp[0].date(), sp[1].date()
+        ),
+        rp.pr_times([{"title": "[INNO-5] PR 추가", "createdAt": "2026-12-05T01:00:00Z"}], "INNO"),
+    )
+    for key in ("COMMENT", "DESC", "STATUS", "SUB", "INNO-5"):
+        assert rp.updated_in(by_key[key], sp), key
+    for key in ("AGENT", "WAIT", "TODO"):
+        assert not rp.updated_in(by_key[key], sp), key
+    ov = rp.ticket_overview(tickets, sp, sp[0])
+    assert (ov.existing, ov.updated, ov.updated_done) == (8, 5, 1)
+    assert dict(ov.idle) == {"팀장 확인 대기": 1, "담당자": 1, "기타": 1}
+    assert dict(ov.new) == {"To Do": 1, "In Progress": 2, "done": 1}
+    # PR 검색이 실패하면(PR 시각 없음) PR 추가만 있는 ticket은 업데이트 없음
+    rp.attach_updates(tickets, {}, {})
+    assert not rp.updated_in(by_key["INNO-5"], sp)
+
+
+def test_max_request_count_and_members(rp, ja):
+    def reqs(who: dict, days: list[int], **kw) -> dict:
+        log = [change(f"2026-12-{d:02d}T09:00", "In Progress", "ready-to-done", who) for d in days]
+        return ticket(who=who, changelog=log, **kw)
+
+    tickets = load(
+        rp,
+        {
+            "INNO-12": reqs(KIM, [1, 2]),
+            "INNO-9": reqs(KIM, [3, 4]),  # 같은 횟수면 짧은 키가 앞섬
+            "INNO-30": reqs(LEE, [1, 2, 3], comments=[review(ja, "2026-12-01T10:00", "pass", checks(R4="pass"))]),
+            "INNO-31": ticket(who=LEE, changelog=[change("2026-11-30T09:00", "In Progress", "ready-to-done")]),
+            "INNO-40": ticket(who=PARK, created="2026-10-01T09:00", status="done"),  # 기록 없음 -> 팀원별에서 뺌
+        },
+    )
+    sp = month(rp, "2026-12")
+    assert rp.max_request_count(tickets, sp) == (3, "INNO-30")
+    assert rp.max_request_count([t for t in tickets if t.assignee_id == "acc-kim"], sp) == (2, "INNO-9")
+    assert rp.max_request_count([], sp) == (0, "")
+    rows = {r.name: r for r in rp.member_rows(tickets, sp)}
+    assert set(rows) == {"김담당", "이담당"}
+    assert (rows["이담당"].first, rows["이담당"].max_request, rows["이담당"].stop) == ((1, 1), (3, "INNO-30"), (1, 1))
+    assert rows["김담당"].max_request == (2, "INNO-9")
+    assert "박담당" in {r.name for r in rp.member_rows(tickets, sp, include=["acc-park"])}
+
+
+def test_lead_wait_and_confirm(rp):
+    """팀장 확인 대기는 기간 끝 ready-to-done ticket, 팀장 확인 시간은 팀장 계정의 전환만 셈."""
+    rtd, ip = "ready-to-done", "In Progress"
+    tickets = load(
+        rp,
+        {
+            "W1": ticket(  # 12-24(목) 진입 -> 12-31(목)까지 영업일 5일(25, 28, 29, 30, 31)
+                status=rtd,
+                changelog=[change("2026-12-01T09:00", ip, rtd, KIM), change("2026-12-24T18:00", ip, rtd, KIM)],
+            ),
+            "W2": ticket(status=rtd, changelog=[change("2026-12-30T09:00", ip, rtd, KIM)]),  # 1영업일
+            "LATER": ticket(  # 기간 뒤 팀장 전환으로 지금은 done이지만 기간 끝에는 ready-to-done
+                status="done",
+                changelog=[change("2026-12-29T09:00", ip, rtd, KIM), change("2027-01-04T09:00", rtd, "done")],
+            ),
+            "C1": ticket(  # 팀장 전환 2회(1시간, 3시간), 담당자 전환 1회는 뺌
+                status="done",
+                changelog=[
+                    change("2026-12-01T09:00", ip, rtd, KIM),
+                    change("2026-12-01T10:00", rtd, ip, LEAD),
+                    change("2026-12-02T09:00", ip, rtd, KIM),
+                    change("2026-12-02T11:00", rtd, ip, KIM),
+                    change("2026-12-03T09:00", ip, rtd, KIM),
+                    change("2026-12-03T12:00", rtd, "done", LEAD),
+                ],
+            ),
+            "PREV": ticket(  # 11월 진입, 12월 팀장 전환 -> 머문 시간 24시간
+                status="done",
+                changelog=[change("2026-11-30T10:00", ip, rtd, KIM), change("2026-12-01T10:00", rtd, "done", LEAD)],
+            ),
+        },
+    )
+    sp = month(rp, "2026-12")
+    assert rp.lead_wait(tickets, sp[1]) == (3, 5)
+    assert rp.lead_wait([], sp[1]) == (0, 0)
+    assert sorted(rp.lead_confirm_minutes(tickets, sp, LEAD_ID)) == [60, 180, 1440]
+    assert rp.lead_confirm_minutes(tickets, sp, "") == []
+    assert rp.business_days(rp.dt.datetime(2026, 12, 4, 18, tzinfo=rp.KST), sp[1]) == 19  # precheck와 같은 규칙
+
+
+def test_pr_search_failure(rp, sample, monkeypatch, no_gh):
+    """GH_TOKEN이 없거나 gh가 실패하면 None. 그때 PR 추가를 업데이트에서 빼고 월간 메시지에 한 줄 적음."""
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    assert no_gh("everex-ai", rp.dt.date(2026, 11, 30), rp.dt.date(2026, 12, 31)) is None
+    calls = []
+
+    def fake_run(args, **kw):
+        calls.append(args)
+        return rp.subprocess.CompletedProcess(args, 1, "", "HTTP 401")
+
+    monkeypatch.setenv("GH_TOKEN", "x")
+    monkeypatch.setattr(rp.subprocess, "run", fake_run)
+    assert no_gh("everex-ai", rp.dt.date(2026, 11, 30), rp.dt.date(2026, 12, 31)) is None
+    assert calls == [
+        ["gh", "search", "prs", "--owner", "everex-ai", "--created", "2026-11-30..2026-12-31"]
+        + ["--json", "title,createdAt", "--limit", "1000"]
+    ]
+    out = '[{"title": "INNO-1 a", "createdAt": "2026-12-01T00:00:00Z"}]'
+    monkeypatch.setattr(rp.subprocess, "run", lambda args, **kw: rp.subprocess.CompletedProcess(args, 0, out, ""))
+    assert no_gh("everex-ai", rp.dt.date(2026, 11, 30), rp.dt.date(2026, 12, 31)) == [
+        {"title": "INNO-1 a", "createdAt": "2026-12-01T00:00:00Z"}
+    ]
+    seen = []
+    summ = Summ()
+    msgs = rp.run_report(
+        FakeJira(sample, SUBTASKS), "2026-12", LEAD_ID, summ, pr_search=lambda *a: seen.append(a) or None
+    )
+    assert seen == [("everex-ai", rp.dt.date(2026, 11, 30), rp.dt.date(2026, 12, 31))]
+    assert block(msgs[0], "*팀 전체*", 4) == [
+        "• 기존 ticket 10개",
+        "    ◦ 업데이트 6개(그중 done 전환 2개)",  # PR 추가만 있는 INNO-113이 빠짐
+        "    ◦ 업데이트 없음 4개: 팀장 확인 대기 1, 담당자 3",
+        "• PR 검색 실패: PR 추가는 업데이트에서 뺌",
+    ]
+    assert all("PR 검색 실패" not in m for m in msgs[1:])
+    assert "- PR 검색 실패: PR 추가는 업데이트에서 뺌" in summ.extra
+
+
+def test_many_members_fold_into_others(rp, ja):
+    """담당자가 많으면 메시지가 30줄을 넘지 않게 앞 담당자만 적고 나머지는 "외 n명"으로 줄임."""
+    people = [
+        {"accountId": f"acc-{i:02d}", "displayName": f"담당{i:02d}", "accountType": "atlassian"} for i in range(20)
+    ]
+    specs = {
+        f"INNO-{i + 1}": ticket(who=who, comments=[review(ja, "2026-12-03T10:00", "pass", checks(T1="pass"))])
+        for i, who in enumerate(people)
+    }
+    for msg in rp.run_report(FakeJira(specs), "2026-12", LEAD_ID, Summ()):
+        lines = msg.splitlines()
+        assert len(lines) <= 30
+        assert_line_length(msg)
+        shown = [x for x in lines if x.startswith("• 담당")]
+        rest = [x for x in lines if x.startswith("• 외 ")]
+        assert len(rest) == 1
+        assert len(shown) + int(re.fullmatch(r"• 외 (\d+)명", rest[0]).group(1)) == 20
+        assert shown[0].startswith("• 담당00: 1/1")
+
+
+def test_description_edit_outside_deliverables_only(rp):
+    """결과 산출물 구역만 바뀐 description 수정(jira-doc의 set_section)은 업데이트로 세지 않음."""
+    base = "h2. 진행 배경\n배경\n\nh2. 결과 산출물\n이전 결과\n\nh2. 참고\n링크"
+
+    def edit(when: str, old: str, new: str) -> dict:
+        return {
+            "created": ts(when),
+            "author": LEAD,
+            "items": [{"field": "description", "fromString": old, "toString": new}],
+        }
+
+    log = [
+        edit("2026-12-01T10:00", base, base.replace("이전 결과", "새 결과")),  # 구역 안만 바뀜
+        edit("2026-12-02T10:00", "h2. 진행 배경\n배경", "h2. 진행 배경\n배경\n\nh2. 결과 산출물\n결과"),  # 구역 추가
+        edit("2026-12-03T10:00", base, base.replace("링크", "새 링크")),  # 구역 밖이 바뀜
+        edit("2026-12-04T10:00", None, "h2. 진행 배경\n처음 작성"),  # 처음 작성
+    ]
+    assert [t.day for t in rp.description_edits(log)] == [3, 4]
+
+
+def test_new_ticket_statuses_and_worst_case_lines(rp):
+    """새 ticket 상태가 많아도 줄마다 50자 이내이고, 선택 줄이 모두 나와도 메시지는 30줄 이내."""
+    statuses = ["To Do", "In Progress", "ready-to-done", "done", "Backlog"]
+    five = {f"INNO-{i}": ticket(created="2026-12-10T10:00", status=st) for i, st in enumerate(statuses, 1)}
+    monthly = rp.run_report(FakeJira(five), "2026-11", LEAD_ID, Summ())[0]  # 12월 생성: 11월 보고에는 안 나옴
+    assert "• 새 ticket 0개" in monthly
+    monthly = rp.run_report(FakeJira(five), "2026-12", LEAD_ID, Summ())[0]
+    assert block(monthly, "• 새 ticket 5개", 2) == [
+        "    ◦ To Do 1, In Progress 1, ready-to-done 1, done 1",
+        "    ◦ Backlog 1",
+    ]
+    assert_line_length(monthly)
+
+
+def test_worst_case_stays_within_30_lines(rp, ja, monkeypatch):
+    """검색 상한, PR 상한, 비용 기록 없음, 늘어난 갈래 네 개, 상태 12종, 담당자 20명이 모두 나와도 30줄 이내."""
+    monkeypatch.setattr(rp, "SEARCH_LIMIT", 1)
+    people = [
+        {"accountId": f"acc-{i:02d}", "displayName": f"담당{i:02d}", "accountType": "atlassian"} for i in range(20)
+    ]
+    first = [review(ja, "2026-12-03T10:00", "pass", checks(T1="pass"))]
+    specs = {
+        f"INNO-{i + 1}": ticket(who=who, comments=first, runs=[run("2026-11-05T10:00", 1, 0.01)])
+        for i, who in enumerate(people)
+    }
+    specs["INNO-90"] = ticket(
+        runs=[
+            run("2026-12-02T10:00", 1, 1.0),
+            run("2026-12-03T10:00", 2, 1.0),
+            run("2026-12-04T10:00", 3, 1.0, verdict="failed"),
+            run("2026-12-05T10:00", None, 1.0, mode="digest", verdict="digest"),
+            run("2026-12-06T10:00", 4, None),
+        ]
+    )
+    names = ["To Do", "In Progress", "ready-to-done", "done", "Backlog", "Deleted", "QA", "Review", "Hold"]
+    names += ["Blocked", "Design", "Testing"]
+    specs |= {f"INNO-{100 + i}": ticket(created="2026-12-10T10:00", status=n) for i, n in enumerate(names)}
+    prs = [{"title": "x", "createdAt": "2026-12-01T00:00:00Z"}] * 1000
+    msgs = rp.run_report(FakeJira(specs), "2026-12", LEAD_ID, Summ(), pr_search=lambda *a: prs)
+    monthly = msgs[0]
+    assert "• PR 검색이 상한 1000건에 닿음" in monthly
+    assert "• 검색 결과 상한 1개에 닿음: 빠진 ticket 있을 수 있음" in monthly
+    new = block(monthly, "• 새 ticket 12개", 3)
+    assert re.search(r", 외 \d+종$", new[1]) and not new[2].startswith("    ◦")  # 하위 줄 두 줄 이내
+    assert "    ◦ 비용 기록 없는 실행 1건은 0 USD로 셈" in monthly
+    assert len([x for x in monthly.splitlines() if x.startswith("    ◦ ") and "+" in x]) == 2  # 늘어난 갈래 두 줄
+    assert block(monthly, "*팀원별*", 2)[1] == "• 외 20명"  # 남은 3줄: 절 제목, 순서 줄, 외 n명
+    assert len(monthly.splitlines()) == 30
+    # 남은 줄이 3줄 미만이면 절 제목과 요약 한 줄만 적음
+    assert rp._fit_members("순서", [["• a"]] * 4, 2) == ["*팀원별*", "• 담당자 4명: 줄 수 상한으로 생략"]
+    assert rp._fit_members("순서", [], 2) == ["*팀원별*", "• 기록 없음"]
+    for msg in msgs:
+        assert len(msg.splitlines()) <= 30
+        assert [x for x in msg.splitlines() if x.startswith("*")] == SECTIONS
+        assert_line_length(msg)
+
+
+def test_long_member_name_is_cut(rp, ja):
+    long = {"accountId": "acc-long", "displayName": "가나다라마바사아자차카타파하", "accountType": "atlassian"}
+    specs = {"INNO-1": ticket(who=long, comments=[review(ja, "2026-12-03T10:00", "pass", checks(T1="pass"))])}
+    for msg in rp.run_report(FakeJira(specs), "2026-12", LEAD_ID, Summ()):
+        assert "• 가나다라마바사아자차카타…: 1/1" in msg
+        assert "파하" not in msg
+
+
+def test_monthly_message(rp, sample):
+    msgs = report(rp, sample)
+    assert len(msgs) == 3
+    monthly = msgs[0]
+    assert_shape(monthly, "[2026-12 jira-doc 월간 보고]", "2026-12-01–2026-12-31")
+    assert monthly.splitlines()[2:] == [
+        "*팀장 업무*",
+        "• 피드백 대기 시간: 중앙값 30분(5건)",
+        "• 판정 일치율: 3/3건, 100.0%",
+        "    ◦ 최근 20건: 5/6건, 83.3%",
+        "• 팀장 확인 대기: 1건(최장 29영업일)",  # INNO-109: 11-20(금) 진입
+        "• 팀장 확인 시간: 중앙값 2.5시간(4건)",  # 60, 120, 180, 360분. INNO-101의 담당자 전환은 뺌
+        "*팀 전체*",
+        "• 기존 ticket 10개",
+        "    ◦ 업데이트 7개(그중 done 전환 2개)",
+        "    ◦ 업데이트 없음 3개: 팀장 확인 대기 1, 담당자 2",
+        "• 새 ticket 2개",
+        "    ◦ To Do 1, In Progress 1",
+        "• 첫 검수 통과율: 1/3건, 33.3%",
+        "• 최대 검수 반복 횟수: 3회(INNO-101)",
+        "• stop 사유 기록률: 2/4건, 50.0%",
+        "*팀원별*",
+        "• 순서: 첫 검수 통과율 / 최대 검수 반복 횟수 / stop 사유 기록률",
+        "• 김담당: 0/1 / 3회 / 2/3",
+        "    ◦ 업데이트 없음 1개, 후보(A, B: T2)",
+        "• 이담당: 1/1 / 1회 / -",
+        "    ◦ 업데이트 없음 0개, 지난달 후보: 개선",
+        "• 박담당: 0/1 / 1회 / 0/1",
+        "    ◦ 업데이트 없음 2개",
+        "*Claude 사용량(API 환산 비용)*",
+        "• 합계 5.80 USD(실행 7건), 전월 3.20 USD",
+        "• 사용량 많음: 해당함(전월의 1.5배 이상)",
+        "    ◦ 늘어난 갈래: 재실행·실패 +1.40, 첫 검수 +0.75, 정리 모드 +0.50",
+        DEF_LINE,
+    ]
+
+
+def test_quarterly_and_yearly_messages(rp, sample):
+    _, quarter, year = report(rp, sample)
+    assert_shape(quarter, "[2026 Q4 jira-doc 분기 보고]", "2026-10-01–2026-12-31")
+    assert quarter.splitlines()[2:] == [
+        "*팀장 업무*",
+        "• 판정 일치율: 5/6건, 83.3%",
+        "    ◦ 최근 20건: 5/6건, 83.3%",
+        "• 검토 요청 비율: 1/9건, 11.1%",
+        "• 피드백 대기 시간: 중앙값 20분(9건)",
+        "• 팀장 확인 시간: 중앙값 1.5시간(8건)",  # 5, 60, 60, 60, 120, 180, 360, 1440분
+        "*팀 전체*",
+        "• KR별 하위 Task",
+        "    ◦ INNO-23: done 2개, 달성률 4/5개",
+        "    ◦ INNO-33: done 2개, 달성률 4/6개",
+        "• ❌ 상위 5개: T2 3, R3 2, R4 2, T4 2, B3 1",  # ❌ 횟수가 같으면 검사 ID 순
+        "• 첫 검수 통과율: 1/6건, 16.7%",
+        "• 최대 검수 반복 횟수: 3회(INNO-101)",
+        "*팀원별*",
+        "• 순서: 첫 검수 통과율 / 최대 검수 반복 횟수 / stop 사유 기록률",
+        "• 김담당: 0/1 / 3회 / 2/3",
+        "• 박담당: 0/3 / 1회 / 0/1",
+        "• 이담당: 1/2 / 2회 / -",
+        "*Claude 사용량(API 환산 비용)*",
+        "• 합계 10.70 USD(실행 19건)",
+        "    ◦ 첫 검수 4.75, 반려 cycle 재검수 4.05",
+        "    ◦ 재실행·실패 1.40, 정리 모드 0.50",
+        DEF_LINE,
+    ]
+    assert_shape(year, "[2026 jira-doc 연간 보고]", "2026-01-01–2026-12-31")
+    assert year.splitlines()[2:] == [
+        "*팀장 업무*",
+        "• 판정 일치율: 5/6건, 83.3%",
+        "    ◦ 분기별: Q1 -, Q2 -, Q3 -, Q4 5/6",
+        "*팀 전체*",
+        "• 첫 검수 통과율: 1/6건, 16.7%",
+        "    ◦ 분기별: Q1 -, Q2 -, Q3 -, Q4 1/6",
+        "• ❌ 상위 3개의 분기별 만족률",
+        "    ◦ T2: Q1 -, Q2 -, Q3 -, Q4 4/7",
+        "    ◦ R3: Q1 -, Q2 -, Q3 -, Q4 0/2",
+        "    ◦ R4: Q1 -, Q2 -, Q3 -, Q4 2/4",
+        "*팀원별*",
+        "• 순서: 첫 검수 통과율 / 최대 검수 반복 횟수",
+        "• 김담당: 0/1 / 3회",
+        "• 박담당: 0/3 / 1회",
+        "• 이담당: 1/2 / 2회",
+        "*Claude 사용량(API 환산 비용)*",
+        "• 합계 10.70 USD(실행 19건)",
+        "    ◦ 분기별: Q1 -, Q2 -, Q3 -, Q4 10.70",
+        DEF_LINE,
+    ]
+
+
+def test_candidate_mark_and_judgement_reasons(rp):
+    mark = rp.Report.candidate_mark
+    assert mark(rp.Candidate("a", [("INNO-1", 2)], [])) == "후보(A)"
+    assert mark(rp.Candidate("a", [], [("T2", 3), ("R4", 2), ("T4", 2)])) == "후보(B: T2, R4 외 1)"
+    assert rp._wrap("갈래: ", ["a" * 20, "b" * 20, "c" * 20]) == ["갈래: " + "a" * 20 + ", " + "b" * 20, "c" * 20]
+    assert rp._wrap("갈래: ", []) == []
+    rep = rp.Report([], "2026-12", LEAD_ID)
+    rep.high = (False, "해당하지 않음", [])
+    assert "• 사용량 많음: 해당하지 않음(전월의 1.5배 미만)" in rep.usage_lines()
+    rep.high = (None, "판정 불가", ["전월 API 환산 비용 기록 없음"])
+    assert "• 사용량 많음: 판정 불가(전월 API 환산 비용 기록 없음)" in rep.usage_lines()
 
 
 def test_summary_extra_has_team_totals_only(rp, sample):
     summ = Summ()
-    body = "\n".join(rp.run_report(FakeJira(sample), "2026-12", LEAD_ID, summ))
+    body = "\n".join(report(rp, sample, summ=summ))
     extra = "\n".join(summ.extra)
     assert "김담당" in body and "이담당" in body
     for person in (KIM, LEE, PARK):
         assert person["displayName"] not in extra
         assert person["accountId"] not in extra
+    assert "후보(" not in extra
     assert "구두 피드백 대상 후보는 팀장 채널 메시지에만 적음" in extra
     assert "- Claude 사용량: 실행 7건, API 환산 비용 5.80 USD" in extra
+    assert "- 기존 ticket: 10개(업데이트 7개, 그중 done 전환 2개)" in extra
+    assert "- 업데이트 없는 기존 ticket: 3개(팀장 확인 대기 1, 담당자 2, 기타 0)" in extra
+    assert "- 최대 검수 반복 횟수: 3회(INNO-101)" in extra
+    assert "- Claude 토큰: input 700, output 350, cache 쓰기 70, cache 읽기 7,000" in extra
     assert "- 분기 판정 일치율: 5/6건, 83.3%" in extra
 
 
@@ -699,13 +1103,17 @@ def test_search_fields_replace_issue_calls(rp, sample):
     """ticket 필드는 검색 결과로 받고 ticket마다 Jira.issue를 부르지 않음(FakeJira에 issue 없음)."""
     fake = FakeJira(sample)
     rp.run_report(fake, "2026-12", LEAD_ID, Summ())
-    assert set(fake.fields) >= {"assignee", "parent", "issuetype", "description", "status", "summary"}
+    want = {"assignee", "parent", "issuetype", "description", "status", "summary", "created"}
+    assert set(fake.searches[0][1]) >= want
 
 
 def test_sample_body(rp, sample):
-    """샘플 본문(월 2026-12). `pytest -s`로 실행하면 출력됨."""
-    body = "\n".join(rp.run_report(FakeJira(sample), "2026-12", LEAD_ID, Summ()))
+    """샘플 메시지(월 2026-12). `pytest -s`로 실행하면 출력됨."""
+    msgs = report(rp, sample)
+    body = "\n\n".join(msgs)
     print(body)
     assert "~" not in body
     assert "<@" not in body  # Slack 멘션 없음
-    assert_line_length(body)
+    for msg in msgs:
+        assert len(msg.splitlines()) <= 30
+        assert_line_length(msg)

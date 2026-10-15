@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """report 모드: jira-doc 정기 보고 메시지(월간, 분기, 연간 묶음)를 Jira 기록으로 계산해 Slack 본문을 만든다.
 
-- 진입 함수는 run_report다. scripts/apply.py의 main이 --mode report일 때 부르고, 반환한 본문을 팀장 채널로 보낸다.
+- 진입 함수는 run_report다. scripts/apply.py의 main이 --mode report일 때 부르고, 반환한 메시지를 묶음마다 팀장
+  채널로 보낸다.
 - 지표 정의는 docs/jira-doc-agent/alerts.md(3절 지표 정의, 4절 알림 체계)를 따른다.
 - Jira는 읽기만 한다(scripts/jira_api.py의 Jira.search, changelog, comments, prop_get).
+- PR은 gh CLI의 검색(gh search prs)으로 읽기만 한다. 실패하면 PR 추가를 업데이트 기준에서 뺀다.
 - 검수 comment와 문서화 리뷰 comment의 문구는 scripts/apply.py의 review_comment, doc_review_comment, check_table,
   VERDICT_KO, RESULT_KO가 만든다. apply.py가 이 모듈을 불러오므로 순환 import를 피하려고 apply.py를 불러오지 않고
   같은 문구를 이 파일에 둔다. 두 파일의 값이 같은지는 tests/jira/test_report.py가 확인한다.
@@ -15,27 +17,35 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 import re
 import statistics
+import subprocess
 import sys
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
 sys.path.insert(0, str(Path(__file__).parent))
-from jira_api import is_agent_comment  # noqa: E402
+from jira_api import find_section, is_agent_comment  # noqa: E402
 
 KST = dt.timezone(dt.timedelta(hours=9))  # 달, 분기, 해를 나누는 시간대
 READY_STATUS, IN_PROGRESS, DONE_STATUS = "ready-to-done", "In Progress", "done"  # Jira 상태 이름. 대소문자 무시로 비교
+TODO_STATUS, STOP_STATUS, DELETED_STATUS = "To Do", "Backlog", "Deleted"
+CLOSED_STATUSES = (DONE_STATUS, STOP_STATUS, DELETED_STATUS)  # 진행 상태가 아닌 상태
+# 새 ticket의 상태별 수를 적는 순서. 목록에 없는 상태는 뒤에 이름 순으로 적는다
+STATUS_ORDER = (TODO_STATUS, IN_PROGRESS, READY_STATUS, DONE_STATUS, STOP_STATUS, DELETED_STATUS)
 KR_TYPE = "KR"  # 분기 묶음에서 상위 ticket으로 묶는 work type
 # 대상 work type. scripts/collect.py의 TARGET_TYPES, TYPE_ALIAS와 같음
 TARGET_TYPES = [t.strip() for t in os.environ.get("TARGET_TYPES", "Task,Bug,Issue").split(",")]
 TYPE_ALIAS = {"작업": "Task", "버그": "Bug", "이슈": "Issue", "task": "Task", "bug": "Bug", "issue": "Issue"}
-ISSUE_FIELDS = ["summary", "status", "assignee", "issuetype", "parent", "description"]
+ISSUE_FIELDS = ["summary", "status", "assignee", "issuetype", "parent", "description", "created"]
+SUBTASK_FIELDS = ["parent", "created"]  # sub-task 검색에서 받는 필드
 SEARCH_LIMIT = 5000  # Jira.search의 결과 상한. 닿으면 본문에 알린다
+PR_LIMIT = 1000  # gh search prs의 결과 상한
 # scripts/apply.py의 VERDICT_KO(정리 모드 None 제외), RESULT_KO와 같은 값
 VERDICT_KO = {"pass": "통과", "fix": "보류", "escalate": "검토 요청"}
 RESULT_KO = {"pass": "✅ 만족", "fail": "❌ 보완 필요", "n/a": "➖ 해당 없음"}
@@ -55,49 +65,25 @@ LABEL_ID_RE = re.compile(r"\(([^()\s]+)\)$")  # check_label의 끝 "(ID)"
 AUTO_HOLD_NOTE = "상태를 in-progress로 되돌림"
 DELIVERABLES_RE = re.compile(r"예상 산출물 (\d+)개 중 (\d+)개 달성")  # apply.py deliverables_summary의 달성 요약 줄
 BRANCHES = {"first": "첫 검수", "cycle": "반려 cycle 재검수", "retry": "재실행·실패", "digest": "정리 모드"}
-BRANCH_DESC = {  # 갈래의 뜻. Slack 본문에서 갈래 줄 아래에 적는다
-    "first": ["뜻: ticket의 첫 request 전환에 따른 검수"],
-    "cycle": ["뜻: 두 번째 이후 request 전환에 따른 검수"],
-    "retry": [
-        "뜻: 아래 세 가지 실행",
-        "3-R 재실행: Claude 문서화를 3-R 단계에서 다시 실행",
-        "같은 request 재검수: 같은 request 전환을 다시 검수",
-        "반영 실패: 4단계에서 반영에 실패한 실행",
-    ],
-    "digest": ["뜻: F3(ticket 화면의 문서 정리 버튼)으로 실행한 정리"],
-}
-BRANCH_CAUSE = {  # 갈래가 늘어난 원인의 해석. 확인한 사실이 아니라 "추정:"을 붙인다
-    "first": "추정: 첫 검수 증가는 done 전환 ticket 증가 때문임",
-    "cycle": "추정: 반려 cycle 재검수 증가는 반려 증가 때문임",
-    "retry": "추정: 재실행·실패 증가는 CI agent 쪽 문제 때문임",
-    "digest": "추정: 정리 모드 증가는 F3 요청 증가 때문임",
-}
 TOKEN_KO = {"input": "input", "output": "output", "cacheWrite": "cache 쓰기", "cacheRead": "cache 읽기"}
 HIGH_RATIO, HIGH_MIN_PREV_REVIEWS = 1.5, 10  # 사용량 많음: 비용이 전월의 1.5배 이상이고 전월 검수 실행이 10건 이상
 CANDIDATE_MIN = 2  # 구두 피드백 대상 후보: 반려 2회 이상 또는 같은 검사 ID ❌ 2회 이상
-TOP_MONTH, TOP_QUARTER = 3, 5  # 검사 ID별 ❌ 상위 개수(월간, 분기)
-TOP_YEAR_MONTHLY = 5  # 연간 묶음에서 월별 만족률을 붙이는 연간 ❌ 횟수 상위 검사 ID 수
+TOP_QUARTER = 5  # 분기 묶음의 검사 ID별 ❌ 상위 개수
+TOP_YEAR = 3  # 연간 묶음에서 분기별 만족률을 적는 연간 ❌ 상위 검사 ID 수
 RECENT_N = 20  # 최근 판정 일치율의 표본 수
+MAX_LINES = 30  # 메시지 하나의 줄 수 상한. 넘으면 팀원별 줄을 "외 n명"으로 줄인다
+KR_MAX = 5  # 분기 묶음에 적는 KR 행 수 상한. 넘으면 "외 n개"로 줄인다
+CANDIDATE_IDS = 2  # 후보 표시에 적는 조건 B 검사 ID 수. 넘으면 "외 n"으로 줄인다
+DEF_LINE = "지표 정의: docs/jira-doc-agent/alerts.md"  # 메시지 끝 줄
+NAME_MAX = 12  # 팀원별 줄에 적는 담당자 이름 글자 수 상한. 넘으면 자르고 "…"를 붙인다
+NEW_STATUS_LINES = 2  # 새 ticket 상태별 수의 하위 줄 수 상한. 넘으면 뒤 상태를 "외 n종"으로 줄인다
+# jira-doc(scripts/apply.py의 set_section)이 고치는 description 구역. 이 구역만 바뀐 수정은 업데이트로 세지 않는다
+DELIVERABLES_SECTION = "결과 산출물"
+LEAD_WAIT, OWNER_IDLE, OTHER_IDLE = "팀장 확인 대기", "담당자", "기타"  # 업데이트 없는 기존 ticket의 원인
 INDENT = "    "  # Slack 본문의 하위 항목 들여쓰기(scripts/apply.py의 SLACK_INDENT와 같음)
 # 판정 일치율의 결과 값. MATCH, MISMATCH만 일치율에 들어간다
 MATCH, MISMATCH, ESCALATE = "일치", "불일치", "검토 요청"
 AUTO_HOLD, NOT_LEAD, WAITING, OTHER = "자동 보류", "팀장 외 전환", "전환 없음", "기타 전환"
-EXCLUDED_DESC = {
-    AUTO_HOLD: "뜻: 자동 보류 전환을 없애기 전의 보류 판정",
-    NOT_LEAD: "뜻: 팀장이 아닌 계정이 한 첫 전환",
-    WAITING: "뜻: 다음 검수 comment 전까지 전환이 없음",
-    OTHER: "뜻: done, In Progress가 아닌 상태로 간 전환",
-}
-FOLLOW_DESC = {  # 지난달 후보의 개선 여부 결과 값의 뜻
-    "재발": "기준: 지적 검사 ID 중 하나가 이번 달 다시 ❌",
-    "개선": "기준: 재발이 없고 첫 검수 통과율이 지난달보다 높음",
-    "유지": "기준: 재발도 개선도 아님",
-    "판단 불가": "기준: 이번 달 검수 comment가 없음",
-}
-TERMS = {  # 처음 나올 때 하위 줄로 풀어 적는 말
-    "request 전환": "request 전환: 담당자가 완료를 요청하는 Jira 전환",
-    "반려": "반려: ready-to-done에서 In Progress로 돌아간 전환",
-}
 Span = tuple[dt.datetime, dt.datetime]  # 기간 [시작, 끝)
 
 
@@ -184,11 +170,16 @@ class Ticket:
     parent_name: str
     parent_type: str
     description: str
+    created: dt.datetime | None = None  # 만든 시각
+    status: str = ""  # 지금 상태
     changes: list[StatusChange] = field(default_factory=list)
     reviews: list[ReviewComment] = field(default_factory=list)  # 검수 comment. 작성 순
     docs: list[ReviewComment] = field(default_factory=list)  # 문서화 리뷰 comment. 작성 순
     runs: list[Run] = field(default_factory=list)
-    labels: dict[str, str] = field(default_factory=dict)  # 검사 ID -> 검사 표의 "검사 이름 (ID)"
+    human_comment_at: list[dt.datetime] = field(default_factory=list)  # 사람 comment(agent comment 제외) 작성 시각
+    description_edit_at: list[dt.datetime] = field(default_factory=list)  # 변경 이력의 description 항목 시각
+    subtask_at: list[dt.datetime] = field(default_factory=list)  # 하위 sub-task 생성 시각(attach_updates가 채움)
+    pr_at: list[dt.datetime] = field(default_factory=list)  # 제목에 ticket 키가 있는 PR 생성 시각(attach_updates)
 
 
 @dataclass
@@ -231,6 +222,39 @@ class KrRow:
     expected: int = 0
     achieved: int = 0
     no_line: int = 0  # 달성 요약 줄이 없어 달성률 집계에서 뺀 Task 수
+
+
+@dataclass
+class Overview:
+    """대상 기간의 ticket 현황(ticket_overview의 결과)."""
+
+    existing: int = 0  # 기존 ticket 수
+    updated: int = 0  # 기존 ticket 중 업데이트가 있는 수
+    updated_done: int = 0  # 그중 대상 기간에 done으로 전환된 수
+    idle: Counter = field(default_factory=Counter)  # 업데이트 없는 기존 ticket의 원인 -> 수
+    new: Counter = field(default_factory=Counter)  # 새 ticket의 지금 상태 -> 수
+
+    @property
+    def idle_total(self) -> int:
+        """업데이트 없는 기존 ticket 수."""
+        return sum(self.idle.values())
+
+    @property
+    def new_total(self) -> int:
+        """새 ticket 수."""
+        return sum(self.new.values())
+
+
+@dataclass
+class MemberRow:
+    """팀원별 절의 담당자 한 명(member_rows의 결과)."""
+
+    aid: str  # 담당자 Jira accountId
+    name: str
+    first: tuple[int, int]  # 첫 검수 통과율(통과 수, 첫 검수 comment 수)
+    max_request: tuple[int, str]  # 최대 검수 반복 횟수(횟수, ticket 키)
+    stop: tuple[int, int]  # stop 사유 기록률(R4 만족 수, R4 판정 수)
+    idle: int  # 업데이트 없는 기존 ticket 수
 
 
 def parse_ts(s: str | None) -> dt.datetime | None:
@@ -336,6 +360,50 @@ def status_changes(changelog: list[dict]) -> list[StatusChange]:
     return sorted(out, key=lambda c: c.at)
 
 
+def without_deliverables(desc: str) -> str:
+    """description에서 결과 산출물 구역(제목 줄 포함)을 빼고 공백을 한 칸으로 줄인 문자열.
+
+    구역은 scripts/jira_api.py의 find_section으로 찾는다. set_section이 구역을 맨 뒤에 새로 붙이며 앞 본문 끝의
+    공백을 지우므로 공백 차이는 무시한다.
+
+    Args:
+        desc: description(wiki markup).
+
+    Returns:
+        비교용 문자열.
+    """
+    desc = desc or ""
+    hit = find_section(desc, DELIVERABLES_SECTION)
+    if hit:
+        desc = desc[: hit[1]] + desc[hit[3] :]
+    return " ".join(desc.split())
+
+
+def description_edits(changelog: list[dict]) -> list[dt.datetime]:
+    """Jira changelog 응답(Jira.changelog)에서 결과 산출물 구역 밖이 바뀐 description 수정 시각을 시각 순서로 뽑는다.
+
+    jira-doc이 결과 산출물 구역만 고친 수정은 사람의 업데이트가 아니므로 뺀다. jira-doc은 팀장 계정으로 기록되어
+    작성자로는 구분할 수 없어, 수정 전후(fromString, toString)에서 그 구역을 뺀 나머지를 비교한다.
+
+    Args:
+        changelog: Jira.changelog의 결과. 항목마다 created, items(field, fromString, toString).
+
+    Returns:
+        결과 산출물 구역 밖이 바뀐 description 항목이 있는 변경 이력의 시각 목록.
+    """
+    out: list[dt.datetime] = []
+    for history in changelog:
+        at = parse_ts(history.get("created"))
+        items = [i for i in history.get("items") or [] if i.get("field") == "description"]
+        changed = any(
+            without_deliverables(i.get("fromString") or "") != without_deliverables(i.get("toString") or "")
+            for i in items
+        )
+        if at is not None and changed:
+            out.append(at)
+    return sorted(out)
+
+
 def run_branch(entry: dict) -> str:
     """runs 항목 하나를 Claude 사용량 네 갈래 중 하나로 나눈다.
 
@@ -413,7 +481,8 @@ def load_ticket(j: JiraReader, issue: dict) -> Ticket:
     """검색 결과의 ticket 하나에 변경 이력, comment, jira-doc 기록을 더해 읽는다.
 
     agent comment(scripts/jira_api.py의 is_agent_comment) 중 판정 줄이 있으면 검수 comment,
-    "문서화 리뷰 결과(관찰 모드)" 줄이 있으면 문서화 리뷰 comment로 센다.
+    "문서화 리뷰 결과(관찰 모드)" 줄이 있으면 문서화 리뷰 comment로 센다. agent comment가 아닌 comment는
+    사람 comment로 작성 시각만 남긴다.
 
     Args:
         j: Jira 읽기 객체.
@@ -428,6 +497,7 @@ def load_ticket(j: JiraReader, issue: dict) -> Ticket:
     parent = f.get("parent") or {}
     pf = parent.get("fields") or {}
     name = (f.get("issuetype") or {}).get("name") or ""
+    log = j.changelog(key)
     t = Ticket(
         key=key,
         itype=TYPE_ALIAS.get(name.strip().lower(), TYPE_ALIAS.get(name, name)),
@@ -437,11 +507,17 @@ def load_ticket(j: JiraReader, issue: dict) -> Ticket:
         parent_name=pf.get("summary") or "",
         parent_type=(pf.get("issuetype") or {}).get("name") or "",
         description=f.get("description") or "",
-        changes=status_changes(j.changelog(key)),
+        created=parse_ts(f.get("created")),
+        status=(f.get("status") or {}).get("name") or "",
+        changes=status_changes(log),
+        description_edit_at=description_edits(log),
     )
     for c in j.comments(key):
         at = parse_ts(c.get("created"))
-        if at is None or not is_agent_comment(c):
+        if at is None:
+            continue
+        if not is_agent_comment(c):
+            t.human_comment_at.append(at)
             continue
         body = c.get("body") or ""
         if parsed := parse_review(body):
@@ -449,9 +525,7 @@ def load_ticket(j: JiraReader, issue: dict) -> Ticket:
             t.reviews.append(ReviewComment(at, parsed[0], parsed[1], hold))
         elif (doc := parse_doc_review(body)) is not None:
             t.docs.append(ReviewComment(at, "", doc))
-        else:
-            continue
-        t.labels.update({cid: label for cid, label, _ in table_rows(body)})
+    t.human_comment_at.sort()
     t.reviews.sort(key=lambda r: r.at)
     t.docs.sort(key=lambda r: r.at)
     runs = (j.prop_get(key) or {}).get("runs")
@@ -463,6 +537,8 @@ def build_jql(project: str, since: dt.date) -> str:
     """보고에 필요한 기간을 덮는 ticket 검색 조건.
 
     JQL의 날짜는 API 계정의 시간대로 해석되므로 한국 시간 since 첫날의 변경이 빠지지 않게 하루 앞선 날부터 찾는다.
+    업데이트가 없는 기존 ticket은 updated 조건으로 찾을 수 없으므로 진행 상태(done, Backlog, Deleted가 아닌 상태)인
+    ticket도 함께 찾는다.
 
     Args:
         project: Jira 프로젝트 키.
@@ -472,7 +548,11 @@ def build_jql(project: str, since: dt.date) -> str:
         검색 조건.
     """
     day = since - dt.timedelta(days=1)
-    return f'project = {project} AND issuetype in ({", ".join(TARGET_TYPES)}) AND updated >= "{day.isoformat()}"'
+    closed = ", ".join(f'"{s}"' for s in CLOSED_STATUSES)
+    return (
+        f"project = {project} AND issuetype in ({', '.join(TARGET_TYPES)}) "
+        f'AND (updated >= "{day.isoformat()}" OR status not in ({closed}))'
+    )
 
 
 def collect(j: JiraReader, jql: str) -> list[Ticket]:
@@ -488,6 +568,106 @@ def collect(j: JiraReader, jql: str) -> list[Ticket]:
         ticket 기록 목록.
     """
     return [load_ticket(j, issue) for issue in j.search(jql, ISSUE_FIELDS, limit=SEARCH_LIMIT)]
+
+
+def fetch_subtasks(j: JiraReader, project: str, since: dt.date, until: dt.date) -> dict[str, list[dt.datetime]]:
+    """since부터 until 전까지 만들어진 sub-task를 Jira 검색 한 번으로 읽어 상위 ticket 키별 생성 시각으로 묶는다.
+
+    JQL의 날짜는 API 계정의 시간대로 해석되므로 build_jql처럼 하루 앞선 날부터 찾는다. 기간 판정은 시각으로 다시 한다.
+
+    Args:
+        j: Jira 읽기 객체.
+        project: Jira 프로젝트 키.
+        since: 대상 기간의 첫날(한국 시간).
+        until: 대상 기간 다음 날(한국 시간). 이 날 전에 만들어진 sub-task만 찾는다.
+
+    Returns:
+        상위 ticket 키 -> sub-task 생성 시각 목록.
+    """
+    day = since - dt.timedelta(days=1)
+    # JQL 날짜는 API 계정의 시간대라 앞뒤로 하루씩 넓히고, 기간은 _in으로 다시 거른다
+    end = until + dt.timedelta(days=1)
+    jql = (
+        f"project = {project} AND issuetype in subTaskIssueTypes() "
+        f'AND created >= "{day.isoformat()}" AND created < "{end.isoformat()}"'
+    )
+    out: dict[str, list[dt.datetime]] = {}
+    for issue in j.search(jql, SUBTASK_FIELDS, limit=SEARCH_LIMIT):
+        f = issue.get("fields") or {}
+        parent = (f.get("parent") or {}).get("key") or ""
+        at = parse_ts(f.get("created"))
+        if parent and at is not None:
+            out.setdefault(parent, []).append(at)
+    return out
+
+
+def search_prs(org: str, since: dt.date, until: dt.date) -> list[dict] | None:
+    """GitHub organization에서 since–until(양 끝 포함)에 만들어진 PR을 gh search prs 한 번으로 찾는다.
+
+    scripts/collect.py의 gh와 같이 환경 변수 GH_TOKEN이 없거나 명령이 실패하면 None을 돌려준다.
+
+    Args:
+        org: GitHub organization(환경 변수 GH_ORG).
+        since: 첫날.
+        until: 끝날.
+
+    Returns:
+        PR 목록(항목마다 title, createdAt). 검색하지 못하면 None.
+    """
+    if not org or not os.environ.get("GH_TOKEN"):
+        return None
+    args = ["gh", "search", "prs", "--owner", org, "--created", f"{since.isoformat()}..{until.isoformat()}"]
+    args += ["--json", "title,createdAt", "--limit", str(PR_LIMIT)]
+    try:
+        res = subprocess.run(args, capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"[report] gh search prs error: {e}", file=sys.stderr)
+        return None
+    if res.returncode != 0:
+        print(f"[report] gh search prs failed: {res.stderr.strip()[:200]}", file=sys.stderr)
+        return None
+    try:
+        data = json.loads(res.stdout) if res.stdout.strip() else []
+    except json.JSONDecodeError:
+        print("[report] gh search prs: JSON이 아닌 출력", file=sys.stderr)
+        return None
+    return data if isinstance(data, list) else None
+
+
+def pr_times(prs: list[dict], project: str) -> dict[str, list[dt.datetime]]:
+    """PR 제목의 ticket 키(<프로젝트 키>-숫자)별로 PR 생성 시각을 묶는다.
+
+    Args:
+        prs: search_prs의 결과.
+        project: Jira 프로젝트 키.
+
+    Returns:
+        ticket 키 -> PR 생성 시각 목록. 한 PR 제목에 키가 여럿이면 키마다 넣는다.
+    """
+    pat = re.compile(rf"(?<![A-Za-z0-9]){re.escape(project)}-\d+")
+    out: dict[str, list[dt.datetime]] = {}
+    for pr in prs:
+        at = parse_ts(str(pr.get("createdAt") or "")) if isinstance(pr, dict) else None
+        if at is None:
+            continue
+        for key in sorted(set(pat.findall(str(pr.get("title") or "")))):
+            out.setdefault(key, []).append(at)
+    return out
+
+
+def attach_updates(
+    tickets: list[Ticket], subtasks: dict[str, list[dt.datetime]], prs: dict[str, list[dt.datetime]]
+) -> None:
+    """sub-task 생성 시각과 PR 생성 시각을 ticket 키로 붙인다.
+
+    Args:
+        tickets: ticket 기록. subtask_at, pr_at을 바꾼다.
+        subtasks: fetch_subtasks의 결과.
+        prs: pr_times의 결과. PR 검색이 실패했으면 빈 dict.
+    """
+    for t in tickets:
+        t.subtask_at = sorted(subtasks.get(t.key, []))
+        t.pr_at = sorted(prs.get(t.key, []))
 
 
 def add_months(month: str, n: int) -> str:
@@ -916,20 +1096,261 @@ def check_satisfaction(tickets: Iterable[Ticket], sp: Span) -> dict[str, tuple[i
     return {cid: (ok[cid], judged[cid]) for cid in judged}
 
 
-def _be(value: str) -> str:
-    """값 문구 뒤에 "임"을 붙인다. 값이 "기록 없음"이면 그대로 둔다.
+def is_progress(name: str) -> bool:
+    """진행 상태(done, Backlog, Deleted가 아닌 상태)인지. 상태 이름이 비었으면 False.
 
     Args:
-        value: _pct 같은 함수가 만든 값 문구.
+        name: 상태 이름.
 
     Returns:
-        문장 끝 문구.
+        진행 상태면 True.
     """
-    return value if value == "기록 없음" else f"{value}임"
+    return bool(name.strip()) and not any(is_status(name, s) for s in CLOSED_STATUSES)
+
+
+def state_at(t: Ticket, when: dt.datetime) -> str:
+    """ticket의 when 시각 상태를 상태 변경 이력으로 되돌려 구한다.
+
+    when 전 마지막 상태 변경이 있으면 그 도착 상태, 없으면 when 뒤(when 포함) 첫 상태 변경의 출발 상태,
+    상태 변경이 없으면 지금 상태다.
+
+    Args:
+        t: ticket 기록. changes는 시각 순이다.
+        when: 시각.
+
+    Returns:
+        상태 이름.
+    """
+    before = [c for c in t.changes if c.at < when]
+    if before:
+        return before[-1].dst
+    after = [c for c in t.changes if c.at >= when]
+    return after[0].src if after else t.status
+
+
+def updated_in(t: Ticket, sp: Span) -> bool:
+    """기간 안에 업데이트 기록이 하나 이상 있는지.
+
+    업데이트 기록은 사람 comment, description 수정, 상태 변경, sub-task 생성, PR 생성이다.
+    PR 검색이 실패했으면 pr_at이 비어 PR 생성은 세지 않는다.
+
+    Args:
+        t: ticket 기록.
+        sp: 기간.
+
+    Returns:
+        있으면 True.
+    """
+    times = [*t.human_comment_at, *t.description_edit_at, *(c.at for c in t.changes), *t.subtask_at, *t.pr_at]
+    return any(_in(at, sp) for at in times)
+
+
+def _idle_cause(status: str) -> str:
+    if is_status(status, READY_STATUS):
+        return LEAD_WAIT
+    return OWNER_IDLE if is_status(status, IN_PROGRESS) else OTHER_IDLE
+
+
+def _status_name(name: str) -> str:
+    """상태 이름을 STATUS_ORDER의 표기로 맞춘다. 목록에 없으면 그대로, 비었으면 "-"."""
+    return next((s for s in STATUS_ORDER if is_status(name, s)), name.strip() or "-")
+
+
+def ticket_overview(tickets: Iterable[Ticket], sp: Span, month_start: dt.datetime) -> Overview:
+    """대상 기간의 ticket 현황.
+
+    기존 ticket: month_start 전에 만들어졌고(만든 시각이 없으면 전으로 봄) month_start의 상태(state_at)가 진행
+    상태인 ticket. 업데이트(updated_in)가 없는 기존 ticket은 대상 기간 끝의 상태로 원인을 나눈다
+    (ready-to-done: 팀장 확인 대기, In Progress: 담당자, 그 밖: 기타). 새 ticket: 대상 기간에 만들어진 ticket.
+    지금 상태별로 센다.
+
+    Args:
+        tickets: ticket 기록.
+        sp: 대상 기간.
+        month_start: 기존 ticket을 정하는 시각(대상 달 1일 0시, 한국 시간).
+
+    Returns:
+        ticket 현황.
+    """
+    ov = Overview()
+    for t in tickets:
+        if t.created is not None and _in(t.created, sp):
+            ov.new[_status_name(t.status)] += 1
+            continue
+        if (t.created is not None and t.created >= month_start) or not is_progress(state_at(t, month_start)):
+            continue
+        ov.existing += 1
+        if updated_in(t, sp):
+            ov.updated += 1
+            ov.updated_done += done_in(t, sp)
+        else:
+            ov.idle[_idle_cause(state_at(t, sp[1]))] += 1
+    return ov
+
+
+def request_count(t: Ticket, sp: Span) -> int:
+    """기간 안 request 전환(ready-to-done 진입) 횟수.
+
+    Args:
+        t: ticket 기록.
+        sp: 기간.
+
+    Returns:
+        횟수.
+    """
+    return sum(1 for c in t.changes if _in(c.at, sp) and is_status(c.dst, READY_STATUS))
+
+
+def max_request_count(tickets: Iterable[Ticket], sp: Span) -> tuple[int, str]:
+    """최대 검수 반복 횟수: ticket 하나의 기간 안 request 전환 횟수 중 최댓값과 그 ticket 키.
+
+    같은 횟수면 ticket 키 순(짧은 키, 사전 순)으로 앞선 ticket을 고른다.
+
+    Args:
+        tickets: ticket 기록.
+        sp: 기간.
+
+    Returns:
+        (최댓값, ticket 키). request 전환이 없으면 (0, "").
+    """
+    best = (0, "")
+    for t in sorted(tickets, key=lambda t: (len(t.key), t.key)):
+        n = request_count(t, sp)
+        if n > best[0]:
+            best = (n, t.key)
+    return best
+
+
+def business_days(start: dt.datetime, end: dt.datetime) -> int:
+    """start 날짜 다음 날부터 end 직전 시각의 날짜까지 영업일(토요일, 일요일 제외) 수. 날짜는 한국 시간이다.
+
+    scripts/precheck.py의 business_days_since와 같은 규칙이다(시작 날짜는 빼고 끝 날짜는 넣음).
+
+    Args:
+        start: 시작 시각.
+        end: 기간 끝 [시작, 끝)의 끝 시각.
+
+    Returns:
+        영업일 수.
+    """
+    d = start.astimezone(KST).date()
+    last = (end - dt.timedelta(microseconds=1)).astimezone(KST).date()
+    days = 0
+    while d < last:
+        d += dt.timedelta(days=1)
+        days += d.weekday() < 5
+    return days
+
+
+def lead_wait(tickets: Iterable[Ticket], end: dt.datetime) -> tuple[int, int]:
+    """팀장 확인 대기 지표: end 시각에 ready-to-done인 ticket 수와 진입 뒤 가장 오래 머문 영업일 수.
+
+    진입은 end 전 마지막 ready-to-done 진입이다. 진입 기록이 없으면 만든 시각부터 센다. end 뒤에 만든 ticket은 뺀다.
+
+    Args:
+        tickets: ticket 기록.
+        end: 대상 기간 끝 시각.
+
+    Returns:
+        (ticket 수, 최장 영업일 수). ticket이 없으면 (0, 0).
+    """
+    days: list[int] = []
+    for t in tickets:
+        if (t.created is not None and t.created >= end) or not is_status(state_at(t, end), READY_STATUS):
+            continue
+        entry = next((c.at for c in reversed(t.changes) if c.at < end and is_status(c.dst, READY_STATUS)), t.created)
+        days.append(business_days(entry, end) if entry else 0)
+    return len(days), max(days, default=0)
+
+
+def lead_confirm_minutes(tickets: Iterable[Ticket], sp: Span, lead: str) -> list[float]:
+    """팀장 확인 시간: 기간 안에 팀장 계정이 ready-to-done에서 전환한 경우마다 머문 시간(분).
+
+    머문 시간은 그 전환 전 마지막 ready-to-done 진입부터 그 전환까지다. 진입 기록이 없는 전환과 팀장 외 계정의
+    전환은 뺀다.
+
+    Args:
+        tickets: ticket 기록.
+        sp: 기간.
+        lead: 팀장 accountId. 비었으면 빈 목록을 돌려준다.
+
+    Returns:
+        분 목록.
+    """
+    out: list[float] = []
+    if not lead:
+        return out
+    for t in tickets:
+        for i, c in enumerate(t.changes):
+            if not (_in(c.at, sp) and c.author == lead and is_status(c.src, READY_STATUS)):
+                continue
+            entry = next((p.at for p in reversed(t.changes[:i]) if is_status(p.dst, READY_STATUS)), None)
+            if entry is not None:
+                out.append((c.at - entry).total_seconds() / 60)
+    return out
+
+
+def member_rows(tickets: list[Ticket], sp: Span, include: Iterable[str] = ()) -> list[MemberRow]:
+    """팀원별 절의 담당자별 값. 담당자가 없는 ticket은 세지 않는다.
+
+    기간에 기록이 있는 담당자만 넣는다. 기록: 기존 ticket이나 새 ticket(ticket_overview, 기준 시각은 기간 첫날),
+    첫 검수 comment, request 전환, 판정된 R4 행. include의 담당자는 기록이 없어도 넣는다.
+
+    Args:
+        tickets: ticket 기록.
+        sp: 기간.
+        include: 기록이 없어도 넣을 담당자 accountId(예: 지난달 후보).
+
+    Returns:
+        담당자 행 목록. 이름 순(대소문자 무시).
+    """
+    keep = set(include)
+    rows: list[MemberRow] = []
+    for aid in sorted({t.assignee_id for t in tickets if t.assignee_id}):
+        mine = [t for t in tickets if t.assignee_id == aid]
+        ov = ticket_overview(mine, sp, sp[0])
+        row = MemberRow(
+            aid=aid,
+            name=mine[0].assignee_name or aid,
+            first=pass_count(first_reviews(mine, sp)),
+            max_request=max_request_count(mine, sp),
+            stop=r4_count(mine, sp),
+            idle=ov.idle_total,
+        )
+        if aid in keep or ov.existing or ov.new_total or row.first[1] or row.max_request[0] or row.stop[1]:
+            rows.append(row)
+    return sorted(rows, key=lambda r: (r.name.lower(), r.aid))
 
 
 def _pct(a: int, b: int, unit: str = "건") -> str:
     return f"{a}/{b}{unit}, {a / b * 100:.1f}%" if b else "기록 없음"
+
+
+def _ratio(a: int, b: int) -> str:
+    """비율 값 "a/b건, x%". 분모가 0이면 기록 없음 표시 "-"."""
+    return _pct(a, b) if b else "-"
+
+
+def _frac(a: int, b: int, unit: str = "") -> str:
+    """분수 값 "a/b". 분모가 0이면 "-"."""
+    return f"{a}/{b}{unit}" if b else "-"
+
+
+def _times(n: int, key: str = "") -> str:
+    """횟수 값 "n회(키)". 0이면 "-"."""
+    if not n:
+        return "-"
+    return f"{n}회({key})" if key else f"{n}회"
+
+
+def _dur(minutes: float) -> str:
+    """시간 값. 60분 미만은 분, 그 이상은 시간으로 적는다."""
+    return f"{_fmt(minutes)}분" if minutes < 60 else f"{_fmt(minutes / 60)}시간"
+
+
+def _median(values: list[float]) -> str:
+    """중앙값과 표본 수 "중앙값 30분(5건)". 표본이 없으면 "-"."""
+    return f"중앙값 {_dur(statistics.median(values))}({len(values)}건)" if values else "-"
 
 
 def _usd(x: float) -> str:
@@ -950,118 +1371,164 @@ def _esc(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-class Report:
-    """정기 보고 하나의 계산 결과와 본문 조립.
+def _wrap(prefix: str, items: list[str], limit: int = 50) -> list[str]:
+    """prefix 뒤에 items를 ", "로 이어 적고, 한 줄이 limit자를 넘으면 다음 줄로 넘긴다.
 
-    본문은 줄마다 핵심 하나를 개조식으로 적고, 설명은 하위 줄("◦")로 내린다.
+    Args:
+        prefix: 첫 줄 앞 문구.
+        items: 이어 적을 값.
+        limit: 줄 글자 수 상한(목록 기호 제외).
+
+    Returns:
+        줄 목록. items가 비었으면 빈 목록.
+    """
+    lines: list[str] = []
+    cur = ""
+    for item in items:
+        if not cur:
+            cur = f"{prefix}{item}"
+        elif len(f"{cur}, {item}") > limit:
+            lines.append(cur)
+            cur = item
+        else:
+            cur = f"{cur}, {item}"
+    return [*lines, cur] if cur else lines
+
+
+def _capped_wrap(items: list[str], max_lines: int) -> list[str]:
+    """_wrap(머리 문구 없음)으로 나눈 줄이 max_lines를 넘으면 뒤 값부터 "외 n종"으로 줄인다.
+
+    Args:
+        items: 이어 적을 값.
+        max_lines: 줄 수 상한.
+
+    Returns:
+        줄 목록.
+    """
+    for rest in range(len(items) + 1):
+        shown = items[: len(items) - rest] + ([f"외 {rest}종"] if rest else [])
+        lines = _wrap("", shown)
+        if len(lines) <= max_lines:
+            return lines
+    return [f"외 {len(items)}종"]
+
+
+def _name(name: str) -> str:
+    """담당자 표시 이름. NAME_MAX자를 넘으면 자르고 "…"를 붙인다. Slack 제어 문자는 바꾼다."""
+    return _esc(name if len(name) <= NAME_MAX else name[:NAME_MAX] + "…")
+
+
+def _fit_members(head: str, groups: list[list[str]], budget: int) -> list[str]:
+    """팀원별 절 줄. 절이 budget 줄을 넘으면 앞 담당자부터 넣고 남은 담당자는 "• 외 n명"으로 줄인다.
+
+    budget이 3줄 미만이면 절 제목과 요약 한 줄(두 줄)만 적는다.
+
+    Args:
+        head: "순서:" 줄의 지표 순서 문구.
+        groups: 담당자마다의 줄(한 명당 두 줄 이내).
+        budget: 절에 쓸 수 있는 줄 수.
+
+    Returns:
+        Slack 본문 줄.
+    """
+    if budget < 3:
+        return ["*팀원별*", f"• 담당자 {len(groups)}명: 줄 수 상한으로 생략" if groups else "• 기록 없음"]
+    lines = ["*팀원별*", f"• 순서: {head}"]
+    if not groups:
+        return [*lines, "• 기록 없음"]
+    if len(lines) + sum(map(len, groups)) <= budget:
+        return lines + [x for g in groups for x in g]
+    kept: list[str] = []
+    n = 0
+    for g in groups:
+        if len(lines) + len(kept) + len(g) + 1 > budget:
+            break
+        kept += g
+        n += 1
+    return [*lines, *kept, f"• 외 {len(groups) - n}명"]
+
+
+class Report:
+    """정기 보고 하나의 계산 결과와 묶음별 메시지 조립.
+
+    메시지마다 제목, 대상 기간, 팀장 업무, 팀 전체, 팀원별, Claude 사용량 절, 지표 정의 줄 순서로 적는다.
+    메시지는 MAX_LINES줄 이내다. 넘으면 팀원별 줄을 줄인다.
     """
 
-    def __init__(self, tickets: list[Ticket], month: str, lead: str, jql: str):
-        self.tickets, self.month, self.lead, self.jql = tickets, month, lead, jql
+    def __init__(self, tickets: list[Ticket], month: str, lead: str, pr_ok: bool = True, pr_capped: bool = False):
+        self.tickets, self.month, self.lead, self.pr_ok, self.pr_capped = tickets, month, lead, pr_ok, pr_capped
+        self.year = month[:4]
         self.cur = months_span(month, month)
         self.prev_month = add_months(month, -1)
         self.prev = months_span(self.prev_month, self.prev_month)
-        self.labels: dict[str, str] = {}
-        for t in tickets:
-            self.labels.update(t.labels)
+        self.quarter = months_span(quarter_first(month), month)
         self.cur_usage, self.prev_usage = usage(tickets, self.cur), usage(tickets, self.prev)
         self.high = usage_judgement(self.cur_usage, self.prev_usage)
-        self.explained: set[str] = set()
+        self.cases = agreement_cases(tickets, lead)
 
-    def explain(self, term: str, depth: int = 1) -> list[str]:
-        """TERMS의 말을 처음 나올 때만 하위 줄로 풀어 적는다.
-
-        Args:
-            term: TERMS의 키.
-            depth: 들여쓰기 단계.
+    def quarters(self) -> list[tuple[str, Span]]:
+        """대상 해의 네 분기.
 
         Returns:
-            처음이면 설명 줄 하나, 이미 설명했으면 빈 목록.
+            (분기 이름 Q1–Q4, 기간) 목록.
         """
-        if term in self.explained:
-            return []
-        self.explained.add(term)
-        return [_sub(TERMS[term], depth)]
+        y = self.year
+        return [(f"Q{q}", months_span(f"{y}-{q * 3 - 2:02d}", f"{y}-{q * 3:02d}")) for q in range(1, 5)]
 
-    def label(self, cid: str) -> str:
-        """검사 ID를 검사 표의 "검사 이름 (ID)"로 적는다. 읽은 comment에 없으면 ID만 적는다.
+    def assemble(
+        self, title: str, sp: Span, sections: list[list[str]], member_head: str, groups: list[list[str]]
+    ) -> str:
+        """메시지 하나를 조립한다. 팀원별 절은 sections의 셋째 자리에 넣는다.
+
+        팀원별 절은 남은 줄 수(budget) 안에서 줄인다(_fit_members). 다른 절은 줄 수 상한이 있는 줄만 두어
+        메시지가 MAX_LINES줄을 넘지 않는다(월간 묶음의 최악 경우 팀원별 절 두 줄로 30줄).
 
         Args:
-            cid: 검사 ID.
+            title: 제목 줄.
+            sp: 대상 기간.
+            sections: 팀장 업무, 팀 전체, Claude 사용량 절의 줄.
+            member_head: 팀원별 절 "순서:" 줄의 지표 순서 문구.
+            groups: 담당자마다의 줄.
 
         Returns:
-            검사 칸 문구.
+            mrkdwn 문자열.
         """
-        return _esc(self.labels.get(cid, cid))
+        lead, team, use = sections
+        head = [title, f"대상 기간: {span_text(sp)}"]
+        budget = MAX_LINES - len(head) - len(lead) - len(team) - len(use) - 1
+        members = _fit_members(member_head, groups, budget)
+        return "\n".join([*head, *lead, *team, *members, *use, DEF_LINE])
 
-    def top_fails(self, sp: Span, n: int) -> list[str]:
-        """기간의 검사 ID별 ❌ 상위 n개 줄. 월간 묶음에서 먼저 불리므로 ❌의 뜻은 월간에서만 적는다.
+    def overview_lines(self, sp: Span) -> list[str]:
+        """월간 묶음 팀 전체 절의 ticket 현황 줄.
 
         Args:
-            sp: 기간.
-            n: 개수.
+            sp: 대상 기간.
 
         Returns:
             Slack 본문 줄.
         """
-        reviews = len(comments_in(self.tickets, sp, docs=False))
-        docs = len(comments_in(self.tickets, sp)) - reviews
-        top = sorted(fail_counts(self.tickets, sp).items(), key=_rank)[:n]
-        mark = "❌" if "❌" in self.explained else "❌(보완 필요)"
-        self.explained.add("❌")
-        basis = _sub(f"대상: 검수 comment {reviews}건, 문서화 리뷰 comment {docs}건")
-        if not top:
-            return [f"• 검사 ID별 {mark} 상위 {n}개는 기록 없음", basis]
-        lines = [f"• 검사 ID별 {mark} 상위 {n}개는 아래와 같음", basis, _sub("값: 검사 표의 ❌ 행 수")]
-        return lines + [f"{INDENT}{i}. {self.label(cid)}: ❌ {c}회" for i, (cid, c) in enumerate(top, 1)]
-
-    def monthly(self) -> list[str]:
-        """월간 묶음 줄.
-
-        Returns:
-            Slack 본문 줄.
-        """
-        return ["*월간*", *self.team_metrics(), "", *self.usage_lines(), "", *self.candidate_lines()]
-
-    def team_metrics(self) -> list[str]:
-        """월간 팀 지표 줄.
-
-        Returns:
-            Slack 본문 줄.
-        """
-        sp = self.cur
-        done = sum(1 for t in self.tickets if done_in(t, sp))
-        fb = feedback_minutes(self.tickets, sp)
+        ov = ticket_overview(self.tickets, sp, sp[0])
+        idle = ", ".join(f"{c} {ov.idle[c]}" for c in (LEAD_WAIT, OWNER_IDLE, OTHER_IDLE) if ov.idle[c])
         lines = [
-            f"팀 지표({span_text(sp)})",
-            f"• done ticket 수는 {done}개임",
-            _sub("기준: 이 기간에 done으로 전환된 ticket 수"),
-            f"• 첫 검수 통과율은 {_be(_pct(*pass_count(first_reviews(self.tickets, sp))))}",
-            _sub("분모: 이 기간에 작성된 ticket별 첫 검수 comment"),
-            _sub("분자: 그중 검수 결과가 통과인 comment"),
-            *self.top_fails(sp, TOP_MONTH),
-            f"• stop 사유 기록률은 {_be(_pct(*r4_count(self.tickets, sp)))}",
-            _sub("기준: 이 기간 검수 comment의 R4 행 중 만족 비율"),
-            _sub("해당 없음인 R4 행은 뺌"),
+            f"• 기존 ticket {ov.existing}개",
+            _sub(f"업데이트 {ov.updated}개(그중 done 전환 {ov.updated_done}개)"),
+            _sub(f"업데이트 없음 {ov.idle_total}개" + (f": {idle}" if idle else "")),
         ]
-        if fb:
-            lines += [
-                f"• 피드백 대기 시간은 중앙값 {_fmt(statistics.median(fb))}분임",
-                _sub(f"표본: request 전환 {len(fb)}건"),
-                *self.explain("request 전환"),
-                _sub(f"범위: {_fmt(min(fb))}–{_fmt(max(fb))}분"),
-                _sub("측정: request 전환부터 다음 첫 검수 comment까지"),
-            ]
-        else:
-            lines += [
-                "• 피드백 대기 시간은 기록 없음",
-                _sub("request 전환 뒤 검수 comment가 달린 경우가 0건임"),
-                *self.explain("request 전환"),
-            ]
+        if not self.pr_ok:
+            lines.append("• PR 검색 실패: PR 추가는 업데이트에서 뺌")
+        if self.pr_capped:
+            lines.append(f"• PR 검색이 상한 {PR_LIMIT}건에 닿음")
+        order = {s: i for i, s in enumerate(STATUS_ORDER)}
+        statuses = sorted(ov.new, key=lambda s: (order.get(s, len(order)), s))
+        lines.append(f"• 새 ticket {ov.new_total}개")
+        lines += [_sub(x) for x in _capped_wrap([f"{s} {ov.new[s]}" for s in statuses], NEW_STATUS_LINES)]
+        if len(self.tickets) >= SEARCH_LIMIT:
+            lines.append(f"• 검색 결과 상한 {SEARCH_LIMIT}개에 닿음: 빠진 ticket 있을 수 있음")
         return lines
 
     def usage_lines(self) -> list[str]:
-        """월간 묶음의 Claude 사용량 줄.
+        """월간 묶음의 Claude 사용량 절.
 
         Returns:
             Slack 본문 줄.
@@ -1069,241 +1536,197 @@ class Report:
         cur, prev = self.cur_usage, self.prev_usage
         flag, word, basis = self.high
         lines = [
-            f"Claude 사용량({span_text(self.cur)})",
-            "• 대상: jira-doc 기록의 실행 기록(runs)",
-            _sub("달은 실행 날짜로 나눔"),
-            "• API 환산 비용: claude CLI가 API 단가로 계산한 값",
-            _sub("실제 청구액이 아님"),
+            "*Claude 사용량(API 환산 비용)*",
+            f"• 합계 {_usd(cur.total_cost)}(실행 {cur.total_runs}건), 전월 {_usd(prev.total_cost)}",
         ]
-        if not cur.total_runs:
-            lines.append("• 이번 달 실행 기록 없음")
+        if cur.missing_cost:
+            lines.append(_sub(f"비용 기록 없는 실행 {cur.missing_cost}건은 0 USD로 셈"))
+        if flag is None:
+            reason = basis[0]
         else:
-            lines.append(f"• API 환산 비용 합계는 {_usd(cur.total_cost)}임")
-            lines.append(_sub(f"실행 {cur.total_runs}건"))
-            if cur.missing_cost:
-                lines.append(_sub(f"API 환산 비용 기록이 없는 실행 {cur.missing_cost}건은 0 USD로 셈"))
-        lines.append(_sub(f"전월: 실행 {prev.total_runs}건, {_usd(prev.total_cost)}"))
-        lines += [f"• 사용량 많음 판정: {word}", *(_sub(b) for b in basis)]
-        lines.append(_sub(f"기준: API 환산 비용이 전월의 {HIGH_RATIO}배 이상"))
-        lines.append(_sub(f"기준: 전월 검수 실행이 {HIGH_MIN_PREV_REVIEWS}건 이상"))
-        lines.append("• 실행 종류별 네 갈래의 값은 아래와 같음")
-        for b, ko in BRANCHES.items():
-            lines.append(
-                _sub(f"{ko}: {cur.runs[b]}건, {_usd(cur.cost[b])}(전월 {prev.runs[b]}건, {_usd(prev.cost[b])})")
-            )
-            lines += [_sub(d, 2) for d in BRANCH_DESC[b]]
-        lines.append("• 이번 달 토큰 수는 아래와 같음")
-        lines += [_sub(f"{ko}: {cur.tokens[k]:,}") for k, ko in TOKEN_KO.items()]
+            reason = f"전월의 {HIGH_RATIO}배 {'이상' if flag else '미만'}"
+        lines.append(f"• 사용량 많음: {word}({reason})")
         if flag:
-            lines += self.cause_lines()
+            up = sorted(((b, cur.cost[b] - prev.cost[b]) for b in BRANCHES), key=lambda x: -x[1])
+            lines += [_sub(x) for x in _wrap("늘어난 갈래: ", [f"{BRANCHES[b]} {dc:+.2f}" for b, dc in up if dc > 0])]
         return lines
 
-    def cause_lines(self) -> list[str]:
-        """사용량 많음일 때 API 환산 비용이 늘어난 갈래와 원인 추정 줄.
+    @staticmethod
+    def candidate_mark(c: Candidate) -> str:
+        """구두 피드백 대상 후보 표시 "후보(A, B: T2)".
+
+        Args:
+            c: 후보.
 
         Returns:
-            Slack 본문 줄.
+            표시 문구. 조건 B의 검사 ID는 CANDIDATE_IDS개까지 적고 나머지는 "외 n"으로 줄인다.
         """
-        cur, prev = self.cur_usage, self.prev_usage
-        up = sorted(
-            ((b, cur.cost[b] - prev.cost[b], cur.runs[b] - prev.runs[b]) for b in BRANCHES),
-            key=lambda x: -x[1],
-        )
-        up = [x for x in up if x[1] > 0]
-        lines = ["• 전월보다 API 환산 비용이 늘어난 갈래는 아래와 같음"]
-        lines += [_sub(f"{BRANCHES[b]}: {dc:+.2f} USD, 실행 {dn:+d}건") for b, dc, dn in up]
-        lines += [f"• {BRANCH_CAUSE[b]}" for b, _, _ in up]
-        done = [sum(1 for t in self.tickets if done_in(t, sp)) for sp in (self.cur, self.prev)]
-        rej = [sum(rejections(t, sp) for t in self.tickets) for sp in (self.cur, self.prev)]
-        lines.append(f"• 참고: done ticket {done[0]}개(전월 {done[1]}개)")
-        lines.append(f"• 참고: 반려 {rej[0]}회(전월 {rej[1]}회)")
-        return lines + self.explain("반려")
+        parts = ["A"] if c.rejected else []
+        if c.failed:
+            ids = [cid for cid, _ in c.failed]
+            more = f" 외 {len(ids) - CANDIDATE_IDS}" if len(ids) > CANDIDATE_IDS else ""
+            parts.append(f"B: {', '.join(ids[:CANDIDATE_IDS])}{more}")
+        return f"후보({', '.join(parts)})"
 
-    def candidate_lines(self) -> list[str]:
-        """구두 피드백 대상 후보와 지난달 후보의 개선 여부 줄.
+    def monthly_message(self) -> str:
+        """월간 묶음 메시지.
 
-        Returns:
-            Slack 본문 줄.
-        """
-        cands = candidates(self.tickets, self.cur)
-        lines = [
-            f"구두 피드백 대상 후보({self.month}, 담당자별)",
-            f"• 조건 A: 한 ticket의 반려가 {CANDIDATE_MIN}회 이상",
-            *self.explain("반려"),
-            f"• 조건 B: 같은 검사 ID의 ❌가 {CANDIDATE_MIN}회 이상",
-            _sub("검수 comment와 문서화 리뷰 comment를 합쳐 셈"),
-            "• 조건 A 또는 B를 만족하면 후보임",
-        ]
-        for c in cands.values():
-            lines.append(f"• {_esc(c.name)}")
-            lines += [_sub(f"조건 A: {key} 반려 {n}회") for key, n in c.rejected]
-            lines += [_sub(f"조건 B: {self.label(cid)} ❌ {n}회") for cid, n in c.failed]
-        if not cands:
-            rej = sum(rejections(t, self.cur) for t in self.tickets)
-            n = len(comments_in(self.tickets, self.cur, docs=False))
-            lines.append("• 기록 없음" if not rej and not n else "• 후보 없음")
-            lines.append(_sub(f"이 기간 반려 {rej}회, 검수 comment {n}건"))
-        lines += ["", f"지난달 후보의 개선 여부({self.prev_month} 후보)"]
-        lines.append("• 지난달 후보는 같은 규칙으로 다시 계산함")
-        follow = followup(candidates(self.tickets, self.prev), self.tickets, self.cur, self.prev)
-        for name, res, detail in follow:
-            lines += [f"• {_esc(name)}: {res}", _sub(FOLLOW_DESC[res]), *(_sub(d) for d in detail)]
-        if not follow:
-            lines.append("• 지난달 후보 없음")
-        lines += ["• 실제 구두 피드백 여부는 반영하지 않음", "• 결과는 후보로 알린 뒤의 변화로 해석함"]
-        return lines
-
-    def quarterly(self) -> list[str]:
-        """분기 묶음 줄.
-
-        Returns:
-            Slack 본문 줄.
-        """
-        y, m = map(int, self.month.split("-"))
-        sp = months_span(quarter_first(self.month), self.month)
-        lines = [
-            f"*분기({y} Q{(m - 1) // 3 + 1})*",
-            f"• 기간: {span_text(sp)}",
-            "",
-            "KR(상위 목표 ticket)별 하위 Task",
-            "• 대상: 이 분기에 done으로 전환된 Task",
-        ]
-        rows = kr_rows(self.tickets, sp)
-        for r in rows:
-            lines += [f"• {r.key} {_esc(r.name)}".rstrip(), _sub(f"done {r.done}개")]
-            rate = _pct(r.achieved, r.expected, "개") if r.expected else "기록 없음"
-            lines.append(_sub(f"결과 산출물 달성률: {rate}"))
-            if r.no_line:
-                lines.append(_sub(f"달성 요약 줄이 없는 Task {r.no_line}개는 뺌"))
-        if not rows:
-            lines.append("• 기록 없음(done으로 전환된 Task 0개)")
-        lines += [
-            "• 달성률은 description의 달성 요약 줄을 합산함",
-            _sub('달성 요약 줄: "예상 산출물 n개 중 m개 달성"'),
-            _sub("계산: m의 합 / n의 합"),
-            "",
-            "검사 ID별 ❌",
-            *self.top_fails(sp, TOP_QUARTER),
-        ]
-        a = agreement_summary(agreement_cases(self.tickets, self.lead), sp)
-        lines += [
-            "",
-            "판정 일치율",
-            "• 대상: 이 분기에 작성된 검수 comment",
-            f"• 분기값은 {_be(_pct(a['match'], a['judged']))}",
-            f"• 최근 {RECENT_N}건 값은 {_be(_pct(a['recent_match'], a['recent_n']))}",
-            _sub(f"대상: 분기 끝까지 판정할 수 있는 최근 최대 {RECENT_N}건"),
-            _sub("이번 실행에서 읽은 ticket 안에서만 셈"),
-            f"• 검토 요청 비율은 {_be(_pct(a['escalate'], a['total']))}",
-            _sub("분자: 검수 결과가 검토 요청인 검수 comment"),
-            _sub("분모: 이 분기 검수 comment 전체"),
-            _sub("검토 요청: CI agent가 팀장 판단을 요청한 검수 결과"),
-            "• 판정 기준은 아래와 같음",
-            _sub("검수 comment 뒤 ready-to-done에서 나간 첫 전환을 확인함"),
-            _sub("팀장 계정의 전환만 셈"),
-            _sub("일치: 통과→done, 보류→In Progress"),
-            _sub("불일치: 통과→In Progress, 보류→done"),
-        ]
-        if not self.lead:
-            lines.append(_sub("팀장 accountId가 없어 모든 전환을 팀장 외 전환으로 셈"))
-        lines += ["• 일치율에서 뺀 검수 comment는 아래와 같음", _sub(f"{ESCALATE}: {a['escalate']}건")]
-        for k, n in a["excluded"].items():
-            lines += [_sub(f"{k}: {n}건"), _sub(EXCLUDED_DESC[k], 2)]
-        return lines
-
-    def yearly(self) -> list[str]:
-        """연간 묶음 줄. 첫 실행 기록이 있는 달 전의 사용량은 "기록 없음"으로 적는다.
-
-        검사 ID별 만족률은 검사 ID마다 연간 값을 적고, 연간 ❌ 횟수 상위 TOP_YEAR_MONTHLY개 검사 ID에만 월별 값을
-        하위 줄로 붙인다. 같은 횟수면 검사 ID별 ❌ 상위의 정렬 규칙(_rank)을 따른다.
-
-        Returns:
-            Slack 본문 줄.
-        """
-        y = self.month[:4]
-        months = [f"{y}-{m:02d}" for m in range(1, 13)]
-        firsts = [r.at for t in self.tickets for r in t.runs]
-        start = min(firsts).astimezone(KST) if firsts else None
-        lines = [f"*연간({y})*", "", "월별 Claude 사용량", "• 값: 실행 날짜 기준 API 환산 비용"]
-        if start:
-            lines += [f"• 첫 실행 기록은 {start.date().isoformat()}임", _sub("그 전 달은 기록 없음으로 적음")]
-        else:
-            lines.append("• 읽은 범위에 실행 기록이 없음")
-        for mo in months:
-            if start is None or mo < start.strftime("%Y-%m"):
-                lines.append(f"• {mo}: 기록 없음")
-                continue
-            u = usage(self.tickets, months_span(mo, mo))
-            lines.append(f"• {mo}: {_usd(u.total_cost)}, 실행 {u.total_runs}건")
-            lines += [_sub(f"{ko} {_usd(u.cost[b])}") for b, ko in BRANCHES.items()]
-        lines += ["", "월별 첫 검수 통과율", "• 기준: 그 달에 작성된 ticket별 첫 검수 comment"]
-        lines += [f"• {mo}: {_pct(*pass_count(first_reviews(self.tickets, months_span(mo, mo))))}" for mo in months]
-        sp = months_span(months[0], months[-1])
-        sat = check_satisfaction(self.tickets, sp)
-        lines += [
-            "",
-            "검사 ID별 만족률",
-            f"• 기간: {span_text(sp)}",
-            "• 대상: 검수 comment와 문서화 리뷰 comment",
-            "• 해당 없음인 행은 뺌",
-        ]
-        fails = fail_counts(self.tickets, sp)
-        top = [cid for cid, _ in sorted(fails.items(), key=_rank)[:TOP_YEAR_MONTHLY]]
-        if top:
-            lines += [
-                f"• 월별 값은 연간 ❌ 횟수 상위 {TOP_YEAR_MONTHLY}개 검사 ID에만 적음",
-                _sub("같은 횟수면 검사 ID 순"),
-            ]
-        monthly = {mo: check_satisfaction(self.tickets, months_span(mo, mo)) for mo in months}
-        ranked = sorted(sat.items(), key=lambda x: (x[1][0] / x[1][1], x[0]))
-        for cid, (ok, n) in ranked:
-            lines.append(f"• {self.label(cid)}: {_pct(ok, n)}")
-            if cid in top:
-                lines.append(_sub(f"연간 ❌ {fails[cid]}회"))
-                for mo in months:
-                    val = monthly[mo].get(cid)
-                    lines.append(_sub(f"{mo}: {_pct(*val) if val else '기록 없음'}"))
-        if not ranked:
-            lines.append("• 기록 없음(판정된 행 0건)")
-        return lines
-
-    def body(self) -> str:
-        """Slack 본문.
+        팀원별 줄은 구두 피드백 대상 후보, 지난달 후보, 그 밖의 담당자 순이고 같은 묶음 안에서는 이름 순이다.
 
         Returns:
             mrkdwn 문자열.
         """
-        lines = [
-            f"[{self.month} jira-doc 정기 보고]",
-            f"• 읽은 범위: Jira 검색 조건(JQL)으로 찾은 ticket {len(self.tickets)}개",
-            _sub(f"JQL: `{self.jql}`"),
-            "• 시각은 한국 시간 기준임",
-            "• 기간은 양 끝 날짜를 포함함",
+        sp = self.cur
+        a = agreement_summary(self.cases, sp)
+        wait_n, wait_days = lead_wait(self.tickets, sp[1])
+        lead = [
+            "*팀장 업무*",
+            f"• 피드백 대기 시간: {_median(feedback_minutes(self.tickets, sp))}",
+            f"• 판정 일치율: {_ratio(a['match'], a['judged'])}",
+            _sub(f"최근 {RECENT_N}건: {_ratio(a['recent_match'], a['recent_n'])}"),
+            f"• 팀장 확인 대기: {wait_n}건" + (f"(최장 {wait_days}영업일)" if wait_n else ""),
+            f"• 팀장 확인 시간: {_median(lead_confirm_minutes(self.tickets, sp, self.lead))}",
         ]
-        if len(self.tickets) >= SEARCH_LIMIT:
-            lines += [f"• 검색 결과가 상한 {SEARCH_LIMIT}개에 닿음", _sub("빠진 ticket이 있을 수 있음")]
-        lines += ["", *self.monthly()]
-        if int(self.month[5:]) % 3 == 0:
-            lines += ["", *self.quarterly()]
-        return "\n".join(lines)
+        team = [
+            "*팀 전체*",
+            *self.overview_lines(sp),
+            f"• 첫 검수 통과율: {_ratio(*pass_count(first_reviews(self.tickets, sp)))}",
+            f"• 최대 검수 반복 횟수: {_times(*max_request_count(self.tickets, sp))}",
+            f"• stop 사유 기록률: {_ratio(*r4_count(self.tickets, sp))}",
+        ]
+        cands = candidates(self.tickets, sp)
+        prev_cands = candidates(self.tickets, self.prev)
+        follow = {aid: res for aid, (_, res, _) in zip(prev_cands, followup(prev_cands, self.tickets, sp, self.prev))}
+        rows = member_rows(self.tickets, sp, include=follow)
+        rows.sort(key=lambda r: 0 if r.aid in cands else 1 if r.aid in follow else 2)
+        groups = []
+        for r in rows:
+            sub = [f"업데이트 없음 {r.idle}개"]
+            if r.aid in cands:
+                sub.append(self.candidate_mark(cands[r.aid]))
+            if r.aid in follow:
+                sub.append(f"지난달 후보: {follow[r.aid]}")
+            main = f"• {_name(r.name)}: {_frac(*r.first)} / {_times(r.max_request[0])} / {_frac(*r.stop)}"
+            groups.append([main, _sub(", ".join(sub))])
+        title = f"[{self.month} jira-doc 월간 보고]"
+        head = "첫 검수 통과율 / 최대 검수 반복 횟수 / stop 사유 기록률"
+        return self.assemble(title, sp, [lead, team, self.usage_lines()], head, groups)
+
+    def quarterly_message(self) -> str:
+        """분기 묶음 메시지.
+
+        Returns:
+            mrkdwn 문자열.
+        """
+        sp = self.quarter
+        a = agreement_summary(self.cases, sp)
+        lead = [
+            "*팀장 업무*",
+            f"• 판정 일치율: {_ratio(a['match'], a['judged'])}",
+            _sub(f"최근 {RECENT_N}건: {_ratio(a['recent_match'], a['recent_n'])}"),
+            f"• 검토 요청 비율: {_ratio(a['escalate'], a['total'])}",
+            f"• 피드백 대기 시간: {_median(feedback_minutes(self.tickets, sp))}",
+            f"• 팀장 확인 시간: {_median(lead_confirm_minutes(self.tickets, sp, self.lead))}",
+        ]
+        rows = kr_rows(self.tickets, sp)
+        team = ["*팀 전체*", "• KR별 하위 Task" + ("" if rows else ": -")]
+        for r in rows[:KR_MAX]:
+            rate = f"달성률 {_frac(r.achieved, r.expected, '개')}"
+            miss = f"(달성 요약 줄 없음 {r.no_line}개)" if r.no_line else ""
+            team.append(_sub(f"{r.key or _esc(r.name)}: done {r.done}개, {rate}{miss}"))
+        if len(rows) > KR_MAX:
+            team.append(_sub(f"외 {len(rows) - KR_MAX}개"))
+        top = sorted(fail_counts(self.tickets, sp).items(), key=_rank)[:TOP_QUARTER]
+        top_text = ", ".join(f"{cid} {n}" for cid, n in top) or "-"
+        team += [
+            f"• ❌ 상위 {TOP_QUARTER}개: {top_text}",
+            f"• 첫 검수 통과율: {_ratio(*pass_count(first_reviews(self.tickets, sp)))}",
+            f"• 최대 검수 반복 횟수: {_times(*max_request_count(self.tickets, sp))}",
+        ]
+        groups = [
+            [f"• {_name(r.name)}: {_frac(*r.first)} / {_times(r.max_request[0])} / {_frac(*r.stop)}"]
+            for r in member_rows(self.tickets, sp)
+        ]
+        u = usage(self.tickets, sp)
+        cost = [f"{ko} {u.cost[b]:.2f}" for b, ko in BRANCHES.items()]
+        use = [
+            "*Claude 사용량(API 환산 비용)*",
+            f"• 합계 {_usd(u.total_cost)}(실행 {u.total_runs}건)",
+            _sub(", ".join(cost[:2])),
+            _sub(", ".join(cost[2:])),
+        ]
+        y, m = map(int, self.month.split("-"))
+        title = f"[{y} Q{(m - 1) // 3 + 1} jira-doc 분기 보고]"
+        head = "첫 검수 통과율 / 최대 검수 반복 횟수 / stop 사유 기록률"
+        return self.assemble(title, sp, [lead, team, use], head, groups)
+
+    def yearly_message(self) -> str:
+        """연간 묶음 메시지. 분기별 값은 그 분기에 기록이 없으면 "-"로 적는다.
+
+        만족률은 연간 ❌ 상위 TOP_YEAR개 검사 ID의 분기별 값이다. 같은 횟수면 검사 ID 순(_rank)이다.
+
+        Returns:
+            mrkdwn 문자열.
+        """
+        sp = months_span(f"{self.year}-01", f"{self.year}-12")
+        quarters = self.quarters()
+
+        def per_quarter(value: Callable[[Span], str]) -> str:
+            return ", ".join(f"{name} {value(qs)}" for name, qs in quarters)
+
+        def agree(qs: Span) -> str:
+            a = agreement_summary(self.cases, qs)
+            return _frac(a["match"], a["judged"])
+
+        a = agreement_summary(self.cases, sp)
+        lead = [
+            "*팀장 업무*",
+            f"• 판정 일치율: {_ratio(a['match'], a['judged'])}",
+            _sub(f"분기별: {per_quarter(agree)}"),
+        ]
+        team = [
+            "*팀 전체*",
+            f"• 첫 검수 통과율: {_ratio(*pass_count(first_reviews(self.tickets, sp)))}",
+            _sub(f"분기별: {per_quarter(lambda qs: _frac(*pass_count(first_reviews(self.tickets, qs))))}"),
+        ]
+        top = [cid for cid, _ in sorted(fail_counts(self.tickets, sp).items(), key=_rank)[:TOP_YEAR]]
+        team.append(f"• ❌ 상위 {TOP_YEAR}개의 분기별 만족률" + ("" if top else ": -"))
+        sat = {name: check_satisfaction(self.tickets, qs) for name, qs in quarters}
+        for cid in top:
+            team.append(
+                _sub(f"{cid}: " + ", ".join(f"{name} {_frac(*sat[name].get(cid, (0, 0)))}" for name, _ in quarters))
+            )
+        groups = [
+            [f"• {_name(r.name)}: {_frac(*r.first)} / {_times(r.max_request[0])}"]
+            for r in member_rows(self.tickets, sp)
+        ]
+
+        def cost(qs: Span) -> str:
+            u = usage(self.tickets, qs)
+            return f"{u.total_cost:.2f}" if u.total_runs else "-"
+
+        u = usage(self.tickets, sp)
+        use = [
+            "*Claude 사용량(API 환산 비용)*",
+            f"• 합계 {_usd(u.total_cost)}(실행 {u.total_runs}건)",
+            _sub(f"분기별: {per_quarter(cost)}"),
+        ]
+        title = f"[{self.year} jira-doc 연간 보고]"
+        return self.assemble(title, sp, [lead, team, use], "첫 검수 통과율 / 최대 검수 반복 횟수", groups)
 
     def messages(self) -> list[str]:
-        """팀장 채널로 보낼 Slack 메시지 목록.
+        """팀장 채널로 보낼 Slack 메시지 목록. 묶음마다 메시지 하나다.
 
-        첫 메시지는 월간 묶음과 분기 묶음이다. 연간 묶음이 붙는 달(12월)에는 연간 묶음을 두 번째 메시지로 나눈다.
-        한 메시지가 지나치게 길어지지 않게 하려는 것이다.
+        월간 묶음은 매달, 분기 묶음은 대상 달이 3, 6, 9, 12월이면, 연간 묶음은 12월이면 이 순서로 붙는다.
 
         Returns:
             mrkdwn 문자열 목록.
         """
-        out = [self.body()]
+        out = [self.monthly_message()]
+        if int(self.month[5:]) % 3 == 0:
+            out.append(self.quarterly_message())
         if self.month.endswith("-12"):
-            head = [
-                f"[{self.month[:4]} jira-doc 연간 보고]",
-                "• 시각은 한국 시간 기준임",
-                "• 기간은 양 끝 날짜를 포함함",
-            ]
-            out.append("\n".join([*head, "", *self.yearly()]))
+            out.append(self.yearly_message())
         return out
 
     def summary_lines(self) -> list[str]:
@@ -1314,40 +1737,65 @@ class Report:
         """
         cur, sp = self.cur_usage, self.cur
         fb = feedback_minutes(self.tickets, sp)
+        ov = ticket_overview(self.tickets, sp, sp[0])
+        a = agreement_summary(self.cases, sp)
+        wait_n, wait_days = lead_wait(self.tickets, sp[1])
+        idle = ", ".join(f"{c} {ov.idle[c]}" for c in (LEAD_WAIT, OWNER_IDLE, OTHER_IDLE))
         lines = [
             f"### jira-doc 정기 보고 {self.month} (팀 합계)",
             "",
             f"- Claude 사용량: 실행 {cur.total_runs}건, API 환산 비용 {_usd(cur.total_cost)}",
             f"- 사용량 많음 판정: {self.high[1]}({'; '.join(self.high[2])})",
             *(f"- {ko}: 실행 {cur.runs[b]}건, {_usd(cur.cost[b])}" for b, ko in BRANCHES.items()),
-            f"- done ticket 수: {sum(1 for t in self.tickets if done_in(t, sp))}개",
-            f"- 첫 검수 통과율: {_pct(*pass_count(first_reviews(self.tickets, sp)))}",
-            f"- stop 사유 기록률: {_pct(*r4_count(self.tickets, sp))}",
-            f"- 피드백 대기 시간 중앙값: {_fmt(statistics.median(fb)) + '분' if fb else '기록 없음'}",
-            f"- 피드백 대기 시간 표본: request 전환 {len(fb)}건",
+            "- Claude 토큰: " + ", ".join(f"{ko} {cur.tokens[k]:,}" for k, ko in TOKEN_KO.items()),
+            f"- 기존 ticket: {ov.existing}개(업데이트 {ov.updated}개, 그중 done 전환 {ov.updated_done}개)",
+            f"- 업데이트 없는 기존 ticket: {ov.idle_total}개({idle})",
+            f"- 새 ticket: {ov.new_total}개",
+        ]
+        if not self.pr_ok:
+            lines.append("- PR 검색 실패: PR 추가는 업데이트에서 뺌")
+        if self.pr_capped:
+            lines.append(f"- PR 검색이 상한 {PR_LIMIT}건에 닿음")
+        lines += [
+            f"- 첫 검수 통과율: {_ratio(*pass_count(first_reviews(self.tickets, sp)))}",
+            f"- 최대 검수 반복 횟수: {_times(*max_request_count(self.tickets, sp))}",
+            f"- stop 사유 기록률: {_ratio(*r4_count(self.tickets, sp))}",
+            f"- 피드백 대기 시간: {_median(fb)}",
+            f"- 판정 일치율: {_ratio(a['match'], a['judged'])}",
+            f"- 팀장 확인 대기: {wait_n}건(최장 {wait_days}영업일)",
+            f"- 팀장 확인 시간: {_median(lead_confirm_minutes(self.tickets, sp, self.lead))}",
         ]
         if int(self.month[5:]) % 3 == 0:
-            qsp = months_span(quarter_first(self.month), self.month)
-            a = agreement_summary(agreement_cases(self.tickets, self.lead), qsp)
-            lines.append(f"- 분기 판정 일치율: {_pct(a['match'], a['judged'])}")
+            q = agreement_summary(self.cases, self.quarter)
+            lines.append(f"- 분기 판정 일치율: {_ratio(q['match'], q['judged'])}")
         lines += ["- 담당자별 수치와 구두 피드백 대상 후보는 팀장 채널 메시지에만 적음", ""]
         return lines
 
 
-def run_report(j: JiraReader, month: str, lead: str, summ: SummaryLike) -> list[str]:
-    """정기 보고 메시지를 계산해 Slack 본문을 만들고 Summary 탭에 팀 합계를 남긴다.
+def run_report(
+    j: JiraReader,
+    month: str,
+    lead: str,
+    summ: SummaryLike,
+    pr_search: Callable[[str, dt.date, dt.date], list[dict] | None] | None = None,
+) -> list[str]:
+    """정기 보고 메시지를 계산해 묶음별 Slack 메시지를 만들고 Summary 탭에 팀 합계를 남긴다.
 
     읽는 기간은 전월 첫날부터이고, 분기 묶음이 붙는 달(3, 6, 9, 12월)은 분기 첫날부터, 연간 묶음이 붙는 달(12월)은
-    그해 1월 1일부터다. 프로젝트 키는 환경 변수 JIRA_PROJECT_KEY에서 읽는다.
+    그해 1월 1일부터다. 프로젝트 키는 환경 변수 JIRA_PROJECT_KEY, GitHub organization은 GH_ORG에서 읽는다.
+    업데이트 판정은 월간 묶음에서만 쓰므로 sub-task와 PR은 대상 달에 만들어진 것만 한 번씩 검색한다.
+    PR 검색 결과가 PR_LIMIT건에 닿으면 월간 메시지에 그 사실을 적는다.
+    PR 검색 기간은 build_jql처럼 하루 앞선 날부터이고, 기간 판정은 시각으로 다시 한다.
 
     Args:
         j: Jira 읽기 객체(scripts/jira_api.py의 Jira).
         month: 보고 대상 달(YYYY-MM).
         lead: 팀장 Jira accountId.
         summ: Summary 탭 기록 객체(scripts/apply.py의 Summary). extra에 팀 합계 줄을 추가한다.
+        pr_search: PR 검색 함수(search_prs와 같은 인자와 반환값). None이면 search_prs를 쓴다.
 
     Returns:
-        Slack 메시지 목록(mrkdwn). 12월 보고는 연간 묶음을 두 번째 메시지로 나눈다(Report.messages).
+        Slack 메시지 목록(mrkdwn). 월간, 분기, 연간 묶음 순이다(Report.messages).
     """
     project = os.environ.get("JIRA_PROJECT_KEY", "")
     if not project:
@@ -1358,6 +1806,11 @@ def run_report(j: JiraReader, month: str, lead: str, summ: SummaryLike) -> list[
     if month.endswith("-12"):
         first = f"{month[:4]}-01"
     jql = build_jql(project, months_span(first, first)[0].date())
-    report = Report(collect(j, jql), month, lead, jql)
+    tickets = collect(j, jql)
+    cur = months_span(month, month)
+    since, until = cur[0].date(), (cur[1] - dt.timedelta(days=1)).date()
+    prs = (pr_search or search_prs)(os.environ.get("GH_ORG", ""), since - dt.timedelta(days=1), until)
+    attach_updates(tickets, fetch_subtasks(j, project, since, cur[1].date()), pr_times(prs or [], project))
+    report = Report(tickets, month, lead, pr_ok=prs is not None, pr_capped=prs is not None and len(prs) >= PR_LIMIT)
     summ.extra += report.summary_lines()
     return report.messages()
