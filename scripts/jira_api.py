@@ -118,9 +118,6 @@ class Jira:
         res = self._req("GET", f"/issue/{key}/properties/{PROPERTY_KEY}", ok404=True)
         return (res or {}).get("value", {}) or {}
 
-    def transitions(self, key: str) -> list[dict]:
-        return self._req("GET", f"/issue/{key}/transitions").get("transitions", [])
-
     # ------------------------------------------------------------------ 쓰기 (apply.py만 사용)
     def prop_set(self, key: str, value: dict) -> None:
         self._req("PUT", f"/issue/{key}/properties/{PROPERTY_KEY}", body=value)
@@ -130,23 +127,6 @@ class Jira:
 
     def add_comment(self, key: str, body: str) -> dict:
         return self._req("POST", f"/issue/{key}/comment", body={"body": body})
-
-    def transition_to(self, key: str, status: str) -> None:
-        """도착 상태 이름이 status인 첫 전환을 실행한다. 상태 이름은 대소문자를 무시하고 비교한다.
-
-        전환 이름은 워크플로마다 다를 수 있어, 전환 이름 대신 도착 상태 이름으로 전환을 찾는다.
-
-        Args:
-            key: task 키.
-            status: 도착 상태 이름(예: In Progress).
-
-        Raises:
-            JiraError: status로 가는 전환이 없거나 Jira API 호출이 실패함.
-        """
-        cands = [t for t in self.transitions(key) if ((t.get("to") or {}).get("name") or "").lower() == status.lower()]
-        if not cands:
-            raise JiraError(f"'{status}'로 가는 전환이 {key}에 없음")
-        self._req("POST", f"/issue/{key}/transitions", body={"transition": {"id": cands[0]["id"]}})
 
 
 # ---------------------------------------------------------------------- 공통 유틸

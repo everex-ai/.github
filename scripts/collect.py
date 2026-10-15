@@ -2,11 +2,8 @@
 """1단계: Jira와 GitHub에서 입력을 모아 ctx/ 아래에 파일로 저장한다.
 
 - review 모드: --issue 하나만 대상
-- digest 모드: --issue가 있으면 그 task 하나, 없으면
-    (a) 최근 3일 안에 사람의 변경이 있었던 In Progress/Backlog task  -> ctx/<KEY>/   (Claude가 TL;DR 갱신)
-    (b) Done/Deleted가 아닌 모든 최상위 task의 요약                  -> ctx/_scan/   (스크립트가 누락 검사)
-    (c) 최근 3일 안에 병합됐지만 제목에 task 키가 없는 PR             -> ctx/_org/unlinked_prs.json
-- alerts 모드: 주간 점검용. 개별 task 수집 없이 (b)만 만든다 (Claude 단계를 쓰지 않는다)
+- digest 모드: --issue가 필요하다. 그 task 하나만 대상
+- alerts 모드: 주간 점검용. Done/Deleted가 아닌 모든 최상위 task의 요약만 ctx/_scan/에 만든다 (Claude 단계를 쓰지 않는다)
 환경 변수: JIRA_*, JIRA_PROJECT_KEY, JIRA_TLDR_FIELD_ID, GH_TOKEN, GH_ORG
 """
 from __future__ import annotations
@@ -28,7 +25,6 @@ from jira_api import Jira, is_agent_comment, section_body, sections  # noqa: E40
 CTX = Path("ctx")
 TARGET_TYPES = [t.strip() for t in os.environ.get("TARGET_TYPES", "Task,Bug,Issue").split(",")]
 TYPE_ALIAS = {"작업": "Task", "버그": "Bug", "이슈": "Issue", "task": "Task", "bug": "Bug", "issue": "Issue"}
-DIGEST_LIMIT = int(os.environ.get("DIGEST_LIMIT", "20"))
 ISSUE_FIELDS = ["summary", "status", "assignee", "reporter", "created", "updated", "labels",
                 "issuetype", "parent", "subtasks", "description", "attachment"]
 # 사람 구역(해시와 검사에 쓰는 구역). agent 구역은 제외한다.
@@ -148,8 +144,12 @@ def human_input_hash(itype: str, desc: str, comments: list[dict], subtasks: list
     return "sha256:" + h.hexdigest()
 
 
-def collect_issue(j: Jira, key: str, site: str, org: str, mode: str, force: bool = False) -> dict | None:
-    """force=True(task를 지정한 F3·수동 실행)면 사람 입력이 지난 실행과 같아도 건너뛰지 않는다."""
+def collect_issue(j: Jira, key: str, site: str, org: str, mode: str) -> dict | None:
+    """task 하나의 입력을 ctx/<KEY>/ 아래에 저장한다. 사람 입력이 지난 실행과 같아도 건너뛰지 않는다.
+
+    Returns:
+        {"key": 키}. work type이 대상이 아니면 None.
+    """
     fields = ISSUE_FIELDS + ([j.tldr_field] if j.tldr_field else [])
     data = j.issue(key, fields)
     f = data.get("fields", {})
@@ -174,10 +174,6 @@ def collect_issue(j: Jira, key: str, site: str, org: str, mode: str, force: bool
     prs = fetch_prs(key, org) if org else []
     state = j.prop_get(key)
     ihash = human_input_hash(itype, desc, comments, subtasks, prs, changelog)
-
-    if mode == "digest" and not force and state.get("inputHash") == ihash:
-        print(f"[collect] {key}: 사람의 입력 변화 없음(해시 동일). Claude 정리 대상에서 제외")
-        return {"key": key, "skipped": True}
 
     d = CTX / key
     if d.exists():
@@ -204,7 +200,7 @@ def collect_issue(j: Jira, key: str, site: str, org: str, mode: str, force: bool
     write(d / "meta.json", {"mode": mode, "inputHash": ihash, "collectedAt": now_iso(), "site": site})
     sub_prs = sum(len(s["prs"]) for s in subtasks)
     print(f"[collect] {key}: 수집 완료 (comment {len(comments)}, sub-task {len(subtasks)}, PR {len(prs)}, sub-task PR {sub_prs})")
-    return {"key": key, "skipped": False}
+    return {"key": key}
 
 
 def collect_scan(j: Jira, project: str, site: str) -> None:
@@ -234,23 +230,13 @@ def collect_scan(j: Jira, project: str, site: str) -> None:
         })
 
 
-def collect_unlinked_prs(org: str, project: str) -> None:
-    since = (dt.date.today() - dt.timedelta(days=3)).isoformat()
-    found = gh("search", "prs", "--owner", org, "--merged", "--merged-at", f">={since}",
-               "--json", "title,url,repository,closedAt,author", "--limit", "100") or []
-    pat = key_pattern(rf"{re.escape(project)}-\d+")
-    unlinked = [{"title": p["title"], "url": p["url"], "repo": (p.get("repository") or {}).get("nameWithOwner", ""),
-                 "mergedAt": p.get("closedAt"), "author": (p.get("author") or {}).get("login")}
-                for p in found if not pat.search(p.get("title") or "")]
-    write(CTX / "_org" / "unlinked_prs.json", unlinked)
-    print(f"[collect] 최근 3일 병합 PR {len(found)}건 중 task 키 없는 PR {len(unlinked)}건")
-
-
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", choices=["review", "digest", "alerts"], required=True)
     ap.add_argument("--issue", default="")
     args = ap.parse_args()
+    if args.mode != "alerts" and not args.issue.strip():   # ticket 키 없는 실행은 막는다. Jira를 부르기 전에 끝낸다
+        sys.exit(f"{args.mode} 모드에는 --issue가 필요하다")
 
     j = Jira()
     site = j.site_url()
@@ -266,42 +252,7 @@ def main() -> None:
         collect_scan(j, project, site)
         print(f"[collect] alerts: 점검 대상 {len(list((CTX / '_scan').glob('*.json')))}건")
         return
-    if args.issue:
-        collect_issue(j, args.issue.strip(), site, org, args.mode, force=True)
-        return
-    if args.mode == "review":
-        sys.exit("review 모드에는 --issue가 필요하다")
-    if not project:
-        sys.exit("digest 모드에는 JIRA_PROJECT_KEY가 필요하다")
-
-    types = ", ".join(TARGET_TYPES)
-    changed = j.search(
-        f'project = {project} AND issuetype in ({types}) AND status in ("In Progress", "Backlog") AND updated >= -3d ORDER BY updated ASC',
-        ["key", "updated"])
-    keys = [i["key"] for i in changed]
-    # sub-task가 바뀌어도 부모의 updated는 바뀌지 않으므로 부모를 따로 찾는다
-    subs = j.search(f'project = {project} AND issuetype = Sub-task AND updated >= -3d', ["parent"])
-    parent_keys = {((s.get("fields") or {}).get("parent") or {}).get("key") for s in subs}
-    parent_keys.discard(None)
-    if parent_keys:
-        extra = j.search(
-            f'key in ({", ".join(sorted(parent_keys))}) AND issuetype in ({types}) AND status in ("In Progress", "Backlog")',
-            ["key", "updated"])
-        keys += [i["key"] for i in extra if i["key"] not in keys]
-
-    done = 0
-    for key in keys:
-        if done >= DIGEST_LIMIT:
-            print(f"[collect] 실행당 상한 {DIGEST_LIMIT}건에 도달. 나머지는 다음 실행에서 처리")
-            break
-        res = collect_issue(j, key, site, org, "digest")
-        if res and not res.get("skipped"):
-            done += 1
-
-    collect_scan(j, project, site)
-    if org:
-        collect_unlinked_prs(org, project)
-    print(f"[collect] digest: 변경 후보 {len(keys)}건, Claude 대상 {done}건")
+    collect_issue(j, args.issue.strip(), site, org, args.mode)
 
 
 if __name__ == "__main__":

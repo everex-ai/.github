@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """4단계: Claude의 출력(out/<KEY>/)을 검증해 Jira에 반영한다. Jira에 쓰는 유일한 단계.
 
-alerts 모드(주간 점검)는 Jira에 쓰지 않고 ctx/_scan/*.alerts.json을 Slack 한 건으로 보낸다.
+alerts 모드(주간 점검)는 Jira에 쓰지 않고 ctx/_scan/*.alerts.json을 Slack 한 건으로 보낸다. 같은 모드에서 환경 변수 TOKEN_EXPIRY의
+만료일이 30일 이하로 남은 토큰(인증 키)이 있으면 팀장 채널로 Slack 한 건을 더 보낸다.
+report 모드는 scripts/report.py의 run_report가 만든 정기 보고 메시지를 팀장 채널로 보낸다.
+decision 모드는 팀장이 ready-to-done ticket을 done(통과) 또는 In Progress(보류)로 전환했을 때 담당자에게 Slack 한 건을 보낸다.
 
-반영 순서: 구역 교체(결과 산출물) -> TL;DR -> 상태 전환(검수 모드) -> comment -> property -> Slack 알림(검수 모드)
+반영 순서: 구역 교체(결과 산출물) -> TL;DR -> comment(검수 모드) -> property -> Slack 알림(검수 모드)
 - out/<KEY>/ 파일은 CI agent가 아니라 scripts/save_output.py가 CI agent의 구조화 출력(JSON)으로 만든다. 구조화 출력에 없는 Task는
   판정 없음 기본값(verdict "no_verdict", items의 done null)으로 채워져 있다.
 - verdict.json이 없거나 형식이 틀리거나 판정 없음 기본값이면 반영하지 않고 실패로 기록한다. 검수 모드에서 verdict.json은 있으나
@@ -16,9 +19,11 @@ alerts 모드(주간 점검)는 Jira에 쓰지 않고 ctx/_scan/*.alerts.json을
 - 문서화 리뷰 항목(Task T4–T9, Bug B5–B7, Issue I4–I5. 검수 모드): 관찰 모드는 검수 결과를 바꾸지 않고 팀장용 comment와 Actions Summary로 공유하고,
   게이트 모드는 미달이면 통과를 보류로 바꾼다. T8(초과 달성·미달성 사유)은 이 스크립트가 계산한다.
 - Task 검수는 미달성 항목마다 담당자가 남긴 사유가 있으면 검토 요청으로, 통과인데 미달성 항목이 있으면 보류로 바꾼다.
-- 상태 전환(검수 모드): 보류이고 지금 상태가 ready-to-done이면 In Progress로 되돌린다. 통과와 검토 요청은 상태를
-  바꾸지 않고 팀장이 확인 뒤 직접 전환한다. 게이트 모드는 문서화 리뷰를 검수 결과에 넣을지만 정하고 전환과 관계없다.
-- Slack 알림(검수 모드): 보류는 담당자에게, 검토 요청과 통과는 팀장에게 검수 결과, 이유, 검수 comment 링크를 보낸다.
+- 상태 처리(검수 모드): 어떤 검수 결과에서도 Jira 상태를 바꾸지 않고 팀장이 확인 뒤 직접 전환한다. 게이트 모드는
+  문서화 리뷰를 검수 결과에 넣을지만 정하고 전환과 관계없다.
+- Slack 알림(검수 모드): 검수 결과와 관계없이 팀장에게 검수 결과, 이유, 검수 comment 링크를 보낸다. 담당자는 팀장이 상태를
+  전환한 뒤 decision 모드의 팀장 확인 결과 알림으로 결과를 받는다.
+- 실행 기록: 실행마다 jira-doc 기록(issue property ai-doc-agent)의 runs에 항목 하나를 추가한다(최근 100건). 반영 성공과 실패 모두 기록한다.
 - comment의 멘션은 담당자와 팀장 두 사람으로 제한한다.
 - 정리 모드(F3)도 Task의 결과 산출물 구역을 다시 쓴다. comment와 판정은 없고, 사유가 기록에 없으면 "사유 미기재"를 쓰지 않는다.
 """
@@ -37,14 +42,16 @@ sys.path.insert(0, str(Path(__file__).parent))
 from jira_api import AGENT_MARK, STOP_REASON_PREFIX, Jira, JiraError, set_section  # noqa: E402
 
 VERDICT_KO = {"pass": "통과", "fix": "보류", "escalate": "검토 요청", None: "정리"}
-# 검수 결과를 다시 정하는 규칙(recheck_verdict)과 상태 전환. 검사 이름은 CHECK_NAMES, prompts/review.md와 prompts/types/<work type>/review.md의 검사 항목 표와 같다
+# 검수 결과를 다시 정하는 규칙(recheck_verdict). 검사 이름은 CHECK_NAMES, prompts/review.md와 prompts/types/<work type>/review.md의 검사 항목 표와 같다
 OWNER_FIXABLE_CHECKS = ("T1", "T2", "R2", "R4", "B1", "B2", "B3", "B4", "I1", "I2", "I3")   # 담당자가 고칠 수 있는 검사. 실패하면 보류
 SENTENCE_DETAIL_CHECKS = ("R4",)                                              # detail이 이유 문장이라 Slack 보류 이유에 검사 이름 없이 적는 검사
 SLACK_INDENT = "    "                                                         # Slack 메시지의 묶음 항목 들여쓰기(공백 4칸). 검수 알림과 주간 점검에 사용
 NOT_A_REASON = "근거 부족으로 확인 불가"                             # CI agent가 why에 넣는 문구. 담당자가 남긴 사유로 세지 않는다
-READY_STATUS, IN_PROGRESS = "ready-to-done", "In Progress"           # Jira 상태 이름. READY_STATUS는 대소문자 무시로 비교
-SLACK_CLOSING = {"escalate": "팀장이 ticket을 확인한 뒤 in-progress 또는 done으로 직접 전환 필요",
-                 "pass": "팀장이 ticket을 확인한 뒤 done으로 직접 전환 필요"}
+READY_STATUS = "ready-to-done"                                       # Jira 상태 이름. 대소문자 무시로 비교
+DECISION_KO = {"done": "통과", "in progress": "보류"}                  # 팀장 확인 결과: ready-to-done에서 전환한 도착 상태(소문자) -> 결과 이름
+SLACK_CLOSING = {"escalate": "팀장이 ticket을 확인한 뒤 In Progress 또는 done으로 직접 전환 필요",
+                 "pass": "팀장이 ticket을 확인한 뒤 done으로 직접 전환 필요",
+                 "fix": "팀장이 ticket을 확인한 뒤 In Progress로 직접 전환 필요"}
 MENTION_RE = re.compile(r"\[~(?:accountid:)?([^\]]+)\]")
 WIKI_LINK_RE = re.compile(r"\[([^|\]]+)\|[^\]]*\]")                 # [제목|URL]
 WIKI_LINK_PARTS_RE = re.compile(r"\[([^|\]]+)\|([^\]]*)\]")          # [제목|URL]에서 제목과 URL을 함께 잡는다 (Slack 링크로 바꿀 때)
@@ -54,7 +61,7 @@ SECTION_NOTE = {"Task": "agent가 comment, sub-task, PR 기록을 근거로 작�
 SOURCE_KO = {"review": "검수", "digest": "F3 정리: Jira ticket 화면의 문서 정리 버튼"}     # 결과 산출물 구역의 안내 줄 끝에 붙여 출처를 보인다
 
 # 검사 항목의 표시 순서와 이름. Jira comment의 검사 표는 항상 이 순서로, 이 이름으로 나간다 (ID는 괄호로 덧붙인다).
-# 정의는 prompts/review.md와 prompts/types/<work type>/review.md의 검사 항목 표와 같다(A1, A3는 docs/jira-doc-agent.md의 실행 모드 표).
+# 정의는 prompts/review.md와 prompts/types/<work type>/review.md의 검사 항목 표와 같다(A1, A3는 docs/jira-doc-agent/README.md의 "스크립트가 계산하는 값" 절).
 CHECK_NAMES = {
     "T1": "예상 산출물 작성",
     "T2": "진행 배경 작성",
@@ -103,7 +110,20 @@ SLACK_USERS = Path(__file__).parent.parent / "config" / "slack-users.json"   # J
 ALERT_SECTIONS = [("R4", "stop 사유 미기재", "담당자: stop 사유 comment 필요"),
                   ("A1", "영업일 기준 5일 이상 활동 없음", "담당자: 진행 상황 comment, 또는 멈춘 ticket이면 stop 전환 필요"),
                   ("A3", "ready-to-done 영업일 기준 3일 이상 대기", "팀장: done 전환, 또는 미루는 이유 comment 필요")]
-LEAD_ALERTS = ("A3",)   # 팀장이 할 조치의 알림. 주간 점검 Slack에만 넣고 정리 모드의 담당자 멘션 comment(apply_alerts)에서는 뺀다
+LEAD_ALERTS = ("A3",)   # 팀장이 할 조치의 알림. 주간 점검 Slack(weekly_lines)에서 담당자 대신 팀장을 멘션한다
+STATE_NOTE = ("상태를 바꾸지 않고 팀장 확인을 요청함", "상태 변경 없음")   # 어떤 검수 결과에서도 Jira 상태를 바꾸지 않는다. (검수 comment와 Actions 요약 문구, Slack 첫 줄 문구)
+KST = dt.timezone(dt.timedelta(hours=9))                                      # 한국 시간. runs의 at과 토큰(인증 키) 만료일 계산에 사용
+RUNS_MAX_BYTES = 30000                                                        # property 값 크기 상한(Jira 상한 32KB보다 작게). 넘으면 오래된 runs부터 지운다
+RUNS_LIMIT = 100                                                              # jira-doc 기록(issue property)의 runs에 남기는 최근 실행 수
+LEAD_WEBHOOK_ENV = "SLACK_LEAD_WEBHOOK_URL"                                   # 팀장 채널 webhook 환경 변수 이름
+TOKEN_EXPIRY_DAYS = 30                                                        # 만료까지 남은 날이 이 값 이하인 토큰(인증 키)을 알린다
+# 토큰(인증 키) 이름 -> (팀장이 발급하는 곳, 교체하는 곳)
+TOKEN_RENEWAL = {
+    "JIRA_API_TOKEN": ("Atlassian 계정의 API 토큰 화면에서 발급", "secret JIRA_API_TOKEN"),
+    "ORG_READ_TOKEN": ("GitHub Settings의 Personal access tokens 발급", "secret ORG_READ_TOKEN"),
+    "F1 PAT": ("GitHub Settings의 Personal access tokens 발급", "Jira Automation F1 설정"),
+    "CLAUDE_CODE_OAUTH_TOKEN": ("`claude setup-token`으로 발급", "secret CLAUDE_CODE_OAUTH_TOKEN"),
+}
 ALERT_LIMIT = 15
 
 
@@ -566,34 +586,104 @@ class Summary:
             print(text)
 
 
-def review_transition(j: Jira, key: str, v: str, status: str) -> tuple[str, str]:
-    """검수 결과에 따라 Jira 상태를 처리한다. 보류이고 지금 상태가 ready-to-done일 때만 In Progress로 되돌린다.
+def usage_total(out_dir: Path) -> dict:
+    """out/_usage.json의 항목을 합산한다.
+
+    Args:
+        out_dir: CI agent 출력 폴더. save_output.py가 out_dir/_usage.json(목록)에 실행마다 항목 하나를 추가한다.
+
+    Returns:
+        {"retry", "costUsd", "tokens", "models"}. 파일이 없으면 costUsd는 None, tokens는 0, retry는 False이다.
+        costUsd는 값이 있는 항목의 합이고 값이 있는 항목이 없으면 None이다.
+    """
+    entries = load_json(out_dir / "_usage.json", [])
+    entries = [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
+    costs = [e["costUsd"] for e in entries if isinstance(e.get("costUsd"), (int, float))]
+    tokens = {k: 0 for k in ("input", "output", "cacheWrite", "cacheRead")}
+    models: list[str] = []
+    for e in entries:
+        t = e.get("tokens") if isinstance(e.get("tokens"), dict) else {}
+        for k in tokens:
+            tokens[k] += t[k] if isinstance(t.get(k), int) else 0
+        models += [m for m in e.get("models") or [] if isinstance(m, str) and m not in models]
+    return {"retry": any(e.get("retry") is True for e in entries), "costUsd": sum(costs) if costs else None,
+            "tokens": tokens, "models": models}
+
+
+def request_count(d: Path) -> int | None:
+    """ticket이 지금까지 ready-to-done으로 전환된 횟수(몇 번째 request 전환인지).
+
+    Args:
+        d: 수집 단계가 만든 ctx/<KEY>/ 폴더. changelog.json의 상태 변경 이력을 읽는다.
+
+    Returns:
+        ready-to-done으로의 전환 횟수. changelog.json이 없거나 목록이 아니면 None.
+    """
+    changes = load_json(d / "changelog.json")
+    if not isinstance(changes, list):
+        return None
+    return sum(1 for c in changes if isinstance(c, dict) and c.get("field") == "status"
+               and str(c.get("to") or "").strip().lower() == READY_STATUS)
+
+
+def run_entry(d: Path, out_dir: Path, mode: str, verdict: str) -> dict:
+    """jira-doc 기록의 runs에 추가할 실행 기록 항목 하나를 만든다.
+
+    Args:
+        d: 수집 단계가 만든 ctx/<KEY>/ 폴더.
+        out_dir: CI agent 출력 폴더.
+        mode: 실행 모드(review, digest).
+        verdict: pass, fix, escalate, failed, digest 중 하나.
+
+    Returns:
+        at, mode, verdict, requestNo, retry, costUsd, tokens, models를 담은 dict.
+    """
+    usage = usage_total(out_dir)
+    if usage["costUsd"] is not None:
+        usage["costUsd"] = round(usage["costUsd"], 4)
+    return {"at": dt.datetime.now(KST).isoformat(timespec="seconds"), "mode": mode, "verdict": verdict,
+            "requestNo": request_count(d) if mode == "review" else None, **usage}
+
+
+def add_run(prop: dict, entry: dict) -> None:
+    """property의 runs 목록 끝에 항목을 추가하고 최근 RUNS_LIMIT건만 남긴다.
+
+    추가한 뒤 property를 JSON으로 만든 크기가 RUNS_MAX_BYTES(바이트)를 넘으면 오래된 runs부터 지운다.
+    방금 추가한 항목은 지우지 않는다.
+
+    Args:
+        prop: jira-doc 기록(issue property). 이 dict를 고친다.
+        entry: run_entry의 결과.
+    """
+    runs = prop.get("runs")
+    prop["runs"] = ([r for r in runs if isinstance(r, dict)] if isinstance(runs, list) else [])[-(RUNS_LIMIT - 1):] + [entry]
+    while len(prop["runs"]) > 1 and len(json.dumps(prop, ensure_ascii=False).encode("utf-8")) > RUNS_MAX_BYTES:
+        del prop["runs"][0]
+
+
+def record_failed_run(j: Jira, d: Path, out_dir: Path, mode: str, summ: Summary) -> None:
+    """반영에 실패한 실행을 runs에 기록한다. Jira 오류는 Summary에만 남기고 흐름을 막지 않는다.
 
     Args:
         j: Jira 클라이언트.
-        key: task 키.
-        v: 최종 검수 결과 코드값(pass, fix, escalate).
-        status: issue.json의 지금 상태 이름.
-
-    Returns:
-        (검수 comment와 Actions 요약에 적는 문구, Slack 알림 첫 줄에 적는 짧은 문구).
+        d: 수집 단계가 만든 ctx/<KEY>/ 폴더.
+        out_dir: CI agent 출력 폴더.
+        mode: 실행 모드(review, digest).
+        summ: Actions 요약.
     """
-    if v != "fix":
-        return "상태를 바꾸지 않고 팀장 확인을 요청함", "상태 변경 없음"
-    if status.strip().lower() != READY_STATUS:
-        return f"지금 상태가 {status}라 in-progress로 되돌리지 않음", f"지금 상태 {status} 유지"
     try:
-        j.transition_to(key, IN_PROGRESS)
+        prop = j.prop_get(d.name)
+        add_run(prop, run_entry(d, out_dir, mode, "failed"))
+        j.prop_set(d.name, prop)
     except JiraError as e:
-        return f"in-progress 전환 실패: {str(e)[:160]}", "in-progress 전환 실패"
-    return "상태를 in-progress로 되돌림", "상태를 in-progress로 되돌림"
+        summ.extra.append(f"- {d.name}: 실행 기록(runs) 저장 실패: {str(e)[:160]}")
 
 
 def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: str, summ: Summary) -> dict | None:
-    """task 하나의 CI agent 출력을 Jira에 반영한다. 검수 모드면 상태 전환과 Slack 알림까지 처리한다.
+    """task 하나의 CI agent 출력을 Jira에 반영한다. 검수 모드면 Slack 알림까지 처리한다.
 
     verdict.json이 없거나 형식에 맞지 않거나 판정 없음 기본값(NO_VERDICT_KO)이거나, 검수 모드에서 verdict.json은 있으나
-    tldr.wiki나 comment.wiki가 없거나 비어 있으면 Jira에 아무것도 남기지 않고(comment, 상태 전환, TL;DR, 결과 산출물 구역,
+    tldr.wiki나 comment.wiki가 없거나 비어 있으면 Jira에 아무것도 남기지 않고(comment, TL;DR, 결과 산출물 구역,
     Slack 검수 알림 모두) Actions 요약에 실패 행만 남긴다. 실패 이유 끝에는 out/<KEY>/_agent_error.txt의 원인을 붙인다.
     정리 모드에서 tldr.wiki가 없으면 Actions 요약에만 남긴다.
 
@@ -640,6 +730,7 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
         if cause:
             err += f". 원인: {cause}"
         summ.row(key, itype, mode, "실패", err)
+        record_failed_run(j, d, out_dir, mode, summ)
         return {"key": key, "title": issue.get("summary") or "", "url": issue.get("url") or "", "reason": err}
 
     v = orig_v = verdict["verdict"]
@@ -748,10 +839,10 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
     if fields:
         j.set_fields(key, fields)
 
-    # 3) 상태 전환과 comment (검수 모드만. 정리 모드의 알림은 apply_alerts가 처리)
+    # 3) 상태 처리 문구와 comment (검수 모드만. Jira 상태는 바꾸지 않는다)
     summary, state_line, comment_link = "", "", ""
     if mode == "review":
-        state_note, state_line = review_transition(j, key, v, issue.get("status") or "?")
+        state_note, state_line = STATE_NOTE
         notes.append(state_note)                       # 검수 comment의 검수 결과 줄 아래에 나간다
         summary = strip_claude_header((o / "comment.wiki").read_text(encoding="utf-8"))   # 검수 모드는 위에서 comment.wiki가 있음을 확인함
         text = review_comment(v, checks, expected if itype == "Task" else [], items, extra, summary, requests, notes,
@@ -760,7 +851,7 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
             text += f"\n\n팀장 확인 필요: [~accountid:{lead}]"
         elif v != "escalate" and assignee and f"[~accountid:{assignee}]" not in text:
             text += f"\n\n[~accountid:{assignee}]"
-        try:                                           # 상태를 이미 바꿨을 수 있으므로 등록 실패를 남기고 Slack 알림은 그대로 보낸다
+        try:                                           # 등록 실패를 남기고 Slack 알림은 그대로 보낸다
             posted = j.add_comment(key, sanitize_mentions(agent_comment(text), allowed))
         except JiraError as e:
             posted = None
@@ -787,18 +878,15 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
         prop["lastVerdict"] = v
         if type_doc_checks:                            # 문서화 리뷰 항목이 있는 work type만 기록한다
             prop["docFails"] = doc_fails
-    prop.setdefault("notified", [])
+    add_run(prop, run_entry(d, out_dir, mode, v if mode == "review" else "digest"))
     j.prop_set(key, prop)
 
-    # 5) Slack 알림 (검수 모드만). 보류는 담당자, 검토 요청과 통과는 팀장에게 보낸다
+    # 5) Slack 알림 (검수 모드만). 검수 결과와 관계없이 팀장에게 보낸다. 담당자는 팀장이 상태를 전환한 뒤 decision 모드로 알린다
     if mode == "review":
         users, warning = load_slack_users()
         if warning:
             notes.append(warning)
-        if v == "fix":
-            mention, who = slack_mention(issue.get("assignee"), users), "담당자"
-        else:
-            mention, who = (f"<@{users[lead]}>" if users.get(lead) else "팀장"), "팀장"
+        mention, who = (f"<@{users[lead]}>" if users.get(lead) else "팀장"), "팀장"
         reasons = review_slack_reasons(v, itype, expected, items, extra, checks, changes, summary)
         text = review_slack_text(v, key, issue.get("summary") or "", issue.get("url") or "", mention, state_line,
                                  reasons, requests, comment_link)
@@ -808,52 +896,6 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
         notes.append(f"requests {len(requests)}건")
     summ.row(key, itype, mode, VERDICT_KO[v], "; ".join(notes))
     return None
-
-
-def apply_alerts(j: Jira, ctx: Path, lead: str, summ: Summary) -> None:
-    """정리 모드에서 주간 점검 데이터(ctx/_scan/*.alerts.json)의 새 알림을 담당자 멘션 Jira comment로 게시한다.
-
-    이미 보낸 알림 코드는 task의 jira-doc 기록(notified)으로 걸러 낸다. 팀장이 할 조치의 알림(LEAD_ALERTS)은
-    comment 대상과 notified 갱신에서 뺀다. 그런 알림만 있는 task에는 comment를 게시하지 않는다.
-
-    Args:
-        j: Jira 클라이언트.
-        ctx: 수집 단계가 만든 ctx 폴더.
-        lead: 팀장 accountId. comment에서 멘션을 허용할 사람에 넣는다.
-        summ: Actions 요약.
-    """
-    scan = ctx / "_scan"
-    if not scan.exists():
-        return
-    sent = 0
-    for p in sorted(scan.glob("*.alerts.json")):
-        a = load_json(p, {})
-        key = a.get("key")
-        if not key:
-            continue
-        prop = j.prop_get(key)
-        notified = set(prop.get("notified", []))
-        clear = tuple(a.get("clear", []))
-        if clear:
-            notified = {n for n in notified if not n.startswith(clear)}
-        new = [al for al in a.get("alerts", []) if al.get("check") not in LEAD_ALERTS and al["code"] not in notified]
-        if new:
-            assignee = (a.get("assignee") or {}).get("accountId") or ""
-            allowed = {x for x in (assignee, lead) if x}
-            lines = [f"* {al['message']}" for al in new]
-            head = f"[~accountid:{assignee}] " if assignee else ""
-            body = agent_comment(f"{head}정리 모드(ticket 키 없이 실행한 문서 정리)에서 확인한 누락 항목 {len(new)}건\n" + "\n".join(lines))
-            try:
-                j.add_comment(key, sanitize_mentions(body, allowed))
-                notified.update(al["code"] for al in new)
-                sent += 1
-                summ.row(key, a.get("type", "?"), "digest", "알림", ", ".join(al["check"] for al in new))
-            except JiraError as e:
-                summ.row(key, a.get("type", "?"), "digest", "알림 실패", str(e)[:120])
-        if set(prop.get("notified", [])) != notified:
-            prop["notified"] = sorted(notified)
-            j.prop_set(key, prop)
-    print(f"[apply] 누락 알림 comment {sent}건")
 
 
 def slack_mention(assignee: dict | None, users: dict) -> str:
@@ -1015,11 +1057,104 @@ def weekly_lines(scan: Path, users: dict, lead: str = "") -> tuple[list[str], li
     return lines, mentions
 
 
-def slack_post(text: str) -> str:
-    """Slack Incoming Webhook 전송. 나중에 봇 토큰으로 바꾸려면 이 함수만 교체한다."""
-    url = os.environ.get("SLACK_WEBHOOK_URL", "")
+def last_ready_exit(changelog: list[dict]) -> dict | None:
+    """Jira changelog에서 ready-to-done에서 나간 마지막 상태 전환을 찾는다.
+
+    Args:
+        changelog: Jira.changelog의 결과. 항목마다 created, author, items(field, fromString, toString).
+
+    Returns:
+        {"at", "to", "author"}(author는 accountId). 그런 전환이 없으면 None.
+    """
+    found = None
+    for history in sorted(changelog, key=lambda h: h.get("created") or ""):
+        for item in history.get("items") or []:
+            if item.get("field") == "status" and (item.get("fromString") or "").strip().lower() == READY_STATUS:
+                found = {"at": history.get("created") or "", "to": item.get("toString") or "",
+                         "author": (history.get("author") or {}).get("accountId") or ""}
+    return found
+
+
+def decision_slack_text(key: str, title: str, url: str, mention: str, decision: str, status: str) -> str:
+    """팀장 확인 결과 알림 본문. 담당자에게 팀장이 바꾼 상태 변경 결과만 알린다.
+
+    Args:
+        key: ticket 키.
+        title: ticket 제목.
+        url: ticket 링크. 비어 있으면 링크 줄을 적지 않는다.
+        mention: 받는 사람(담당자의 Slack 멘션 또는 이름).
+        decision: 팀장 확인 결과(통과, 보류).
+        status: 전환 뒤 Jira 상태 이름(Done, In Progress).
+
+    Returns:
+        Slack 메시지 본문.
+    """
+    lines = [f"{mention} [{key}] 팀장 확인 결과: {decision}", f"상태 변경: ready-to-done → {status}"]
+    if url:
+        lines.append(f"<{url}|{wiki_to_slack(f'{key} {title}'.strip())}>")
+    return "\n".join(lines)
+
+
+def apply_decision(j: Jira, key: str, lead: str, summ: Summary) -> None:
+    """팀장이 ready-to-done ticket을 전환했을 때 담당자에게 팀장 확인 결과를 Slack으로 보낸다(decision 모드).
+
+    ready-to-done에서 나간 마지막 전환이 done 또는 In Progress이고, 지금 상태가 그 도착 상태이며, 전환한 사람이
+    팀장일 때만 보낸다. 그 밖에는 보내지 않고 Summary 탭에 이유를 남긴다.
+    같은 전환을 두 번 알리지 않도록 알린 전환 시각을 jira-doc 기록의 lastDecisionAt에 남기고, 같으면 건너뛴다.
+
+    Args:
+        j: Jira 클라이언트.
+        key: ticket 키.
+        lead: 팀장 accountId. 비어 있으면 전환한 사람을 확인하지 않는다.
+        summ: Actions 요약.
+    """
+    issue = j.issue(key, ["summary", "status", "assignee", "issuetype"])
+    f = issue.get("fields") or {}
+    itype = (f.get("issuetype") or {}).get("name") or "?"
+    status = ((f.get("status") or {}).get("name") or "").strip()
+    last = last_ready_exit(j.changelog(key))
+    decision = DECISION_KO.get(status.lower())
+    skip = ""
+    if decision is None:
+        skip = f"지금 상태가 {status or '?'}라 알리지 않음"
+    elif last is None or last["to"].strip().lower() != status.lower():
+        skip = "ready-to-done에서 지금 상태로 온 전환이 없어 알리지 않음"
+    elif lead and last["author"] != lead:
+        skip = "팀장이 한 전환이 아니라 알리지 않음"
+    prop = j.prop_get(key) if not skip else {}
+    if not skip and prop.get("lastDecisionAt") == last["at"]:
+        skip = "이미 알린 전환이라 다시 알리지 않음"
+    if skip:
+        summ.row(key, itype, "decision", "건너뜀", skip)
+        return
+    site = j.site_url()
+    users, warning = load_slack_users()
+    text = decision_slack_text(key, f.get("summary") or "", f"{site}/browse/{key}" if site else "",
+                               slack_mention(f.get("assignee"), users), decision, status)
+    sent = slack_post(text)
+    note = f"팀장 확인 결과 {decision}, 담당자에게 Slack 알림"
+    if sent == "전송 완료":
+        prop["lastDecisionAt"] = last["at"]
+        try:
+            j.prop_set(key, prop)
+        except JiraError as e:
+            note += f"; jira-doc 기록 저장 실패: {str(e)[:120]}"
+    summ.row(key, itype, "decision", sent, f"{note}; {warning}" if warning else note)
+
+
+def slack_post(text: str, webhook_env: str = "SLACK_WEBHOOK_URL") -> str:
+    """Slack Incoming Webhook 전송. 나중에 봇 토큰으로 바꾸려면 이 함수만 교체한다.
+
+    Args:
+        text: Slack 본문.
+        webhook_env: webhook URL을 담은 환경 변수 이름. 연동 채널은 SLACK_WEBHOOK_URL, 팀장 채널은 SLACK_LEAD_WEBHOOK_URL이다.
+
+    Returns:
+        전송 결과 문구. 환경 변수 값이 없으면 "<변수 이름> 없음. 전송 건너뜀"이다.
+    """
+    url = os.environ.get(webhook_env, "")
     if not url:
-        return "SLACK_WEBHOOK_URL 없음. 전송 건너뜀"
+        return f"{webhook_env} 없음. 전송 건너뜀"
     body = json.dumps({"text": text}).encode()
     req = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
     try:
@@ -1060,11 +1195,87 @@ def slack_weekly(ctx: Path, summ: Summary, lead: str = "") -> None:
     summ.extra += [f"### 주간 점검 (Slack {result})", "", "```", summary_text, "```", ""]
 
 
+def token_expiry_text(raw: str, today: dt.date) -> tuple[str, str]:
+    """환경 변수 TOKEN_EXPIRY로 토큰(인증 키) 만료 알림 본문을 만든다.
+
+    Args:
+        raw: TOKEN_EXPIRY 값(JSON 객체: 이름 -> "YYYY-MM-DD").
+        today: 오늘 날짜(한국 시간).
+
+    Returns:
+        (Slack 본문, 경고). 값이 없거나 형식이 틀리면 본문은 빈 문자열이고 경고에 이유를 적는다.
+        날짜 형식이 틀린 항목만 경고에 적고 건너뛰며 나머지는 계속 처리한다(경고는 "; "로 이음).
+        남은 날이 TOKEN_EXPIRY_DAYS 이하인 항목이 없으면 본문은 빈 문자열이다.
+    """
+    if not raw.strip():
+        return "", "TOKEN_EXPIRY 없음. 토큰(인증 키) 만료 알림을 보내지 않음"
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return "", "TOKEN_EXPIRY가 JSON이 아님. 토큰(인증 키) 만료 알림을 보내지 않음"
+    if not isinstance(data, dict):
+        return "", "TOKEN_EXPIRY가 JSON 객체가 아님. 토큰(인증 키) 만료 알림을 보내지 않음"
+    due: list[tuple[dt.date, str]] = []
+    bad: list[str] = []
+    for name, value in data.items():
+        try:
+            if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+                raise ValueError(value)
+            due.append((dt.date.fromisoformat(value), name))
+        except ValueError:
+            bad.append(f"TOKEN_EXPIRY의 {name} 날짜 형식(YYYY-MM-DD)이 틀려 건너뜀")
+    lines = ["[jira-doc 토큰(인증 키) 만료 알림]"]
+    sub = f"{SLACK_INDENT}◦ "
+    for day, name in sorted(due):
+        left = (day - today).days
+        if left > TOKEN_EXPIRY_DAYS:
+            continue
+        remain = "만료됨" if left < 0 else "오늘 만료" if left == 0 else f"남은 날 {left}일"
+        lines += [f"• {name}: {remain}", f"{sub}만료일 {day.isoformat()}({today.isoformat()} 기준)"]
+        if name in TOKEN_RENEWAL:
+            issue_at, replace_at = TOKEN_RENEWAL[name]
+            lines += [f"{sub}갱신: 팀장이 {issue_at}", f"{sub}교체: 팀장이 {replace_at}"]
+        else:
+            lines.append(f"{sub}갱신: 갱신할 곳 미등록")
+    warning = "; ".join(bad)
+    if len(lines) == 1:
+        return "", warning
+    lines.append("팀장이 갱신 뒤 variable `TOKEN_EXPIRY`의 만료일도 고쳐야 함")
+    return "\n".join(lines), warning
+
+
+def slack_token_expiry(summ: Summary) -> None:
+    """토큰(인증 키) 만료 알림을 팀장 채널로 Slack 한 건 보낸다. 보낼 항목이 없으면 아무것도 하지 않는다.
+
+    Args:
+        summ: Actions 요약. 전송 결과나 경고를 행으로 남긴다.
+    """
+    text, warning = token_expiry_text(os.environ.get("TOKEN_EXPIRY", ""), dt.datetime.now(KST).date())
+    if warning:
+        summ.row("-", "-", "alerts", "경고", warning)
+    if text:
+        summ.row("-", "-", "alerts", slack_post(text, LEAD_WEBHOOK_ENV), "토큰(인증 키) 만료 알림(팀장 채널)")
+
+
+def last_month(today: dt.date) -> str:
+    """오늘이 속한 달의 지난달을 YYYY-MM으로 돌려준다.
+
+    Args:
+        today: 오늘 날짜(한국 시간).
+
+    Returns:
+        지난달(YYYY-MM).
+    """
+    return (today.replace(day=1) - dt.timedelta(days=1)).strftime("%Y-%m")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ctx", default="ctx")
     ap.add_argument("--out", default="out")
-    ap.add_argument("--mode", choices=["review", "digest", "alerts"], required=True)
+    ap.add_argument("--mode", choices=["review", "digest", "alerts", "report", "decision"], required=True)
+    ap.add_argument("--issue", default="", help="decision 모드의 대상 ticket 키")
+    ap.add_argument("--month", default="", help="report 모드의 보고 대상 달(YYYY-MM). 비우면 한국 시간 기준 지난달")
     ap.add_argument("--gate", default="false")
     ap.add_argument("--summary", default=os.environ.get("GITHUB_STEP_SUMMARY", ""))
     args = ap.parse_args()
@@ -1076,6 +1287,26 @@ def main() -> None:
 
     if args.mode == "alerts":                      # 주간 점검: Jira에 쓰지 않고 Slack으로만 보고
         slack_weekly(ctx, summ, lead)
+        slack_token_expiry(summ)
+        summ.flush()
+        return
+
+    if args.mode == "decision":                    # 팀장 확인 결과 알림: ctx를 읽지 않고 Jira에서 그 ticket만 읽는다
+        if not args.issue.strip():
+            sys.exit("decision 모드에는 --issue가 필요하다")
+        apply_decision(Jira(), args.issue.strip(), lead, summ)
+        summ.flush()
+        return
+
+    if args.mode == "report":                      # 정기 보고: ctx를 읽지 않고 report.py가 Jira 기록으로 본문을 만든다
+        month = args.month or last_month(dt.datetime.now(KST).date())
+        if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month):
+            sys.exit(f"--month는 YYYY-MM 형식이어야 한다: {month}")
+        from report import run_report
+
+        texts = run_report(Jira(), month, lead, summ)   # 12월 보고는 연간 묶음이 두 번째 메시지다
+        for i, text in enumerate(texts, 1):
+            summ.row("-", "-", "report", slack_post(text, LEAD_WEBHOOK_ENV), f"{month} 정기 보고 {i}/{len(texts)}")
         summ.flush()
         return
 
@@ -1089,17 +1320,12 @@ def main() -> None:
             except JiraError as e:
                 reason = f"Jira 오류: {str(e)[:160]}"
                 summ.row(d.name, "?", args.mode, "실패", reason)
+                record_failed_run(j, d, out, args.mode, summ)
                 issue = load_json(d / "issue.json", {})
                 failure = {"key": d.name, "title": issue.get("summary") or "", "url": issue.get("url") or "", "reason": reason}
             if failure:
                 failures.append(failure)
 
-    if args.mode == "digest":
-        apply_alerts(j, ctx, lead, summ)
-        unlinked = load_json(ctx / "_org" / "unlinked_prs.json", [])
-        if unlinked:
-            summ.extra.append(f"### 미연결 PR (최근 3일 병합, 제목에 ticket 키 없음): {len(unlinked)}건")
-            summ.extra.extend(f"- {p['repo']} [{p['title']}]({p['url']}) by {p.get('author')}" for p in unlinked)
     failed = out / "_failed.txt"
     if failed.exists():
         summ.extra.append("### Claude 단계가 처리하지 못한 ticket")

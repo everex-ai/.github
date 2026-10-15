@@ -3,7 +3,7 @@
 
     python scripts/dev/render_jira_samples.py --out reports/result-doc-style/after
 
-scripts/apply.py의 apply_issue, apply_alerts, slack_weekly를 가짜 Jira 객체와 샘플 입력으로 실행하고,
+scripts/apply.py의 apply_issue, slack_weekly, token_expiry_text를 가짜 Jira 객체와 샘플 입력으로 실행하고,
 Jira에 쓰려던 comment와 필드 값, Slack에 보내려던 본문을 파일로 저장한다.
 샘플 입력의 문구는 prompts/types/task/deliverables.md, prompts/types/task/review.md, prompts/types/bug/review.md,
 prompts/types/issue/review.md의 출력 예시에서 가져온다.
@@ -94,7 +94,6 @@ class FakeJira:
         self.descriptions = descriptions
         self.comments: list[tuple[str, str]] = []
         self.fields: dict[str, dict] = {}
-        self.transitioned_to: list[tuple[str, str]] = []
         self.props_set: list[tuple[str, dict]] = []
 
     def issue(self, key: str, fields: list[str]) -> dict:
@@ -150,15 +149,6 @@ class FakeJira:
             prop: property 값.
         """
         self.props_set.append((key, prop))
-
-    def transition_to(self, key: str, status: str) -> None:
-        """도착 상태 이름으로 한 상태 전환 요청을 모아 둔다.
-
-        Args:
-            key: task 키.
-            status: 도착 상태 이름.
-        """
-        self.transitioned_to.append((key, status))
 
 
 def write_json(path: Path, data: object) -> None:
@@ -810,11 +800,6 @@ def render(out_dir: Path) -> list[Path]:
             if not p.name.endswith(".alerts.json"):
                 with contextlib.redirect_stdout(io.StringIO()):
                     jp.run_scan(p, FIXED_NOW)
-        j = FakeJira({})
-        with contextlib.redirect_stdout(io.StringIO()):
-            ja.apply_alerts(j, ctx, LEAD, ja.Summary(str(work / "summary.md")))
-        save("missing-alert-comment.wiki", "\n\n".join(body for _, body in j.comments))
-
         weekly_summ = ja.Summary(str(work / "weekly-summary.md"))
         with contextlib.redirect_stdout(io.StringIO()):
             ja.slack_weekly(ctx, weekly_summ, LEAD)
@@ -822,6 +807,12 @@ def render(out_dir: Path) -> list[Path]:
         save("weekly-slack.txt", sent[-1])  # 검수 알림도 sent에 쌓이므로 마지막에 보낸 주간 점검 본문을 쓴다
         # Actions Summary 탭에 남기는 주간 점검 사본. Slack 멤버 ID 대신 Jira 표시 이름이 들어간다
         save("weekly-summary.md", (work / "weekly-summary.md").read_text(encoding="utf-8"))
+
+        # 토큰(인증 키) 만료 알림(팀장 채널): 30일 이하 1건, 만료됨 1건, 30일 초과 1건(본문에서 빠짐)
+        token_expiry = json.dumps(
+            {"JIRA_API_TOKEN": "2026-10-20", "CLAUDE_CODE_OAUTH_TOKEN": "2026-09-20", "ORG_READ_TOKEN": "2027-09-15"}
+        )
+        save("token-expiry-slack.txt", ja.token_expiry_text(token_expiry, FIXED_NOW.date())[0])
     return saved
 
 

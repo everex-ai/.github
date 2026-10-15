@@ -3,18 +3,22 @@ name: jira-doc
 # AI팀 업무 문서화 agent
 # - 검수 모드(review): Jira F1(request 전환) 또는 Actions 화면의 수동 실행
 # - 정리 모드(digest): Jira F3(수동 트리거) 또는 Actions 화면의 수동 실행
-# - 점검 모드(alerts): 수요일 09:00 KST cron. Claude를 쓰지 않고 Slack으로 주간 알림만 보낸다
+# - 점검 모드(alerts): 수요일 09:00 KST cron. Claude를 쓰지 않고 Slack으로 주간 알림과 토큰(인증 키) 만료 알림만 보낸다
+# - 보고 모드(report): 매월 1일 09:00 KST cron. Claude를 쓰지 않고 팀장 채널로 정기 보고 메시지를 보낸다
+# - 확인 결과 알림 모드(decision): Jira F4(팀장이 ready-to-done ticket을 done 또는 In Progress로 전환). Claude를 쓰지 않고 담당자에게 Slack을 보낸다
+# 알림 체계: docs/jira-doc-agent/alerts.md
 # 설계 문서: 프로젝트 docs의 task-doc-agent/AI팀_업무문서화_agent_도입계획_v0.1.md
 
 on:
   schedule:
-    - cron: "0 0 * * 3"                     # 수요일 09:00 KST (UTC 00:00)
+    - cron: "0 0 * * 3"                     # 수요일 09:00 KST (UTC 00:00) -> alerts
+    - cron: "0 0 1 * *"                     # 매월 1일 09:00 KST (UTC 00:00) -> report
   repository_dispatch:
-    types: [jira-doc-review, jira-doc-manual]
+    types: [jira-doc-review, jira-doc-manual, jira-doc-decision]
   workflow_dispatch:
     inputs:
       issueKey:
-        description: "대상 task 키 (예: INNO-26). digest 모드에서 비우면 전체 정리, alerts 모드에서는 쓰지 않음"
+        description: "대상 ticket 키 (예: INNO-26). review, digest, decision 모드에서 필수. alerts, report 모드에서는 쓰지 않음"
         required: false
         default: ""
       mode:
@@ -22,10 +26,15 @@ on:
         required: true
         default: review
         type: choice
-        options: [review, digest, alerts]
+        options: [review, digest, alerts, report, decision]
+      month:
+        description: "report 모드의 보고 대상 달 (YYYY-MM). 비우면 지난달"
+        required: false
+        default: ""
 
 concurrency:
-  group: jira-doc-${{ github.event.client_payload.issueKey || inputs.issueKey || github.event_name }}
+  # 팀장 확인 결과 알림(decision)은 짧게 끝나고 다른 실행과 겹쳐도 되므로 따로 묶는다. 같은 ticket의 대기 실행이 밀려 취소되지 않게 하려는 것이다
+  group: jira-doc-${{ (github.event.action == 'jira-doc-decision' || inputs.mode == 'decision') && 'decision-' || '' }}${{ github.event.client_payload.issueKey || inputs.issueKey || github.event_name }}
   cancel-in-progress: false
 
 jobs:
@@ -36,8 +45,8 @@ jobs:
       contents: read
       id-token: write                       # Claude Code GitHub App 인증용
     env:
-      # schedule -> alerts, F3(jira-doc-manual) -> digest, 그 외(F1, 수동 실행)는 입력값 또는 review
-      MODE: ${{ github.event_name == 'schedule' && 'alerts' || github.event.action == 'jira-doc-manual' && 'digest' || inputs.mode || 'review' }}
+      # 매월 1일 cron -> report, 수요일 cron -> alerts, F3(jira-doc-manual) -> digest, F4(jira-doc-decision) -> decision, 그 외(F1, 수동 실행)는 입력값 또는 review
+      MODE: ${{ github.event.schedule == '0 0 1 * *' && 'report' || github.event_name == 'schedule' && 'alerts' || github.event.action == 'jira-doc-manual' && 'digest' || github.event.action == 'jira-doc-decision' && 'decision' || inputs.mode || 'review' }}
       ISSUE_KEY: ${{ github.event.client_payload.issueKey || inputs.issueKey }}
       GATE: ${{ vars.JIRA_DOC_GATE || 'false' }}
       JIRA_PROJECT_KEY: ${{ vars.JIRA_PROJECT_KEY }}
@@ -51,6 +60,7 @@ jobs:
 
       - name: 1. 입력 수집 (Jira, GitHub -> ctx/)
         id: collect
+        if: env.MODE != 'report' && env.MODE != 'decision'
         env:                                # Jira/GitHub 인증 정보는 1단계와 4단계에만 준다
           JIRA_CLOUD_ID: ${{ secrets.JIRA_CLOUD_ID }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
@@ -61,13 +71,14 @@ jobs:
           echo "count=$(ls -d ctx/[A-Z]*-[0-9]*/ 2>/dev/null | wc -l)" >> "$GITHUB_OUTPUT"
 
       - name: 2. 결정론적 검사 (precheck)
+        if: env.MODE != 'report' && env.MODE != 'decision'
         run: python3 scripts/precheck.py ctx/
 
       # schemas/agent-output.json이 있으면 한 줄 JSON으로 만들어 3단계의 --json-schema 인자로 넘긴다. 없으면 아무것도 출력하지 않아 3단계는 스키마 없이 실행된다.
       # ensure_ascii로 한국어와 줄바꿈을 \uXXXX로 바꾸고, 작은따옴표는 \u0027로 바꿔 claude_args의 작은따옴표 인용을 깨지 않게 한다
       - name: 3-0. 스키마 준비
         id: schema
-        if: env.MODE != 'alerts' && steps.collect.outputs.count != '0'
+        if: (env.MODE == 'review' || env.MODE == 'digest') && steps.collect.outputs.count != '0'
         shell: python3 {0}
         run: |
           import json, os
@@ -82,7 +93,7 @@ jobs:
       # continue-on-error: 스키마를 줬는데 structured_output이 없으면 action이 단계를 실패시킨다. 실패 처리는 3-2단계와 4단계가 한다
       - name: 3. Claude 문서화 (ctx/ -> out/)
         id: claude
-        if: env.MODE != 'alerts' && steps.collect.outputs.count != '0'
+        if: (env.MODE == 'review' || env.MODE == 'digest') && steps.collect.outputs.count != '0'
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
@@ -99,31 +110,18 @@ jobs:
             ${{ steps.schema.outputs.json && format('--json-schema ''{0}''', steps.schema.outputs.json) || '' }}
 
       # 3단계의 전체 출력은 Jira 기록이 담겨 있어 public 로그에 남기지 않는다(show_full_output: false).
-      # 실패 원인을 알 수 있게 실행 결과 수치, 거부된 파일 쓰기 경로, 실패했을 때만 result 문구(API 오류 문구)를 남긴다
+      # 실패 원인을 알 수 있게 실행 결과 수치, 토큰 수, 거부된 파일 쓰기 경로, 실패했을 때만 result 문구(API 오류 문구)를 남긴다(save_output.py의 exec_summary)
       - name: 3-1. Claude 실행 결과 요약
         if: always() && steps.claude.outputs.execution_file != ''
         env:
           EXEC_FILE: ${{ steps.claude.outputs.execution_file }}
-        shell: python3 {0}
-        run: |
-          import json, os
-          data = json.load(open(os.environ["EXEC_FILE"], encoding="utf-8"))
-          for r in (data if isinstance(data, list) else [data]):
-              if not isinstance(r, dict) or r.get("type") != "result":
-                  continue
-              print(f"is_error={r.get('is_error')} subtype={r.get('subtype')} num_turns={r.get('num_turns')} total_cost_usd={r.get('total_cost_usd')}")
-              print("permission_denials=" + ",".join(d.get("tool_name", "?") for d in r.get("permission_denials") or []))
-              for d in r.get("permission_denials") or []:   # 파일 쓰기 거부는 경로만 남긴다. Bash 명령은 Jira 기록이 담길 수 있어 남기지 않는다
-                  if d.get("tool_name") in ("Write", "Edit"):
-                      print(f"denied {d.get('tool_name')}: {(d.get('tool_input') or {}).get('file_path')}")
-              if r.get("is_error"):
-                  print(f"result={r.get('result')}")
+        run: python3 scripts/save_output.py --exec-summary "$EXEC_FILE"
 
       # save_output.py는 구조화 출력을 out/<KEY>/ 파일로 저장한다. 검수 모드에서 판정이 없으면 retry=true를 출력한다.
       # scripts/save_output.py가 없는 브랜치에서는 이 단계를 건너뛴다
       - name: 3-2. 출력 저장 (구조화 출력 -> out/)
         id: save
-        if: always() && steps.collect.outcome == 'success' && env.MODE != 'alerts' && steps.collect.outputs.count != '0' && hashFiles('scripts/save_output.py') != ''
+        if: always() && steps.collect.outcome == 'success' && (env.MODE == 'review' || env.MODE == 'digest') && steps.collect.outputs.count != '0' && hashFiles('scripts/save_output.py') != ''
         env:
           EXEC_FILE: ${{ steps.claude.outputs.execution_file }}
           CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
@@ -154,14 +152,17 @@ jobs:
         env:
           EXEC_FILE: ${{ steps.claude_retry.outputs.execution_file }}
           CLAUDE_OUTCOME: ${{ steps.claude_retry.outcome }}
-        run: python3 scripts/save_output.py --ctx ctx/ --out out/ --mode "$MODE" --exec-file "$EXEC_FILE" --claude-outcome "$CLAUDE_OUTCOME" --github-output "$GITHUB_OUTPUT"
+        run: python3 scripts/save_output.py --ctx ctx/ --out out/ --mode "$MODE" --exec-file "$EXEC_FILE" --claude-outcome "$CLAUDE_OUTCOME" --github-output "$GITHUB_OUTPUT" --retry
 
-      - name: 4. 반영 (Jira, 또는 alerts 모드면 Slack)
-        if: always() && steps.collect.outcome == 'success'
+      - name: 4. 반영 (Jira, 또는 alerts, report, decision 모드면 Slack)
+        if: always() && (steps.collect.outcome == 'success' || env.MODE == 'report' || env.MODE == 'decision')
         env:
           JIRA_CLOUD_ID: ${{ secrets.JIRA_CLOUD_ID }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           SLACK_USERS_JSON: ${{ secrets.SLACK_USERS_JSON }}   # Jira accountId -> Slack 멤버 ID 대응표(JSON). 비어 있으면 apply.py가 config/slack-users.json을 읽음(load_slack_users)
-        run: python3 scripts/apply.py --ctx ctx/ --out out/ --mode "$MODE" --gate "$GATE" --summary "$GITHUB_STEP_SUMMARY"
+          SLACK_LEAD_WEBHOOK_URL: ${{ secrets.SLACK_LEAD_WEBHOOK_URL }}   # 팀장 채널. 정기 보고 메시지와 토큰(인증 키) 만료 알림
+          TOKEN_EXPIRY: ${{ vars.TOKEN_EXPIRY }}                        # 토큰(인증 키)별 만료일 JSON. alerts 모드가 30일 이하를 알림
+          REPORT_MONTH: ${{ inputs.month }}
+        run: python3 scripts/apply.py --ctx ctx/ --out out/ --mode "$MODE" --gate "$GATE" --month "$REPORT_MONTH" --issue "$ISSUE_KEY" --summary "$GITHUB_STEP_SUMMARY"
