@@ -1,25 +1,13 @@
-# Bug (정리 모드)
+# Bug 정리 단계
 
-이 파일은 정리 모드에서 work type이 Bug인 task에 적용하는 지시다.
+work type이 Bug인 ticket을 정리 모드에서 처리하는 단계를 정한다. 각 단계가 가리키는 절과 파일을 함께 적용한다.
 
-## items와 extra
-- items와 extra는 빈 배열([])로 둔다.
+---
 
-## tldr 형식
-```
-h2. Summary
+## 정리 단계
 
-h3. 원인
-* (발생 원인을 구체적으로. 근거: [PR 또는 comment 링크]. 기록이나 코드를 해석해 추론한 원인이면 앞에 "추정:")
-
-h3. 해결
-* (해결 내용을 구체적으로. 근거: [PR 링크], 배포: 버전 또는 날짜)
-* (To-Be 동작 확인: YYYY-MM-DD 누가 확인, [comment 링크])
-* {color:#6b778c}상태: <issue.json의 status>, 갱신: <meta.json의 collectedAt, YYYY-MM-DD HH:MM>{color}
-```
-- 원인이나 해결을 아직 모르면 그 항목에 "(미확인)"이라고 적는다.
-  - 정리 모드(digest 실행 모드)에서는 지금까지 시도한 것을 한 줄 추가한다.
-- h3. 소제목 앞에는 빈 줄을 둔다. 빈 줄이 없으면 Jira가 소제목을 앞 목록 항목에 붙여 표시한다(INNO-34 시험 실행의 TL;DR, 2026-10-08).
-
-## 링크 추가 요청
-사람 구역(기본 정보, 문제(As-Is), 개선(To-Be), 첨부 자료(필수))에 없는 유용한 링크(PR, 리포트, 데이터 위치)가 있으면 requests에 "문제(As-Is)에 [제목|URL] 추가 필요"로 적는다.
+1. description.wiki에서 사람 구역(기본 정보, 문제(As-Is), 개선(To-Be), 첨부 자료(필수))을 읽는다.
+2. 사람의 기록에서 지금까지 확인된 원인, 해결, To-Be 동작 확인을 찾는다.
+3. work type 공통 파일의 "tldr 형식"으로 TL;DR을 작성한다. 원인이나 해결이 "(미확인)"이면 지금까지 시도한 것을 한 줄 추가한다.
+4. 사람 구역에 없는 유용한 링크가 있으면 work type 공통 파일의 "링크 추가 요청 문장"으로 requests에 적는다.
+5. 판정 객체의 items와 extra는 빈 배열로 두고, 검수 결과 코드값(verdict.verdict)과 checks는 `prompts/digest.md`의 "정리 모드 규칙"대로 채운다.

@@ -145,10 +145,10 @@ def test_missing_task_gets_no_verdict_defaults_and_apply_fails(render, so, ja, t
     assert not (out / "INNO-17" / "tldr.wiki").exists() and not (out / "INNO-17" / "comment.wiki").exists()
     assert (out / "INNO-17" / "_agent_error.txt").read_text(
         encoding="utf-8"
-    ).strip() == "구조화 출력에 이 Task 결과 없음"
+    ).strip() == "구조화 출력에 이 ticket 결과 없음"
     j, summ, failure = apply_one(ja, render, tmp_path, out)
     assert j.comments == [] and j.fields == {} and j.transitioned_to == [] and j.props_set == []
-    assert failure["reason"] == "CI agent 판정 없음. 원인: 구조화 출력에 이 Task 결과 없음"
+    assert failure["reason"] == "CI agent 판정 없음. 원인: 구조화 출력에 이 ticket 결과 없음"
     assert failure["key"] == "INNO-17" and failure["title"] == "제목" and failure["url"].endswith("/browse/INNO-17")
     assert summ.rows[0].startswith("| INNO-17 | Task | review | 실패 |")
 

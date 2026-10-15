@@ -10,7 +10,7 @@
   "additionalProperties": false,
   "properties": {
     "tasks": {
-      "description": "ctx/ 아래 Task 폴더마다 하나씩 낸 결과 목록",
+      "description": "ctx/ 아래 ticket 폴더마다 하나씩 낸 결과 목록",
       "type": "array",
       "items": {
         "type": "object",
@@ -200,7 +200,7 @@
       }
     },
     "failed": {
-      "description": "처리하지 못한 Task와 이유. 없으면 빈 배열",
+      "description": "처리하지 못한 ticket과 이유. 없으면 빈 배열",
       "type": "array",
       "items": {
         "type": "object",

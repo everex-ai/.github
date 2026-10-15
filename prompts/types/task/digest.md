@@ -1,31 +1,24 @@
-# Task (정리 모드)
+# Task 정리 단계
 
-이 파일은 정리 모드에서 work type이 Task인 task에 적용하는 지시다.
+work type이 Task인 ticket을 정리 모드에서 처리하는 단계를 정한다. 각 단계가 가리키는 절과 파일을 함께 적용한다.
 
-완료 판단 기준과 items, extra 작성 방법은 `prompts/types/task/deliverables.md`를 읽는다.
+---
 
-## items와 extra
-- items와 extra를 검수 모드와 같은 규칙으로 채운다(deliverables.md의 "예상 산출물과 결과 산출물의 대응",
-  "판정 객체(verdict)의 items와 extra"). apply.py가 이것으로 결과 산출물 구역을 다시 작성한다.
-  - 지금까지의 기록으로 항목마다 달성(done: true) 또는 미달성(done: false)을 정한다. "진행 중" 같은 다른 상태는 없다.
-  - 아직 끝나지 않은 항목은 done: false로 두고, result에 지금까지 된 것을, reason에 남은 일을 쓴다.
-  - why는 기록에 사유가 있을 때만 쓴다(중단, 범위 변경 등). 아직 진행 중이라 사유가 없으면 빈 문자열로 둔다.
-- precheck.json의 expected 항목마다 실제 결과를 대응시켜 items를 만들고, 예상에 없던 결과는 extra에 적는다.
-- items와 extra는 deliverables.md의 "판정 객체(verdict)의 items와 extra" 규칙대로 채운다.
+## 정리 단계
 
-## tldr 형식
-```
-h2. Summary
-* (무엇을 했는지 한 줄. 근거: [PR 또는 comment 링크])
-* (핵심 결과 1: 수치로. 모델, 데이터, 계산 방법을 함께. 예: pose-v3의 검증 데이터(val set, 1,200장) PCK@0.2(관절 위치 오차가 몸통 크기의 0.2배 이내인 비율) 0.83, 기준 모델 pose-v2 대비 +0.04. 근거: [리포트 링크])
-* (핵심 결과 2 또는 산출물. 초과 달성이 있으면 한 항목으로. 근거: [PR 또는 comment 링크])
-* {color:#6b778c}상태: <issue.json의 status>, 갱신: <meta.json의 collectedAt, YYYY-MM-DD HH:MM>{color}
-```
+1. description.wiki에서 사람 구역(진행 배경, 예상 산출물)을 읽는다.
+2. `prompts/types/task/deliverables.md`의 "예상 산출물과 결과 산출물의 대응"과 "판정 객체(verdict)의 items와 extra" 절에 따라 items와 extra를 작성한다. 정리 모드에서는 아래를 함께 적용한다.
+   - 지금까지의 기록으로 항목마다 달성(done: true) 또는 미달성(done: false)을 정한다. "진행 중" 같은 다른 상태는 없다.
+   - 아직 끝나지 않은 항목은 done: false로 두고, result에 지금까지 된 것을, reason에 달성하려면 담당자가 무엇을 더 남겨야 하는지를 적는다.
+   - why는 기록에 사유가 있을 때만 적는다(중단, 범위 변경 등). 아직 진행 중이라 사유가 없으면 빈 문자열로 둔다.
+3. work type 공통 파일의 "tldr 형식"으로 TL;DR을 작성한다.
+4. 사람 구역에 없는 유용한 링크가 있으면 work type 공통 파일의 "링크 추가 요청 문장"으로 requests에 적는다.
+5. 판정 객체의 검수 결과 코드값(verdict.verdict)과 checks는 `prompts/digest.md`의 "정리 모드 규칙"대로 채운다.
 
-## 링크 추가 요청
-사람 구역(진행 배경, 예상 산출물 (Task 완료 기준))에 없는 유용한 링크(PR, 리포트, 데이터 위치)가 있으면 requests에 "진행 배경에 [제목|URL] 추가 필요"로 적는다.
+---
 
-## 출력 예 (구조화 출력, 정리 모드, 진행 중인 Task)
+## 출력 예 (구조화 출력, 진행 중인 Task)
+
 ```json
 {
   "tasks": [

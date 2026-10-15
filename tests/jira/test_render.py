@@ -215,7 +215,7 @@ def test_request_keeps_status_and_mentions_lead(render, ja, tmp_path, slack):
     assert slack[0].startswith("<@U-LEAD> [INNO-17] 검수 결과: 검토 요청. 상태 변경 없음\n")
     assert (
         '\n    • 예상 산출물 2번 "오류율 1% 미만": 라벨 재수집이 다음 분기로 밀림(<https://example.com/c/1|comment 2026-09-15>)\n'
-        f"    • {HOLD_TO_REQUEST}\n팀장이 task를 확인한 뒤 in-progress 또는 done으로 직접 전환 필요\n"
+        f"    • {HOLD_TO_REQUEST}\n팀장이 ticket을 확인한 뒤 in-progress 또는 done으로 직접 전환 필요\n"
     ) in slack[0]
     assert "\n요청\n" not in slack[0]
     assert not any(e in slack[0] for e in FORMAL_ENDINGS)
@@ -231,7 +231,7 @@ def test_pass_asks_lead_to_move_done(render, ja, tmp_path, slack):
     assert slack[0].startswith(
         "<@U-LEAD> [INNO-17] 검수 결과: 통과. 상태 변경 없음\n"
         f"<{ISSUE_URL}|INNO-17>\n통과 이유\n    • 예상 산출물 2개 중 2개 달성\n    • 요약\n"
-        "팀장이 task를 확인한 뒤 done으로 직접 전환 필요\n"
+        "팀장이 ticket을 확인한 뒤 done으로 직접 전환 필요\n"
     )
     assert not any(e in slack[0] for e in FORMAL_ENDINGS)
 
@@ -357,10 +357,13 @@ def test_weekly_message_sections_have_actions_and_a3_mentions_lead(ja, tmp_path,
     summary = run_weekly(ja, tmp_path, lead="acc-lead", extra=[STALE_ALERTS, READY_WAIT_ALERTS])
     lines = slack[-1].splitlines()
     assert lines[0].endswith("전달사항] <@U-ASSIGNEE> <@U-LEAD>")  # 팀장 멘션이 머리줄 멘션 목록에 들어감
-    assert "아래 task마다" not in slack[-1]  # 전체 조치 문구 줄 대신 절 제목마다 조치 문구를 붙임
+    assert (
+        "아래 task마다" not in slack[-1] and "아래 ticket마다" not in slack[-1]
+    )  # 전체 조치 문구 줄 대신 절 제목마다 조치 문구를 붙임
     assert "*stop 사유 미기재* (1건) — 담당자: stop 사유 comment 필요" in lines
     assert (
-        "*영업일 기준 5일 이상 활동 없음* (1건) — 담당자: 진행 상황 comment, 또는 멈춘 task면 stop 전환 필요" in lines
+        "*영업일 기준 5일 이상 활동 없음* (1건) — 담당자: 진행 상황 comment, 또는 멈춘 ticket이면 stop 전환 필요"
+        in lines
     )
     assert "*ready-to-done 영업일 기준 3일 이상 대기* (1건) — 팀장: done 전환, 또는 미루는 이유 comment 필요" in lines
     # A3 항목: 담당자는 Jira 표시 이름(멘션 아님), 팀장은 멘션
@@ -526,14 +529,14 @@ def test_failure_slack_text(ja, monkeypatch):
     failures = [{"key": "INNO-17", "title": "A & B", "url": ISSUE_URL, "reason": "CI agent 판정 없음. 원인: x"}]
     users = {"acc-lead": "U-LEAD"}
     assert ja.failure_slack_text("review", failures, users, "acc-lead") == (
-        "[jira-doc 실패] 검수 모드 Task 1건 처리 실패 <@U-LEAD>\n"
+        "[jira-doc 실패] 검수 모드 ticket 1건 처리 실패 <@U-LEAD>\n"
         f"• <{ISSUE_URL}|INNO-17 A &amp; B>: CI agent 판정 없음. 원인: x\n"
         "GitHub Actions 실행: <https://github.com/org/repo/actions/runs/1|실행 로그>"
     )
     monkeypatch.delenv("GITHUB_RUN_ID")
     no_url = [{"key": "INNO-9", "title": "제목", "url": "", "reason": "Jira 오류: x"}]
     assert ja.failure_slack_text("digest", no_url, {}, "acc-lead") == (
-        "[jira-doc 실패] 정리 모드 Task 1건 처리 실패 팀장(Slack 멘션 없음)\n• INNO-9 제목: Jira 오류: x"
+        "[jira-doc 실패] 정리 모드 ticket 1건 처리 실패 팀장(Slack 멘션 없음)\n• INNO-9 제목: Jira 오류: x"
     )
 
 
@@ -837,7 +840,7 @@ def test_apply_alerts_leaves_ready_wait_out_of_comment_and_notified(render, ja, 
     ja.apply_alerts(j, tmp_path / "ctx", "acc-lead", ja.Summary(str(tmp_path / "summary.md")))
     [(key, body)] = j.comments
     assert key == "INNO-41" and "진행 상황 comment 필요" in body and "팀장 조치 필요" not in body
-    assert "누락 항목 1건" in body
+    assert "정리 모드(ticket 키 없이 실행한 문서 정리)에서 확인한 누락 항목 1건" in body
     assert j.props["INNO-41"]["notified"] == ["STALE:2026-09-15"]  # READY_WAIT 코드는 notified에 없음
 
 
@@ -1100,10 +1103,10 @@ def test_main_failure_sends_one_slack_and_exits_one(render, ja, monkeypatch, tmp
     assert code == 1
     assert j.comments == []  # 검수 모드의 실패도 Jira에 comment를 남기지 않음
     [text] = slack  # 검수 알림 없이 실패 알림 한 건
-    assert text.startswith("[jira-doc 실패] 검수 모드 Task 1건 처리 실패 <@U-LEAD>\n")
+    assert text.startswith("[jira-doc 실패] 검수 모드 ticket 1건 처리 실패 <@U-LEAD>\n")
     assert f"• <{ISSUE_URL}|INNO-17 export 오류>: " in text
     assert "원인: " in text and "GitHub Actions 실행: <https://github.com/org/repo/actions/runs/9|실행 로그>" in text
-    assert "실패 알림 Task 1건" in summary
+    assert "실패 알림 ticket 1건" in summary
     assert "U-LEAD" not in summary and "<@U-" not in summary  # Actions 요약에 Slack 멤버 ID가 나가지 않음
 
 
@@ -1114,7 +1117,7 @@ def test_main_digest_two_failures_in_one_slack(render, ja, monkeypatch, tmp_path
     _, code, summary = run_main(render, ja, monkeypatch, tmp_path, "digest", ["INNO-1", "INNO-2"])
     assert code == 1
     [text] = slack
-    assert text.startswith("[jira-doc 실패] 정리 모드 Task 2건 처리 실패 <@U-LEAD>\n")
+    assert text.startswith("[jira-doc 실패] 정리 모드 ticket 2건 처리 실패 <@U-LEAD>\n")
     assert "INNO-1 제목 INNO-1" in text and "INNO-2 제목 INNO-2" in text
     assert "U-LEAD" not in summary
 
@@ -1173,7 +1176,7 @@ STOP_CHANGES = [
 ]
 R4_REQUEST = (
     "stop(2026-09-08)의 사유를 'stop 사유:'로 시작하는 comment로 남긴 뒤 다시 "
-    "request 전환(담당자가 완료를 요청해 task를 ready-to-done 상태로 보내는 Jira 전환) 필요"
+    "request 전환(담당자가 완료를 요청해 ticket을 ready-to-done 상태로 보내는 Jira 전환) 필요"
 )
 LATE_URL = f"{ISSUE_URL}?focusedCommentId=1"  # 늦은 사유 comment(2026-09-25)의 링크
 LATE_NOTE = "늦게 기록: stop 2026-09-08 뒤 다음 상태 변경 이후에 남긴"
