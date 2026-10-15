@@ -1156,7 +1156,10 @@ def slack_post(text: str, webhook_env: str = "SLACK_WEBHOOK_URL") -> str:
     if not url:
         return f"{webhook_env} 없음. 전송 건너뜀"
     body = json.dumps({"text": text}).encode()
-    req = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
+    try:
+        req = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
+    except ValueError:                                 # URL 형식 오류. public 로그에 secret 값이 남지 않게 값은 적지 않는다
+        return f"전송 실패: {webhook_env} 값이 URL 형식이 아님"
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             return "전송 완료" if r.status == 200 else f"전송 응답 {r.status}"

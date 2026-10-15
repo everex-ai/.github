@@ -486,6 +486,14 @@ def test_slack_post_reports_timeout(ja, monkeypatch):
     assert ja.slack_post("본문") == "전송 실패: timed out"
 
 
+def test_slack_post_invalid_url_does_not_raise_or_leak(ja, monkeypatch):
+    """webhook 값이 URL 형식이 아니면 예외 없이 실패 문구를 돌려준다. public 로그에 남지 않게 값은 적지 않는다."""
+    monkeypatch.undo()  # autouse fixture slack이 바꾼 slack_post를 원래 함수로 되돌린다
+    monkeypatch.setenv("SLACK_LEAD_WEBHOOK_URL", "<지금 SLACK_WEBHOOK_URL과 같은 URL>")
+    result = ja.slack_post("본문", "SLACK_LEAD_WEBHOOK_URL")
+    assert result == "전송 실패: SLACK_LEAD_WEBHOOK_URL 값이 URL 형식이 아님"
+
+
 def test_comment_failure_keeps_state_note_and_slack(render, ja, tmp_path, slack):
     j = render.FakeJira({"INNO-17": ""})
 
