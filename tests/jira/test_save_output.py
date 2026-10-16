@@ -1,7 +1,7 @@
 """scripts/save_output.py(CI agent의 구조화 출력을 out/<KEY>/ 파일로 저장)와 schemas/agent-output.json의 동작.
 
-save_output.py가 만든 out/을 apply.py의 apply_issue에 넘겨 실패와 통과가 갈리는지도 확인한다. 가짜 Jira는
-scripts/dev/render_jira_samples.py의 FakeJira이다.
+save_output.py가 만든 out/을 src/jira/issue.py의 apply_issue에 넘겨 실패와 통과가 갈리는지도 확인한다. 가짜 Jira는
+scripts/src/dev/samples/fake_jira.py의 FakeJira이다.
 """
 
 from __future__ import annotations
@@ -17,6 +17,8 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT / "scripts") not in sys.path:
+    sys.path.append(str(ROOT / "scripts"))  # scripts/src 패키지를 불러오기 위함(test_render.py 참고)
 EXPECTED = [{"id": "1", "text": "재현 테스트 추가"}, {"id": "2", "text": "오류율 1% 미만"}]
 PRE_CHECKS = {"T1": {"result": "pass", "detail": "예상 산출물 있음"}, "A2": {"result": "n/a"}, "T2": {"result": "x"}}
 DONE_ITEMS = [{"id": "1", "done": True, "result": "테스트 3건 추가"}, {"id": "2", "done": True, "result": "0.4%"}]
@@ -26,23 +28,27 @@ TLDR = "h2. Summary\n* 결과 요약\n"
 
 def _load(name: str, path: Path):
     if name not in sys.modules:
+        saved = list(sys.path)  # 스크립트가 scripts/를 sys.path 맨 앞에 넣으므로 불러온 뒤 되돌린다
         spec = importlib.util.spec_from_file_location(name, path)
         mod = importlib.util.module_from_spec(spec)
         sys.modules[name] = mod
-        spec.loader.exec_module(mod)
+        try:
+            spec.loader.exec_module(mod)
+        finally:
+            sys.path[:] = saved
     return sys.modules[name]
 
 
 @pytest.fixture(scope="module")
 def render():
-    """scripts/dev/render_jira_samples.py 모듈."""
-    return _load("render_jira_samples", ROOT / "scripts" / "dev" / "render_jira_samples.py")
+    """scripts/src/dev/samples/render.py (모듈 이름 src.dev.samples.render)."""
+    return importlib.import_module("src.dev.samples.render")
 
 
 @pytest.fixture(scope="module")
-def ja(render):
-    """scripts/apply.py (모듈 이름 jira_apply)."""
-    return render.load_modules()[0]
+def ja():
+    """scripts/apply.py (모듈 이름 jira_apply). main을 실행하는 테스트가 사용한다."""
+    return _load("jira_apply", ROOT / "scripts" / "apply.py")
 
 
 @pytest.fixture(scope="module")
@@ -51,13 +57,31 @@ def so():
     return _load("save_output", ROOT / "scripts" / "save_output.py")
 
 
+@pytest.fixture(scope="module")
+def output():
+    """scripts/src/jira/output/result.py (모듈 이름 src.jira.output.result)."""
+    return importlib.import_module("src.jira.output.result")
+
+
+@pytest.fixture(scope="module")
+def jrn():
+    """scripts/src/jira/runs.py (모듈 이름 src.jira.runs)."""
+    return importlib.import_module("src.jira.runs")
+
+
+@pytest.fixture(scope="module")
+def jsl():
+    """scripts/src/jira/slack.py (모듈 이름 src.jira.slack)."""
+    return importlib.import_module("src.jira.slack")
+
+
 @pytest.fixture(autouse=True)
-def slack(ja, monkeypatch):
+def slack(jsl, monkeypatch):
     """apply_issue가 Slack에 보내려던 본문을 모은다. 실제 Slack에는 보내지 않는다."""
     sent: list[str] = []
     monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
     monkeypatch.setenv("SLACK_USERS_JSON", "{}")
-    monkeypatch.setattr(ja, "slack_post", lambda text: sent.append(text) or "전송 완료")
+    monkeypatch.setattr(jsl, "slack_post", lambda text: sent.append(text) or "전송 완료")
     return sent
 
 
@@ -441,8 +465,8 @@ def write_usage_exec(work: Path, name: str = "usage-exec.json", **fields) -> str
     return str(path)
 
 
-def test_usage_is_read_from_model_usage(so):
-    got = so.usage_of([{"type": "result", "total_cost_usd": 0.5, "modelUsage": MODEL_USAGE, "usage": USAGE}])
+def test_usage_is_read_from_model_usage(output):
+    got = output.usage_of([{"type": "result", "total_cost_usd": 0.5, "modelUsage": MODEL_USAGE, "usage": USAGE}])
     assert got == {
         "costUsd": 0.5,
         "tokens": {"input": 101, "output": 202, "cacheWrite": 404, "cacheRead": 3003},
@@ -450,9 +474,9 @@ def test_usage_is_read_from_model_usage(so):
     }
 
 
-def test_usage_falls_back_to_usage_without_model_usage(so):
+def test_usage_falls_back_to_usage_without_model_usage(output):
     for msg in ({"usage": USAGE}, {"modelUsage": {}, "usage": USAGE}):
-        got = so.usage_of([{"type": "result", **msg}])
+        got = output.usage_of([{"type": "result", **msg}])
         assert got == {
             "costUsd": None,
             "tokens": {"input": 7, "output": 8, "cacheWrite": 9, "cacheRead": 10},
@@ -460,21 +484,21 @@ def test_usage_falls_back_to_usage_without_model_usage(so):
         }
 
 
-def test_usage_sums_result_messages_and_ignores_bad_values(so):
+def test_usage_sums_result_messages_and_ignores_bad_values(output):
     results = [
         {"total_cost_usd": 0.25, "usage": USAGE},
         {"total_cost_usd": "비용", "usage": {"input_tokens": "많음", "output_tokens": 1}},
     ]
-    got = so.usage_of(results)
+    got = output.usage_of(results)
     assert got["costUsd"] == 0.25 and got["tokens"] == {"input": 7, "output": 9, "cacheWrite": 9, "cacheRead": 10}
-    assert so.usage_of([]) == {
+    assert output.usage_of([]) == {
         "costUsd": None,
         "tokens": {"input": 0, "output": 0, "cacheWrite": 0, "cacheRead": 0},
         "models": [],
     }
 
 
-def test_exec_summary_keeps_workflow_lines_and_adds_token_line(so, tmp_path):
+def test_exec_summary_keeps_workflow_lines_and_adds_token_line(output, tmp_path):
     denials = [
         {"tool_name": "Write", "tool_input": {"file_path": "out/INNO-17/tldr.wiki"}},
         {"tool_name": "Bash", "tool_input": {"command": SECRET}},
@@ -484,7 +508,7 @@ def test_exec_summary_keeps_workflow_lines_and_adds_token_line(so, tmp_path):
         tmp_path, is_error=True, subtype="error_max_turns", total_cost_usd=1.5, result="실패 문구",
         permission_denials=denials, modelUsage=MODEL_USAGE,
     )  # fmt: skip
-    assert so.exec_summary(path) == [
+    assert output.exec_summary(path) == [
         "is_error=True subtype=error_max_turns num_turns=5 total_cost_usd=1.5",
         "permission_denials=Write,Bash,Edit",
         "denied Write: out/INNO-17/tldr.wiki",
@@ -493,7 +517,7 @@ def test_exec_summary_keeps_workflow_lines_and_adds_token_line(so, tmp_path):
         "tokens input=101 output=202 cache_write=404 cache_read=3003",
     ]
     ok = write_usage_exec(tmp_path, "ok.json", total_cost_usd=0.1, result=SECRET, usage=USAGE)
-    assert so.exec_summary(ok) == [
+    assert output.exec_summary(ok) == [
         "is_error=False subtype=success num_turns=5 total_cost_usd=0.1",
         "permission_denials=",
         "tokens input=7 output=8 cache_write=9 cache_read=10",
@@ -569,15 +593,15 @@ def test_save_without_exec_file_adds_no_usage_entry(render, so, tmp_path):
     assert not (out / "_usage.json").exists()
 
 
-def test_apply_sums_usage_file(ja, tmp_path):
+def test_apply_sums_usage_file(jrn, tmp_path):
     (tmp_path / "_usage.json").write_text(json.dumps(USAGE_ENTRIES), encoding="utf-8")
-    assert ja.usage_total(tmp_path) == {
+    assert jrn.usage_total(tmp_path) == {
         "retry": True,
         "costUsd": 0.75,
         "tokens": {"input": 11, "output": 22, "cacheWrite": 33, "cacheRead": 44},
         "models": ["a", "b"],
     }
-    assert ja.usage_total(tmp_path / "none") == {
+    assert jrn.usage_total(tmp_path / "none") == {
         "retry": False,
         "costUsd": None,
         "tokens": {"input": 0, "output": 0, "cacheWrite": 0, "cacheRead": 0},

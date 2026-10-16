@@ -6,7 +6,7 @@ jira-doc의 알림은 즉시, 주간, 월간, 분기, 연간의 다섯 주기로
 
 - 알림은 모두 스크립트가 만든다.
   - CI agent는 알림 문장을 만들지 않는다.
-  - 만드는 곳: `scripts/apply.py`, `scripts/report.py`
+  - 만드는 곳: `scripts/src/jira/`, `scripts/src/jira/report/`
   - F2 stop 사유 요청 comment만 Jira Automation이 만든다.
 - 이 문서의 동작 흐름과 실행 모드는 `docs/jira-doc-agent/README.md`에 있다.
 
@@ -31,7 +31,7 @@ jira-doc의 알림은 즉시, 주간, 월간, 분기, 연간의 다섯 주기로
   - 월간 묶음: 매달 붙는 항목 묶음
   - 분기 묶음: 1·4·7·10월 메시지에 붙는 지난 분기 항목 묶음
   - 연간 묶음: 1월 메시지에 붙는 지난해 항목 묶음
-- ❌: 검사 표 결과 칸의 "❌ 보완 필요"(`scripts/apply.py`의 `RESULT_KO`)
+- ❌: 검사 표 결과 칸의 "❌ 보완 필요"(`scripts/src/constant/check.py`의 `RESULT_KO`)
 
 ## 주기별 알림
 
@@ -45,18 +45,18 @@ jira-doc의 알림은 즉시, 주간, 월간, 분기, 연간의 다섯 주기로
 | 즉시 | 실패 알림 | 연동 채널 | 팀장 | `failure_slack_text` |
 | 주간 | 주간 점검 메시지(R4, A1, A3) | 연동 채널 | R4, A1은 담당자, A3는 팀장 | `slack_weekly`, `weekly_lines` |
 | 주간 | 토큰(인증 키) 만료 알림 | 팀장 채널 | 팀장 | `slack_token_expiry`, `token_expiry_text` |
-| 월간 | 정기 보고 메시지의 월간 묶음 | 팀장 채널 | 팀장 | `scripts/report.py`의 `run_report` |
+| 월간 | 정기 보고 메시지의 월간 묶음 | 팀장 채널 | 팀장 | `scripts/src/jira/report/run.py`의 `run_report` |
 | 분기 | 정기 보고 메시지의 분기 묶음 | 팀장 채널 | 팀장 | 같음 |
 | 연간 | 정기 보고 메시지의 연간 묶음 | 팀장 채널 | 팀장 | 같음 |
 
-- 만드는 곳 칸의 함수는 따로 적지 않으면 `scripts/apply.py`에 있다.
+- 만드는 곳 칸의 함수는 따로 적지 않으면 `scripts/src/jira/` 아래 모듈에 있다.
 - 팀장 확인 결과 알림은 팀장의 전환 때 F4가 보낸다.
   - 대상 전환: Done(통과), In Progress(보류)
   - 본문은 상태 변경 결과만 담는다.
     - 팀장 확인 결과(통과, 보류)
     - 상태 변경(`ready-to-done → Done` 또는 `ready-to-done → In Progress`)
     - ticket 링크
-  - 팀장 계정이 한 전환이 아니면 보내지 않는다(`scripts/apply.py`의 `apply_decision`).
+  - 팀장 계정이 한 전환이 아니면 보내지 않는다(`scripts/src/jira/issue.py`의 `apply_decision`).
   - 같은 전환은 한 번만 알린다.
     - 알린 전환 시각을 jira-doc 기록의 `lastDecisionAt`에 남긴다.
 - 주간 알림은 매주 수요일 09:00 KST cron으로 나간다(`.github/workflows/jira-doc.yml:13`).
@@ -98,7 +98,7 @@ jira-doc의 알림은 즉시, 주간, 월간, 분기, 연간의 다섯 주기로
 
 - 보고 대상 달은 지난달이다.
   - Actions 수동 실행(mode `report`)에 `month`(`YYYY-MM`)를 넣으면 그 달로 만든다.
-- 묶음마다 Slack 메시지 하나를 보낸다(`scripts/report.py`의 `Report.messages`).
+- 묶음마다 Slack 메시지 하나를 보낸다(`scripts/src/jira/report/message.py`의 `Report.messages`).
   - 월간 묶음: 매달
   - 분기 묶음: 대상 달이 3, 6, 9, 12월
   - 연간 묶음: 대상 달이 12월
@@ -151,13 +151,13 @@ jira-doc의 알림은 즉시, 주간, 월간, 분기, 연간의 다섯 주기로
   - 만족률: 검사 ID별로 해당 없음을 뺀 검사 표 행 중 만족인 비율
   - KR: Jira work type이 KR인 ticket. 그 아래 Task의 상위 ticket이다.
   - 결과 산출물 달성률: 결과 산출물 구역의 달성 요약 줄을 합산한 값
-    - 줄 꼴: `예상 산출물 n개 중 m개 달성`(`scripts/apply.py`의 `deliverables_wiki`가 만듦)
+    - 줄 꼴: `예상 산출물 n개 중 m개 달성`(`scripts/src/jira/comment.py`의 `deliverables_wiki`가 만듦)
   - 아래 넷은 "ticket 현황과 팀장 확인 지표" 절에 있다.
     - ticket 현황, 최대 검수 반복 횟수
     - 팀장 확인 대기, 팀장 확인 시간
   - Claude 활용 요약 절의 지표는 "Claude 활용 요약 지표" 절에 있다.
 - 상위 3개와 상위 5개는 메시지 길이를 줄이려는 값이다.
-- 메시지 길이를 줄이려고 아래처럼 적는다(`scripts/report.py`의 `Report`).
+- 메시지 길이를 줄이려고 아래처럼 적는다(`scripts/src/jira/report/message.py`의 `Report`).
   - Top3는 ticket마다 두 줄로 적는다.
     - 제목은 앞 20자까지 적는다.
     - 둘째 줄이 50자를 넘으면 제목을 더 줄이거나 뺀다.
@@ -171,7 +171,7 @@ jira-doc의 알림은 즉시, 주간, 월간, 분기, 연간의 다섯 주기로
 
 ## 지표 정의
 
-정기 보고 메시지의 지표는 아래 절의 정의를 따른다. `scripts/report.py`가 Jira 기록과 jira-doc 기록으로 계산한다.
+정기 보고 메시지의 지표는 아래 절의 정의를 따른다. `scripts/src/jira/report/`가 Jira 기록과 jira-doc 기록으로 계산한다.
 
 ### ticket 현황과 팀장 확인 지표
 
@@ -207,7 +207,7 @@ jira-doc의 알림은 즉시, 주간, 월간, 분기, 연간의 다섯 주기로
   - 자동 보류 전환은 뺀다.
     - 자동 보류 전환: 보류 검수 뒤 apply.py가 In Progress로 되돌린 전환
     - 기준: 전환 직전 검수 comment에 "상태를 in-progress로 되돌림"이 있음
-    - 판정 일치율과 같은 기준이다(`scripts/report.py`의 `AUTO_HOLD_NOTE`).
+    - 판정 일치율과 같은 기준이다(`scripts/src/jira/report/fetch.py`의 `AUTO_HOLD_NOTE`).
 - 담당자는 지금 담당자로 센다. 담당자 변경 이력은 반영하지 않는다.
 
 ### Claude 사용량 네 갈래
@@ -222,7 +222,7 @@ jira-doc의 알림은 즉시, 주간, 월간, 분기, 연간의 다섯 주기로
 | 정리 모드 | F3 정리 | 팀장·담당자의 F3 버튼 요청 |
 
 - 같은 request 전환의 재검수는 조건이 있을 때만 재실행·실패로 센다.
-  - 조건: 앞서 반영에 성공한 실행이 있음(`scripts/report.py`의 `mark_reruns`)
+  - 조건: 앞서 반영에 성공한 실행이 있음(`scripts/src/jira/report/parse.py`의 `mark_reruns`)
   - 앞선 실행이 모두 반영 실패이면 첫 성공 실행은 원래 갈래로 센다.
 
 - 월 합계는 실행 날짜(한국 시간) 기준으로 센다.
@@ -322,7 +322,7 @@ jira-doc의 알림은 즉시, 주간, 월간, 분기, 연간의 다섯 주기로
 ## Claude 사용량 기록
 
 CI agent를 실행할 때마다 apply.py가 Claude 사용량을 기록한다.
-기록 위치는 그 ticket의 jira-doc 기록 `runs`다(`scripts/apply.py`의 `add_run`).
+기록 위치는 그 ticket의 jira-doc 기록 `runs`다(`scripts/src/jira/runs.py`의 `add_run`).
 
 - 사용량은 CI agent가 아니라 `scripts/save_output.py`가 실행 결과 파일에서 읽는다.
   - 실행 결과 파일: CI agent 실행 결과 JSON
@@ -346,7 +346,7 @@ CI agent를 실행할 때마다 apply.py가 Claude 사용량을 기록한다.
 | `tokens` | `input`, `output`, `cacheWrite`, `cacheRead` |
 | `models` | 사용한 모델 이름 목록 |
 
-- `runs`는 최근 100건만 남긴다(`scripts/apply.py`의 `add_run`).
+- `runs`는 최근 100건만 남긴다(`scripts/src/jira/runs.py`의 `add_run`).
   - 기록 크기가 30,000바이트를 넘으면 오래된 항목부터 더 지운다.
   - 추정: issue property 값의 크기 상한(32KB)을 넘지 않게 하려는 것이다.
 - 정리 모드는 ticket 키가 필수라 실행 하나가 ticket 하나다.
@@ -355,12 +355,12 @@ CI agent를 실행할 때마다 apply.py가 Claude 사용량을 기록한다.
 ## 토큰(인증 키) 만료 알림
 
 주간 점검 모드에서 apply.py가 variable `TOKEN_EXPIRY`의 만료일을 확인한다.
-30일 이하로 남은 항목을 팀장 채널로 알린다(`scripts/apply.py`의 `slack_token_expiry`).
+30일 이하로 남은 항목을 팀장 채널로 알린다(`scripts/src/jira/issue.py`의 `slack_token_expiry`).
 
 - 갱신해 `TOKEN_EXPIRY`를 고칠 때까지 매주 다시 알린다.
 - `TOKEN_EXPIRY`가 없거나 JSON이 틀리면 알림을 보내지 않고 Summary 탭에 경고만 남긴다.
   - 날짜 형식이 틀린 항목은 그 항목만 경고하고, 나머지 항목은 알린다.
-- 알림의 남은 날 표시는 아래 셋 중 하나다(`scripts/apply.py`의 `token_expiry_text`).
+- 알림의 남은 날 표시는 아래 셋 중 하나다(`scripts/src/jira/slack.py`의 `token_expiry_text`).
   - 남은 날 n일, 오늘 만료, 만료됨
 - 만료일은 공개돼도 문제없는 값이라 secret이 아니라 variable에 둔다.
 - 2026-10-14에 등록할 값은 아래 표와 같다.
@@ -386,17 +386,17 @@ gh api -X POST repos/everex-ai/.github/actions/variables -f name=TOKEN_EXPIRY \
 
 ## 중복 방지와 멘션 규칙
 
-- 주간 점검 메시지는 중복을 걸러 내지 않는다(`scripts/apply.py`의 `weekly_lines`).
+- 주간 점검 메시지는 중복을 걸러 내지 않는다(`scripts/src/jira/slack.py`의 `weekly_lines`).
   - 사유나 활동을 남길 때까지 매주 같은 항목이 다시 올라온다.
   - A3 항목은 팀장이 `end` 전환할 때까지 다시 올라온다.
-- 주간 점검 메시지는 알림이 없는 주에도 "점검 결과 이상 없음"으로 전송된다(`scripts/apply.py`의 `slack_weekly`).
-- Jira comment의 멘션은 담당자와 팀장만 남긴다(`scripts/apply.py`의 `sanitize_mentions`).
+- 주간 점검 메시지는 알림이 없는 주에도 "점검 결과 이상 없음"으로 전송된다(`scripts/src/jira/issue.py`의 `slack_weekly`).
+- Jira comment의 멘션은 담당자와 팀장만 남긴다(`scripts/src/jira/comment.py`의 `sanitize_mentions`).
 - Slack 멘션은 Jira accountId와 Slack 멤버 ID 대응표로 만든다.
   - 대응표 등록은 `docs/jira-doc-agent/README.md`의 "설치" 절 5번에 있다.
-  - 대응표에 없는 사람은 멘션되지 않고 Jira 표시 이름이나 "팀장"으로 표시된다(`scripts/apply.py`의 `slack_mention`).
+  - 대응표에 없는 사람은 멘션되지 않고 Jira 표시 이름이나 "팀장"으로 표시된다(`scripts/src/jira/slack.py`의 `slack_mention`).
 - 정기 보고 메시지에는 Slack 멘션을 넣지 않는다.
   - 담당자는 Jira 표시 이름으로 적는다.
-- Summary 탭의 Slack 메시지 사본에는 멘션 대신 이름을 적는다(`scripts/apply.py`의 `slack_weekly`, `main`).
+- Summary 탭의 Slack 메시지 사본에는 멘션 대신 이름을 적는다(`scripts/src/jira/issue.py`의 `slack_weekly`, `scripts/apply.py`의 `main`).
   - 이유: public repo의 Actions 실행 화면은 누구나 열람할 수 있다.
     - 조건: GitHub에 로그인한 사람
     - 멘션(`<@U…>`)을 그대로 남기면 Slack 멤버 ID가 드러난다.

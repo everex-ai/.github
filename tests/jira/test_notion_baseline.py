@@ -1,4 +1,4 @@
-"""scripts/dev/notion_baseline.py(문서화 Agent 도입 이전 현황 지표 집계)의 판정, 집계, API 호출.
+"""scripts/dev/notion_baseline.py와 scripts/src/dev/notion/(문서화 Agent 도입 이전 현황 지표 집계)의 판정, 집계, API 호출.
 
 Notion은 가짜 응답만 사용한다. 읽기 메서드만 가진 가짜 객체(FakeNotion)와, urlopen 대신 넘기는 가짜 opener(FakeHTTP)로
 대신하고 실제 API를 호출하지 않는다.
@@ -22,13 +22,15 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT / "scripts") not in sys.path:
+    sys.path.append(str(ROOT / "scripts"))  # scripts/src 패키지를 불러오기 위함(test_render.py 참고)
 MEMBER, MEMBER2, LEAD = "user-member-1", "user-member-2", "user-lead-0"
 _ids = itertools.count()
 
 
 @pytest.fixture(scope="module")
 def nb():
-    """scripts/dev/notion_baseline.py 모듈."""
+    """scripts/dev/notion_baseline.py 모듈. main, parse_args, run, NotionClient(main이 찾는 이름)을 가진다."""
     name = "notion_baseline"
     if name not in sys.modules:
         spec = importlib.util.spec_from_file_location(name, ROOT / "scripts" / "dev" / "notion_baseline.py")
@@ -36,6 +38,30 @@ def nb():
         sys.modules[name] = mod
         spec.loader.exec_module(mod)
     return sys.modules[name]
+
+
+@pytest.fixture(scope="module")
+def nb_client():
+    """scripts/src/dev/notion/client.py (모듈 이름 src.dev.notion.client)."""
+    return importlib.import_module("src.dev.notion.client")
+
+
+@pytest.fixture(scope="module")
+def nb_template():
+    """scripts/src/dev/notion/template.py (모듈 이름 src.dev.notion.template)."""
+    return importlib.import_module("src.dev.notion.template")
+
+
+@pytest.fixture(scope="module")
+def nb_page():
+    """scripts/src/dev/notion/page.py (모듈 이름 src.dev.notion.page)."""
+    return importlib.import_module("src.dev.notion.page")
+
+
+@pytest.fixture(scope="module")
+def nb_period():
+    """scripts/src/common/period.py (모듈 이름 src.common.period)."""
+    return importlib.import_module("src.common.period")
 
 
 # ---- 가짜 블록, 페이지, comment ----
@@ -146,19 +172,19 @@ def research_blocks(purpose: list, criteria: list, result: list, refs: list | No
     ]
 
 
-def info(nb, status: str = "Done", assignees: tuple = (MEMBER,)):
-    return nb.PageInfo(
+def info(nb_page, status: str = "Done", assignees: tuple = (MEMBER,)):
+    return nb_page.PageInfo(
         id="page-x",
         url="https://www.notion.so/page-x",
         title="실험 task",
-        created=dt.datetime(2026, 4, 1, tzinfo=nb.KST),
+        created=dt.datetime(2026, 4, 1, tzinfo=nb_page.KST),
         status=status,
-        assignees={nb.norm_id(a) for a in assignees},
+        assignees={nb_page.norm_id(a) for a in assignees},
     )
 
 
-def analyze(nb, blocks: list, status: str = "Done", comments: list | None = None):
-    return nb.analyze_page(info(nb, status), blocks, comments or [], nb.SCOPE_ALL)
+def analyze(nb_page, blocks: list, status: str = "Done", comments: list | None = None):
+    return nb_page.analyze_page(info(nb_page, status), blocks, comments or [], nb_page.SCOPE_ALL)
 
 
 def comment(cid: str, user: str, parent: str = "page-x") -> dict:
@@ -237,29 +263,29 @@ def read_csv(path: Path) -> list[dict[str, str]]:
 # ---- 구역 찾기와 템플릿 종류 ----
 
 
-def test_engineering_sections_and_written(nb):
+def test_engineering_sections_and_written(nb_template, nb_page):
     bg, crit, res = p("기존 파이프라인이 느림"), li("학습 원격 제출"), li("✅ Slurm 학습 원격 제출 기능 개발")
     blocks = eng_blocks([bg], [crit], [res])
-    assert nb.template_kind(blocks) == "engineering"
-    sections = nb.find_sections(blocks, "engineering")
+    assert nb_template.template_kind(blocks) == "engineering"
+    sections = nb_template.find_sections(blocks, "engineering")
     assert sections["background"][1:] == [bg]  # 첫 블록은 안내 문구
     assert sections["criteria"][1:] == [crit]
     assert sections["result"][1:] == [res]
-    r = analyze(nb, blocks)
+    r = analyze(nb_page, blocks)
     assert r.kind == "engineering"
     assert r.written == {"background": True, "criteria": True, "result": True}
 
 
-def test_research_sections_and_written(nb):
+def test_research_sections_and_written(nb_template, nb_page):
     blocks = research_blocks([p("모델 비교")], [li("비교 표")], [li("✅ 비교 표 작성")])
-    assert nb.template_kind(blocks) == "research"
-    sections = nb.find_sections(blocks, "research")
+    assert nb_template.template_kind(blocks) == "research"
+    sections = nb_template.find_sections(blocks, "research")
     assert set(sections) == {"background", "criteria", "method", "result", "reference"}
-    assert nb.block_text(sections["background"][1]) == "모델 비교"
-    assert analyze(nb, blocks).written == {"background": True, "criteria": True, "result": True}
+    assert nb_template.block_text(sections["background"][1]) == "모델 비교"
+    assert analyze(nb_page, blocks).written == {"background": True, "criteria": True, "result": True}
 
 
-def test_template_bodies_are_not_written(nb):
+def test_template_bodies_are_not_written(nb_template, nb_page):
     # "[] Engineering Template (James)" 꼴: 안내 문구, 예시 항목, 내용 없는 체크박스, 빈 paragraph만 있음
     james = eng_blocks(
         [p()],
@@ -267,136 +293,145 @@ def test_template_bodies_are_not_written(nb):
         [li()],
         links=[li("어떤 문서인지 설명", [li("링크")])],
     )
-    r = analyze(nb, james)
+    r = analyze(nb_page, james)
     assert r.kind == "engineering"
     assert r.written == {"background": False, "criteria": False, "result": False}
     assert (r.criteria_items, r.result_items) == (0, 0)
-    assert "links" in nb.find_sections(james, "engineering")
-    assert not any(nb.is_content(b) for b in nb.find_sections(james, "engineering")["links"])
+    assert "links" in nb_template.find_sections(james, "engineering")
+    assert not any(nb_template.is_content(b) for b in nb_template.find_sections(james, "engineering")["links"])
     # Research Template 꼴: 참고 자료의 빈 목록 항목 "-"
     research = research_blocks([], [], [], refs=[li("-")])
-    r = analyze(nb, research)
+    r = analyze(nb_page, research)
     assert r.kind == "research"
     assert r.written == {"background": False, "criteria": False, "result": False}
-    assert not nb.is_content(nb.find_sections(research, "research")["reference"][1])
+    assert not nb_template.is_content(nb_template.find_sections(research, "research")["reference"][1])
     # 예시 항목의 하위 항목에 실제 링크를 넣으면 작성으로 간주
     filled = li("어떤 문서인지 설명", [li("", rich=[rt("링크", "https://example.com/doc")])])
-    assert nb.is_content(filled)
+    assert nb_template.is_content(filled)
 
 
-def test_toggle_heading_children_and_no_template(nb):
+def test_toggle_heading_children_and_no_template(nb_template, nb_page):
     blocks = eng_blocks([p("배경")], [li("A")], [])
-    toggled = [b for b in blocks if nb.block_text(b) != "결과 산출물"]
-    idx = next(i for i, b in enumerate(toggled) if nb.block_text(b) == "참고 자료(reference)")
+    toggled = [b for b in blocks if nb_template.block_text(b) != "결과 산출물"]
+    idx = next(i for i, b in enumerate(toggled) if nb_template.block_text(b) == "참고 자료(reference)")
     toggled.insert(idx, h("결과 산출물", [li("✅ A 완료")]))
-    sections = nb.find_sections(toggled, "engineering")
-    assert [nb.block_text(b) for b in sections["result"]] == ["✅ A 완료"]
+    sections = nb_template.find_sections(toggled, "engineering")
+    assert [nb_template.block_text(b) for b in sections["result"]] == ["✅ A 완료"]
     plain = [h("메모"), p("자유 형식으로 작성한 내용")]
-    assert nb.template_kind(plain) == "none"
-    assert nb.find_sections(plain, "none") == {}
-    r = analyze(nb, plain)
+    assert nb_template.template_kind(plain) == "none"
+    assert nb_template.find_sections(plain, "none") == {}
+    r = analyze(nb_page, plain)
     assert r.kind == "none" and r.written == {"background": False, "criteria": False, "result": False}
 
 
-def with_block(nb, blocks: list[dict], phrase: str, new: dict) -> list[dict]:
+def with_block(nb_template, blocks: list[dict], phrase: str, new: dict) -> list[dict]:
     """텍스트에 phrase가 들어 있는 블록을 new로 바꾼 목록."""
-    return [new if phrase in nb.block_text(b) else b for b in blocks]
+    return [new if phrase in nb_template.block_text(b) else b for b in blocks]
 
 
-def test_guide_block_with_written_text_or_children(nb):
+def test_guide_block_with_written_text_or_children(nb_template, nb_page):
     base = eng_blocks([], [], [])
-    assert analyze(nb, base).written == {"background": False, "criteria": False, "result": False}
+    assert analyze(nb_page, base).written == {"background": False, "criteria": False, "result": False}
     # (a) 안내 문구 뒤에 같은 paragraph로 이어 적음
-    a = with_block(nb, base, "왜 이 task", p("“왜 이 task를 진행하게 되었는가?” 기존 파이프라인이 느려서 개선함"))
-    assert analyze(nb, a).written["background"] is True
+    a = with_block(
+        nb_template, base, "왜 이 task", p("“왜 이 task를 진행하게 되었는가?” 기존 파이프라인이 느려서 개선함")
+    )
+    assert analyze(nb_page, a).written["background"] is True
     # (b) 안내 문구 paragraph 아래에 들여 적음
-    b = with_block(nb, base, "왜 이 task", p("“왜 이 task를 진행하게 되었는가?”", kids=[p("기존 파이프라인이 느림")]))
-    assert analyze(nb, b).written["background"] is True
+    b = with_block(
+        nb_template, base, "왜 이 task", p("“왜 이 task를 진행하게 되었는가?”", kids=[p("기존 파이프라인이 느림")])
+    )
+    assert analyze(nb_page, b).written["background"] is True
     # (c) Task 완료 기준 안내 문구 뒤에 붙여 적음
     joined = "“Task를 달성했다는 것은 어떻게, 무엇으로 판단하는가?”, “예상 산출물은 무엇인가?” 학습 코드와 리포트"
-    c = with_block(nb, base, "Task를 달성했다는", p(joined))
-    assert analyze(nb, c).written["criteria"] is True
+    c = with_block(nb_template, base, "Task를 달성했다는", p(joined))
+    assert analyze(nb_page, c).written["criteria"] is True
 
 
-def test_non_template_heading_stays_in_section(nb):
+def test_non_template_heading_stays_in_section(nb_template, nb_page):
     result = [h("실험 결과"), li("✅ A"), li("❌ B", [p("데이터 부족")])]
     blocks = eng_blocks([p("배경")], [li("A"), li("B")], result)
-    sections = nb.find_sections(blocks, "engineering")
+    sections = nb_template.find_sections(blocks, "engineering")
     assert sections["result"][1:] == result  # 첫 블록은 안내 문구. 다음 템플릿 heading 전까지 이어짐
-    assert [nb.block_text(b) for b in sections["reference"]] == ["“관련하여 참고한 자료가 있는가?”"]
-    r = analyze(nb, blocks)
+    assert [nb_template.block_text(b) for b in sections["reference"]] == ["“관련하여 참고한 자료가 있는가?”"]
+    r = analyze(nb_page, blocks)
     assert (r.criteria_items, r.result_items, r.n3, r.n4, r.n5) == (2, 2, True, True, True)
 
 
-def test_non_template_heading_text_is_not_content(nb):
-    assert analyze(nb, eng_blocks([h("메모")], [], [])).written["background"] is False
-    assert analyze(nb, eng_blocks([h("메모"), p("기존 파이프라인이 느림")], [], [])).written["background"] is True
+def test_non_template_heading_text_is_not_content(nb_page):
+    assert analyze(nb_page, eng_blocks([h("메모")], [], [])).written["background"] is False
+    assert analyze(nb_page, eng_blocks([h("메모"), p("기존 파이프라인이 느림")], [], [])).written["background"] is True
 
 
-def test_divider_only_section_is_not_written(nb):
-    assert analyze(nb, eng_blocks([bare("divider"), bare("table_of_contents")], [], [])).written["background"] is False
+def test_divider_only_section_is_not_written(nb_page):
+    assert (
+        analyze(nb_page, eng_blocks([bare("divider"), bare("table_of_contents")], [], [])).written["background"]
+        is False
+    )
 
 
-def test_container_needs_content_inside(nb):
+def test_container_needs_content_inside(nb_page):
     empty = bare("column_list", [bare("column", [p()]), bare("column", [li()])])
-    assert analyze(nb, eng_blocks([empty], [], [])).written["background"] is False
+    assert analyze(nb_page, eng_blocks([empty], [], [])).written["background"] is False
     filled = bare("column_list", [bare("column", [p("기존 파이프라인이 느림")])])
-    assert analyze(nb, eng_blocks([filled], [], [])).written["background"] is True
+    assert analyze(nb_page, eng_blocks([filled], [], [])).written["background"] is True
 
 
-def test_toggle_text_or_children_is_content(nb):
-    assert nb.is_content(blk("toggle", "실험 상세"))
-    assert not nb.is_content(blk("toggle", "", [p()]))
-    assert nb.is_content(blk("toggle", "“어떻게 진행할 것인가?”", [p("데이터 수집 뒤 학습")]))
+def test_toggle_text_or_children_is_content(nb_template):
+    assert nb_template.is_content(blk("toggle", "실험 상세"))
+    assert not nb_template.is_content(blk("toggle", "", [p()]))
+    assert nb_template.is_content(blk("toggle", "“어떻게 진행할 것인가?”", [p("데이터 수집 뒤 학습")]))
 
 
 # ---- 최상위 목록 항목과 N3 ----
 
 
-def test_top_items_and_n3(nb):
+def test_top_items_and_n3(nb_template, nb_page):
     criteria = [li("A", [li("A-1"), li("A-2")]), p("<Due: 08/25>"), num("B"), todo("C", False), li()]
-    assert len(nb.top_items(criteria)) == 3  # 하위 항목, paragraph, 빈 항목은 세지 않음
-    same = analyze(nb, eng_blocks([p("배경")], criteria, [li("✅ A"), li("✅ B"), li("❌ C", [p("일정 부족")])]))
+    assert len(nb_template.top_items(criteria)) == 3  # 하위 항목, paragraph, 빈 항목은 세지 않음
+    same = analyze(nb_page, eng_blocks([p("배경")], criteria, [li("✅ A"), li("✅ B"), li("❌ C", [p("일정 부족")])]))
     assert (same.criteria_items, same.result_items, same.n3) == (3, 3, True)
-    diff = analyze(nb, eng_blocks([p("배경")], criteria, [li("✅ A"), li("✅ B")]))
+    diff = analyze(nb_page, eng_blocks([p("배경")], criteria, [li("✅ A"), li("✅ B")]))
     assert (diff.criteria_items, diff.result_items, diff.n3) == (3, 2, False)
-    zero = analyze(nb, eng_blocks([p("배경")], [p("목록 없이 작성")], [p("목록 없이 작성")]))
+    zero = analyze(nb_page, eng_blocks([p("배경")], [p("목록 없이 작성")], [p("목록 없이 작성")]))
     assert (zero.criteria_items, zero.result_items, zero.n3) == (0, 0, False)
 
 
 # ---- N4 ✅/❌ 표기, N5 미달성 사유 ----
 
 
-def test_n4_marks(nb):
-    marked = analyze(nb, eng_blocks([], [], [li("✅ A"), li("B ❌ 데이터 부족"), todo("C", True), todo("D", False)]))
+def test_n4_marks(nb_page):
+    marked = analyze(
+        nb_page, eng_blocks([], [], [li("✅ A"), li("B ❌ 데이터 부족"), todo("C", True), todo("D", False)])
+    )
     assert (marked.n4, marked.ok_items, marked.fail_items) == (True, 2, 2)
-    mixed = analyze(nb, eng_blocks([], [], [li("✅ A"), li("B 진행함")]))
+    mixed = analyze(nb_page, eng_blocks([], [], [li("✅ A"), li("B 진행함")]))
     assert (mixed.n4, mixed.ok_items, mixed.fail_items) == (False, 1, 0)
-    empty = analyze(nb, eng_blocks([], [], [p("결과는 아래 링크")]))
+    empty = analyze(nb_page, eng_blocks([], [], [p("결과는 아래 링크")]))
     assert (empty.result_items, empty.n4) == (0, False)
-    holding = analyze(nb, eng_blocks([], [], [li("✅ A")]), status="Holding")
+    holding = analyze(nb_page, eng_blocks([], [], [li("✅ A")]), status="Holding")
     assert holding.n4 is None  # Done이 아니면 계산 대상이 아님
 
 
-def test_n5_fail_reason(nb):
-    with_reason = analyze(nb, eng_blocks([], [], [li("✅ A"), li("❌ B", [p("GPU 부족으로 보류")])]))
+def test_n5_fail_reason(nb_page):
+    with_reason = analyze(nb_page, eng_blocks([], [], [li("✅ A"), li("❌ B", [p("GPU 부족으로 보류")])]))
     assert with_reason.n5 is True
-    no_reason = analyze(nb, eng_blocks([], [], [li("❌ A", [p("사유")]), todo("B", False)]))
+    no_reason = analyze(nb_page, eng_blocks([], [], [li("❌ A", [p("사유")]), todo("B", False)]))
     assert no_reason.n5 is False
-    no_fail = analyze(nb, eng_blocks([], [], [li("✅ A")]))
+    no_fail = analyze(nb_page, eng_blocks([], [], [li("✅ A")]))
     assert no_fail.n5 is None
 
 
-def test_n5_empty_child_is_not_reason(nb):
-    assert analyze(nb, eng_blocks([], [], [li("❌ A", [p(), li()])])).n5 is False
+def test_n5_empty_child_is_not_reason(nb_page):
+    assert analyze(nb_page, eng_blocks([], [], [li("❌ A", [p(), li()])])).n5 is False
 
 
 # ---- N6 근거 링크 ----
 
 
-def test_n6_evidence(nb):
+def test_n6_evidence(nb_page):
     def n6(result: list) -> bool:
-        return analyze(nb, eng_blocks([], [], result)).n6
+        return analyze(nb_page, eng_blocks([], [], result)).n6
 
     assert n6([li("", rich=[rt("✅ 리포트 "), rt("링크", "https://example.com/r")])]) is True
     assert n6([li("", rich=[rt("✅ "), mention("page", "실험 페이지")])]) is True
@@ -416,22 +451,22 @@ def test_n6_evidence(nb):
     assert n6([li("✅ 리포트 작성"), link_to_page]) is True
 
 
-def test_n6_child_page_is_evidence(nb):
-    assert analyze(nb, eng_blocks([], [], [li("✅ 리포트 작성"), bare("child_page")])).n6 is True
+def test_n6_child_page_is_evidence(nb_page):
+    assert analyze(nb_page, eng_blocks([], [], [li("✅ 리포트 작성"), bare("child_page")])).n6 is True
 
 
 # ---- N1 리뷰 흔적, N8 Holding 사유 comment ----
 
 
-def test_n1_review_trace_and_n8(nb):
+def test_n1_review_trace_and_n8(nb_page):
     blocks = eng_blocks([], [], [li("✅ A")])
-    own = analyze(nb, blocks, comments=[comment("c1", MEMBER), comment("c2", MEMBER)])
+    own = analyze(nb_page, blocks, comments=[comment("c1", MEMBER), comment("c2", MEMBER)])
     assert (own.n1, own.comment_count) == (False, 2)
-    other = analyze(nb, blocks, comments=[comment("c1", MEMBER), comment("c2", LEAD)])
+    other = analyze(nb_page, blocks, comments=[comment("c1", MEMBER), comment("c2", LEAD)])
     assert other.n1 is True
     assert other.n8 is None
-    assert analyze(nb, blocks, status="Holding", comments=[comment("c1", MEMBER)]).n8 is True
-    holding = analyze(nb, blocks, status="Holding")
+    assert analyze(nb_page, blocks, status="Holding", comments=[comment("c1", MEMBER)]).n8 is True
+    holding = analyze(nb_page, blocks, status="Holding")
     assert (holding.n8, holding.n1) == (False, None)
 
 
@@ -464,11 +499,11 @@ def build_fake(nb) -> FakeNotion:
     return FakeNotion(pages, blocks, comments)
 
 
-def test_run_filters_pages_and_writes_csv(nb, tmp_path):
+def test_run_filters_pages_and_writes_csv(nb, nb_page, tmp_path):
     fake = build_fake(nb)
     out = run(nb, fake, tmp_path)
     rows = read_csv(out / "pages.csv")
-    assert list(rows[0]) == nb.PAGE_COLUMNS
+    assert list(rows[0]) == nb_page.PAGE_COLUMNS
     assert [r["page_id"] for r in rows] == ["p-start", "p-end"]
     start, end = rows
     assert (start["created_month"], start["template"], start["status"]) == ("2026-03", "engineering", "Done")
@@ -485,15 +520,15 @@ def test_run_filters_pages_and_writes_csv(nb, tmp_path):
     assert not {"p-after", "p-before", "p-lead", "p-tpl"} & {bid for _, bid in fake.calls}
 
 
-def test_status_select_type(nb):
+def test_status_select_type(nb_page):
     obj = page("p-x", "select 상태", "2026-04-01T00:00:00.000Z")
     obj["properties"]["상태"] = {"type": "select", "select": {"name": "Done"}}
-    assert nb.page_info(obj).status == "Done"
+    assert nb_page.page_info(obj).status == "Done"
 
 
-def test_assignee_ids_are_normalized(nb):
-    info = nb.page_info(page("p-x", "ID 정규화", "2026-04-01T00:00:00.000Z", people=("1A2B-3C4D",)))
-    assert nb.select_pages([info], {nb.norm_id("1a2b3c4d")}, None, None) == [info]
+def test_assignee_ids_are_normalized(nb_page):
+    info = nb_page.page_info(page("p-x", "ID 정규화", "2026-04-01T00:00:00.000Z", people=("1A2B-3C4D",)))
+    assert nb_page.select_pages([info], {nb_page.norm_id("1a2b3c4d")}, None, None) == [info]
 
 
 def test_in_progress_page_skips_comments(nb, tmp_path):
@@ -522,12 +557,12 @@ def test_run_continues_after_connection_reset(nb, tmp_path):
     assert "- 집계한 페이지는 2개임" in (out / "summary.md").read_text(encoding="utf-8")
 
 
-def test_period_bounds_kst(nb):
-    start, end = nb.period_bounds(dt.date(2026, 3, 1), dt.date(2026, 8, 31))
+def test_period_bounds_kst(nb_period):
+    start, end = nb_period.period_bounds(dt.date(2026, 3, 1), dt.date(2026, 8, 31))
     kst = dt.timezone(dt.timedelta(hours=9))
-    assert nb.in_period(dt.datetime(2026, 3, 1, 0, 0, tzinfo=kst), start, end)
-    assert nb.in_period(dt.datetime(2026, 8, 31, 23, 59, tzinfo=kst), start, end)
-    assert not nb.in_period(dt.datetime(2026, 9, 1, 0, 0, tzinfo=kst), start, end)
+    assert nb_period.in_period(dt.datetime(2026, 3, 1, 0, 0, tzinfo=kst), start, end)
+    assert nb_period.in_period(dt.datetime(2026, 8, 31, 23, 59, tzinfo=kst), start, end)
+    assert not nb_period.in_period(dt.datetime(2026, 9, 1, 0, 0, tzinfo=kst), start, end)
 
 
 def test_page_comments_only_skips_block_comments(nb, tmp_path):
@@ -583,13 +618,13 @@ def listing(results: list[dict], cursor: str | None = None) -> dict:
     return {"object": "list", "results": results, "has_more": cursor is not None, "next_cursor": cursor}
 
 
-def client(nb, routes: dict):
+def client(nb_client, routes: dict):
     sleeps: list[float] = []
     http = FakeHTTP(routes)
-    return nb.NotionClient("secret-token", opener=http, sleep=sleeps.append, interval=0), http, sleeps
+    return nb_client.NotionClient("secret-token", opener=http, sleep=sleeps.append, interval=0), http, sleeps
 
 
-def test_client_paginates_pages_blocks_and_comments(nb):
+def test_client_paginates_pages_blocks_and_comments(nb_client, nb_page):
     routes = {
         ("POST", "/data_sources/ds-1/query", None): [listing([{"id": "p1"}], "c2")],
         ("POST", "/data_sources/ds-1/query", "c2"): [listing([{"id": "p2"}])],
@@ -599,10 +634,10 @@ def test_client_paginates_pages_blocks_and_comments(nb):
         ("GET", "/comments", None): [listing([{"id": "m1"}], "m")],
         ("GET", "/comments", "m"): [listing([{"id": "m2"}])],
     }
-    c, http, _ = client(nb, routes)
+    c, http, _ = client(nb_client, routes)
     assert [x["id"] for x in c.query_pages("ds-1")] == ["p1", "p2"]
     assert http.requests[1]["body"] == {"page_size": 100, "start_cursor": "c2"}
-    tree = nb.fetch_tree(c, "p1")
+    tree = nb_page.fetch_tree(c, "p1")
     assert [b["id"] for b in tree] == ["b1", "b2"]
     assert [b["id"] for b in tree[1]["children"]] == ["b3"]  # has_children 재귀. child_page는 더 내려가지 않음
     assert [x["id"] for x in c.comments("p1")] == ["m1", "m2"]
@@ -620,58 +655,58 @@ def http_error(code: int, retry_after: str | None = None) -> urllib.error.HTTPEr
     return urllib.error.HTTPError("https://api.notion.com/v1/x", code, "error", headers, body)
 
 
-def test_client_retries_after_429(nb):
+def test_client_retries_after_429(nb_client):
     routes = {("GET", "/blocks/p1/children", None): [http_error(429, "2"), listing([{"id": "b1"}])]}
-    c, http, sleeps = client(nb, routes)
+    c, http, sleeps = client(nb_client, routes)
     assert [b["id"] for b in c.block_children("p1")] == ["b1"]
     assert sleeps == [2.0]
     assert len(http.requests) == 2
 
 
-def test_client_retries_5xx_urlerror_timeout(nb):
+def test_client_retries_5xx_urlerror_timeout(nb_client):
     failures = [http_error(503), urllib.error.URLError("connection reset"), TimeoutError("timed out")]
     routes = {("GET", "/blocks/p1/children", None): [*failures, listing([{"id": "b1"}])]}
-    c, http, sleeps = client(nb, routes)
+    c, http, sleeps = client(nb_client, routes)
     assert [b["id"] for b in c.block_children("p1")] == ["b1"]
     assert sleeps == [1.0, 2.0, 4.0]  # BACKOFF_BASE에서 시작해 시도마다 두 배
     assert len(http.requests) == 4
 
 
-def test_client_retries_response_read_errors(nb):
+def test_client_retries_response_read_errors(nb_client):
     failures = [
         http.client.RemoteDisconnected("Remote end closed connection without response"),
         ConnectionResetError("connection reset by peer"),
         http.client.IncompleteRead(b"{"),
     ]
     routes = {("GET", "/blocks/p1/children", None): [*failures, listing([{"id": "b1"}])]}
-    c, http_fake, sleeps = client(nb, routes)
+    c, http_fake, sleeps = client(nb_client, routes)
     assert [b["id"] for b in c.block_children("p1")] == ["b1"]
     assert (sleeps, len(http_fake.requests)) == ([1.0, 2.0, 4.0], 4)
 
 
-def test_client_gives_up_after_max_attempts(nb):
-    routes = {("GET", "/blocks/p1/children", None): [http_error(502) for _ in range(nb.MAX_ATTEMPTS)]}
-    c, http, sleeps = client(nb, routes)
-    with pytest.raises(nb.NotionError, match="5번 모두 실패"):
+def test_client_gives_up_after_max_attempts(nb_client):
+    routes = {("GET", "/blocks/p1/children", None): [http_error(502) for _ in range(nb_client.MAX_ATTEMPTS)]}
+    c, http, sleeps = client(nb_client, routes)
+    with pytest.raises(nb_client.NotionError, match="5번 모두 실패"):
         c.block_children("p1")
     assert sleeps == [1.0, 2.0, 4.0, 8.0]  # 마지막 시도 뒤에는 기다리지 않음
-    assert len(http.requests) == nb.MAX_ATTEMPTS
+    assert len(http.requests) == nb_client.MAX_ATTEMPTS
 
 
-def test_client_comment_403_is_permission_error(nb):
+def test_client_comment_403_is_permission_error(nb_client):
     routes = {("GET", "/comments", None): [http_error(403)], ("GET", "/blocks/p1/children", None): [http_error(403)]}
-    c, http, sleeps = client(nb, routes)
-    with pytest.raises(nb.CommentPermissionError, match="integration에 comment 읽기 권한 필요"):
+    c, http, sleeps = client(nb_client, routes)
+    with pytest.raises(nb_client.CommentPermissionError, match="integration에 comment 읽기 권한 필요"):
         c.comments("p1")
-    with pytest.raises(nb.NotionError) as other:
+    with pytest.raises(nb_client.NotionError) as other:
         c.block_children("p1")
-    assert not isinstance(other.value, nb.CommentPermissionError)  # comment 조회가 아닌 403은 일반 오류
+    assert not isinstance(other.value, nb_client.CommentPermissionError)  # comment 조회가 아닌 403은 일반 오류
     assert (len(http.requests), sleeps) == (2, [])  # 403은 다시 시도하지 않음
 
 
-def test_run_records_page_error_and_continues(nb, tmp_path):
+def test_run_records_page_error_and_continues(nb, nb_client, tmp_path):
     fake = build_fake(nb)
-    fake.fail[("children", "p-start")] = nb.NotionError("GET /blocks/p-start/children -> HTTP 404: not found")
+    fake.fail[("children", "p-start")] = nb_client.NotionError("GET /blocks/p-start/children -> HTTP 404: not found")
     out = run(nb, fake, tmp_path)
     rows = read_csv(out / "pages.csv")
     assert [r["page_id"] for r in rows] == ["p-start", "p-end"]
