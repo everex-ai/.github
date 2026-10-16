@@ -13,7 +13,7 @@ work type이 Task인 ticket을 검수 모드에서 처리하는 단계를 정한
 4. 사람 구역에 없는 유용한 링크가 있으면 work type 공통 파일의 "링크 추가 요청 문장"으로 requests에 적는다.
 5. 아래 "검사 항목" 표의 검사와 `prompts/review.md`의 "공통 검사 항목"을 checks에 넣는다.
    - 계산 주체가 스크립트인 검사(T1, T2, A2)는 precheck.json의 결과를 그대로 인용한다.
-   - T3, T8은 apply.py가 계산하므로 넣지 않는다(`scripts/apply.py`의 `apply_issue`, `check_t8`).
+   - T3, T8은 apply.py가 계산하므로 넣지 않는다(`scripts/src/jira/issue.py`의 `apply_issue`, `scripts/src/jira/verdict.py`의 `check_t8`).
 6. 아래 "문서화 리뷰" 기준표로 T4, T5, T6, T7, T9를 판단해 checks에 넣고, `prompts/review.md`의 "문서화 리뷰 feedback 작성" 절에 따라 feedback을 작성한다.
 7. 아래 "검수 결과" 절과 `prompts/review.md`의 "검수 결과 코드값의 공통 기준"으로 검수 결과 코드값(verdict.verdict)을 정한다.
 8. 아래 "comment (결과 요약 부분만)" 절과 `prompts/review.md`의 "결과 요약(comment) 작성" 절에 따라 tasks[].comment를 작성한다.

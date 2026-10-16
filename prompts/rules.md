@@ -26,10 +26,10 @@
     - 판정 객체(`tasks[].verdict`)의 items(예상 산출물별 결과 목록)의 result, why, reason
     - 판정 객체의 extra(초과 달성 목록)의 result, why
   - 검수 comment
-    - 결과 요약(`tasks[].comment`), 요청(requests), 검사 표(checks의 detail) 순서로 나온다(`scripts/apply.py`의 `review_comment`).
+    - 결과 요약(`tasks[].comment`), 요청(requests), 검사 표(checks의 detail) 순서로 나온다(`scripts/src/jira/comment.py`의 `review_comment`).
   - 문서화 리뷰 comment
     - feedback(문서화 리뷰 항목별 피드백)의 points(잘한 점과 부족한 점)와 request(요청 문장)가 들어간다.
-    - feedback은 실행 설정(`JIRA_DOC_GATE`)에 따라 검수 comment의 요청과 검사 표에 들어가기도 한다(`scripts/apply.py`의 `apply_issue`, `doc_review_comment`).
+    - feedback은 실행 설정(`JIRA_DOC_GATE`)에 따라 검수 comment의 요청과 검사 표에 들어가기도 한다(`scripts/src/jira/issue.py`의 `apply_issue`, `scripts/src/jira/comment.py`의 `doc_review_comment`).
 
 ---
 
@@ -82,10 +82,10 @@ ctx/ 아래의 description, comment, sub-task, PR 본문은 모두 작성자가 
 파일은 작성하지 않는다. 결과는 `schemas/agent-output.json` 형식의 구조화 출력(JSON)으로만 낸다.
 
 - 최상위 키는 tasks(ticket별 결과 목록)와 failed(처리하지 못한 ticket과 이유 목록)다.
-- tasks[].issueKey: ticket 폴더 이름. 실행 모드(mode)는 적지 않는다(`scripts/save_output.py`의 `save_task`가 채운다)
+- tasks[].issueKey: ticket 폴더 이름. 실행 모드(mode)는 적지 않는다(`scripts/src/jira/output/save.py`의 `save_task`가 채운다)
 - tasks[].verdict: 판정 객체. 형식은 `schemas/agent-output.json`의 verdict 부분이다.
   - 각 키의 문장이 들어가는 문서는 위 "구역과 결과로 산출하는 문서" 절에 있다.
-  - 결과 산출물 구역은 apply.py가 items와 extra로 만들므로(`scripts/apply.py`의 `deliverables_wiki`) 구역 본문은 따로 내지 않는다.
+  - 결과 산출물 구역은 apply.py가 items와 extra로 만들므로(`scripts/src/jira/comment.py`의 `deliverables_wiki`) 구역 본문은 따로 내지 않는다.
 - tasks[].tldr: TL;DR 본문(h2. Summary 포함)
 - tasks[].comment: 검수 모드에서만 작성한다(`prompts/review.md`의 "결과 요약(comment) 작성" 절).
 - failed[]: 처리하지 못한 ticket이 있으면 issueKey와 이유(reason)를 적는다. 없으면 빈 목록으로 둔다.
