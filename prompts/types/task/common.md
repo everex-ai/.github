@@ -10,8 +10,8 @@ work type이 Task인 ticket의 구조와, 검수 모드와 정리 모드에 공�
 | 위치 | 이름 | 작성 주체 | 내용 |
 |---|---|---|---|
 | description | 진행 배경 | 담당자(사람 구역) | 왜 이 일을 하는지와 맥락 |
-| description | 예상 산출물 (Task 완료 기준) | 담당자(사람 구역) | ticket이 끝났을 때 나와야 하는 것의 목록. precheck.json의 expected가 이 목록을 항목별로 나눈 것이다(`scripts/precheck.py`의 `expected_items`) |
-| description | 결과 산출물 (Task 완료 기준과 1:1 대응) | CI agent(agent 구역) | apply.py가 판정 객체의 items와 extra로 만든다(`scripts/apply.py`의 `deliverables_wiki`) |
+| description | 예상 산출물 (Task 완료 기준) | 담당자(사람 구역) | ticket이 끝났을 때 나와야 하는 것의 목록. precheck.json의 expected가 이 목록을 항목별로 나눈 것이다(`scripts/src/jira/precheck/template.py`의 `expected_items`) |
+| description | 결과 산출물 (Task 완료 기준과 1:1 대응) | CI agent(agent 구역) | apply.py가 판정 객체의 items와 extra로 만든다(`scripts/src/jira/comment.py`의 `deliverables_wiki`) |
 | TL;DR 필드 | Summary | CI agent(agent 구역) | 아래 "tldr 형식" |
 | comment, sub-task, PR | 사람의 기록 | 담당자 | 결과의 근거 |
 

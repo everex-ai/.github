@@ -8,14 +8,14 @@ work type이 Bug인 ticket의 구조와, 검수 모드와 정리 모드에 공�
 
 | 위치 | 이름 | 작성 주체 | 내용 |
 |---|---|---|---|
-| description | 기본 정보 | 제보자(사람 구역) | 발생 기기/서비스, 발생 일자, 발생 장비, 발생 계정(`scripts/precheck.py`의 `BUG_INFO_FIELDS`) |
+| description | 기본 정보 | 제보자(사람 구역) | 발생 기기/서비스, 발생 일자, 발생 장비, 발생 계정(`scripts/src/jira/precheck/template.py`의 `BUG_INFO_FIELDS`) |
 | description | 문제(As-Is) | 제보자(사람 구역) | 오류 동작 설명 |
 | description | 개선(To-Be) | 제보자(사람 구역) | 정상 동작 설명. Bug의 완료 기준 구역이다 |
 | description | 첨부 자료(필수) | 제보자(사람 구역) | Jira 첨부 파일. 목록은 issue.json의 첨부 목록에 있다 |
 | TL;DR 필드 | Summary(원인, 해결) | CI agent(agent 구역) | 아래 "tldr 형식" |
 | comment, sub-task, PR | 사람의 기록 | 담당자, 제보자 | 원인 분석, 해결, To-Be 동작 확인의 근거 |
 
-- description에는 agent 구역이 없다. apply.py는 Task에만 결과 산출물 구역을 만든다(`scripts/apply.py`의 `apply_issue`). 그래서 판정 객체의 items와 extra는 둘 다 빈 배열([])로 둔다.
+- description에는 agent 구역이 없다. apply.py는 Task에만 결과 산출물 구역을 만든다(`scripts/src/jira/issue.py`의 `apply_issue`). 그래서 판정 객체의 items와 extra는 둘 다 빈 배열([])로 둔다.
 
 ---
 

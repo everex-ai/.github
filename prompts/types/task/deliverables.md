@@ -7,7 +7,7 @@ work type이 Task인 ticket의 완료 판단 기준과, 예상 산출물에 결�
 ## 완료 판단 기준
 
 - precheck.json(`scripts/precheck.py`가 계산한 검사 결과 파일)의 expected 목록(예상 산출물 항목 목록)이 기준이다.
-  - expected는 담당자가 예상 산출물 구역에 글머리표나 번호 목록으로 자유롭게 작성한 것을 항목별로 나누고 1부터 번호(id)를 붙인 것이다(`scripts/precheck.py`의 `expected_items`).
+  - expected는 담당자가 예상 산출물 구역에 글머리표나 번호 목록으로 자유롭게 작성한 것을 항목별로 나누고 1부터 번호(id)를 붙인 것이다(`scripts/src/jira/precheck/template.py`의 `expected_items`).
   - 그래서 항목의 형식은 제각각일 수 있다.
 - items의 항목 수와 id는 expected와 정확히 같아야 한다(예상 산출물과 결과 산출물의 1:1 대응 (T3)). 빠뜨리거나 새 번호를 만들지 않는다.
 
@@ -23,8 +23,8 @@ work type이 Task인 ticket의 완료 판단 기준과, 예상 산출물에 결�
 - 예상 산출물 문구에 '개발' 또는 '적용'이 들어간 항목은 아래 "예상 산출물 표현별 달성 근거" 절의 기준으로 판정한다.
 - 한 예상 산출물 항목에 결과가 여러 개면 그 항목의 result에 모아 적는다. 결과 하나가 예상 산출물 항목 여러 개에 걸치면 각 항목에 나눠 적는다.
 - 예상 산출물 어느 항목에도 해당하지 않는 결과(예: 예상에 없던 도구, 추가 분석, 다른 팀에 넘긴 산출물)는 버리지 않고 extra(초과 달성)에 적는다.
-  - 초과 달성 자체는 검수 결과에 영향을 주지 않는다(`scripts/apply.py`의 `recheck_verdict`). 사유 누락은 초과 달성·미달성 사유 (T8)로 따로 검사한다.
-- 결과 산출물 구역과 검수 comment의 검사 표는 apply.py가 판정 객체(verdict)로 조립한다(`scripts/apply.py`의 `deliverables_wiki`, `check_table`). CI agent는 형식이 아니라 내용(대응, 판단, 근거)에 집중한다.
+  - 초과 달성 자체는 검수 결과에 영향을 주지 않는다(`scripts/src/jira/verdict.py`의 `recheck_verdict`). 사유 누락은 초과 달성·미달성 사유 (T8)로 따로 검사한다.
+- 결과 산출물 구역과 검수 comment의 검사 표는 apply.py가 판정 객체(verdict)로 조립한다(`scripts/src/jira/comment.py`의 `deliverables_wiki`, `check_table`). CI agent는 형식이 아니라 내용(대응, 판단, 근거)에 집중한다.
 
 ---
 
@@ -44,7 +44,7 @@ work type이 Task인 ticket의 완료 판단 기준과, 예상 산출물에 결�
   - done은 false로 두고, why는 "근거 부족으로 확인 불가"로 적는다.
   - reason에는 빠진 기록을 "필요"로 맺는 한 문장으로 적는다. 예: "캐시 기능을 어떤 테스트로 검증했는지와 그 결과 comment 필요"
   - 같은 문장을 requests에도 넣는다.
-    - 이 항목 때문에 apply.py가 검수 결과를 보류로 정한다(`scripts/apply.py`의 `recheck_verdict`).
+    - 이 항목 때문에 apply.py가 검수 결과를 보류로 정한다(`scripts/src/jira/verdict.py`의 `recheck_verdict`).
     - 문서화 리뷰를 검수 결과에 넣지 않는 관찰 모드에서도 보류가 된다.
 - 다른 표현의 항목은 위 표를 적용하지 않고 앞 절 "예상 산출물과 결과 산출물의 대응"의 규칙대로 판정한다.
   - 무엇을 했는지와 결과가 기록에 있으면 달성으로 판정한다. 확인 방법이 빠졌으면 requests에 요청 문장만 적는다.
@@ -53,7 +53,7 @@ work type이 Task인 ticket의 완료 판단 기준과, 예상 산출물에 결�
 
 ## 판정 객체(verdict)의 items와 extra
 
-결과 산출물 구역은 `scripts/apply.py`의 `deliverables_wiki`가 items와 extra로 만든다.
+결과 산출물 구역은 `scripts/src/jira/comment.py`의 `deliverables_wiki`가 items와 extra로 만든다.
 
 ```json
 "items": [
@@ -85,7 +85,7 @@ work type이 Task인 ticket의 완료 판단 기준과, 예상 산출물에 결�
 - why는 미달성 항목에서는 왜 달성하지 못했는지(예: "라벨 재수집이 다음 분기로 밀림"), extra에서는 담당자가 예상에 없던 결과를 낸 이유를 구체적으로 적는다.
   - 사람의 기록(comment, sub-task, PR)에 있는 사유만 적고, 출처를 wiki 링크로 괄호 안에 붙인다(예: "([comment 2026-09-13|URL])"). 지어내지 않는다.
   - 결과는 있으나 근거가 없어 확인하지 못한 미달성 항목은 "근거 부족으로 확인 불가"로 적는다.
-  - 기록에 사유가 없으면 빈 문자열로 둔다. 이때 apply.py는 "사유 미기재"로 표시하고 T8을 fail로 계산한다(`scripts/apply.py`의 `deliverables_wiki`, `check_t8`).
+  - 기록에 사유가 없으면 빈 문자열로 둔다. 이때 apply.py는 "사유 미기재"로 표시하고 T8을 fail로 계산한다(`scripts/src/jira/comment.py`의 `deliverables_wiki`, `scripts/src/jira/verdict.py`의 `check_t8`).
 - reason은 미달성 항목에서 담당자가 무엇을 더 남기면 달성이 되는지를 "필요"로 맺는 한 문장으로 적는다.
   - 같은 내용을 requests에도 넣는다.
-  - 결과 산출물 구역에는 "요청:" 줄로 나간다(`scripts/apply.py`의 `deliverables_wiki`).
+  - 결과 산출물 구역에는 "요청:" 줄로 나간다(`scripts/src/jira/comment.py`의 `deliverables_wiki`).

@@ -13,7 +13,7 @@ work type이 Issue인 ticket의 구조와, 검수 모드와 정리 모드에 공
 | TL;DR 필드 | Summary(대응 결과) | CI agent(agent 구역) | 아래 "tldr 형식" |
 | comment, sub-task, PR | 사람의 기록 | 담당자, 제기자 | 논의, 결정, 이관의 근거 |
 
-- description에는 agent 구역이 없다. apply.py는 Task에만 결과 산출물 구역을 만든다(`scripts/apply.py`의 `apply_issue`). 그래서 판정 객체의 items와 extra는 둘 다 빈 배열([])로 둔다.
+- description에는 agent 구역이 없다. apply.py는 Task에만 결과 산출물 구역을 만든다(`scripts/src/jira/issue.py`의 `apply_issue`). 그래서 판정 객체의 items와 extra는 둘 다 빈 배열([])로 둔다.
 
 ---
 

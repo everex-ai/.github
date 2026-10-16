@@ -17,7 +17,7 @@ CI agent는 그 ticket의 TL;DR, 판정 객체, 검수 comment의 결과 요약�
 
 - tasks[].comment에는 검수 comment의 "결과 요약" 부분만 작성한다.
   - 이 ticket에서 무엇이 어떻게 되었고 왜 이 검수 결과인지를 work type 검수 파일의 "comment (결과 요약 부분만)" 절에 적힌 줄 수로 적고, 줄마다 근거 wiki 링크를 붙인다.
-- 아래는 apply.py가 붙이므로 넣지 않는다(`scripts/apply.py`의 `review_comment`).
+- 아래는 apply.py가 붙이므로 넣지 않는다(`scripts/src/jira/comment.py`의 `review_comment`).
   - 검수 결과 줄("검수 결과: ...")
   - Task의 달성 요약 줄("예상 산출물 n개 중 m개 달성")
   - 검사 표, requests 목록, 담당자 멘션
@@ -29,7 +29,7 @@ CI agent는 그 ticket의 TL;DR, 판정 객체, 검수 comment의 결과 요약�
 
 "계산 주체"가 스크립트인 항목은 precheck.json에 결과가 이미 들어 있다. 다시 계산하지 말고 그대로 인용한다.
 CI agent가 계산하는 항목만 직접 판단한다. "검수 모드 영향"은 검수에서 실패(검사 결과 fail)했을 때 검수 결과가 어떻게 되는지다.
-"이름"은 검수 comment의 검사 표에 나가는 표시 이름이며 apply.py가 붙인다(`scripts/apply.py`의 `CHECK_NAMES`). CI agent는 판정 객체(verdict)에 ID만 적는다.
+"이름"은 검수 comment의 검사 표에 나가는 표시 이름이며 apply.py가 붙인다(`scripts/src/constant/check.py`의 `CHECK_NAMES`). CI agent는 판정 객체(verdict)에 ID만 적는다.
 
 | ID | 이름 | 검사 내용 | 계산 주체 | 검수 모드 영향 |
 |---|---|---|---|---|
@@ -53,7 +53,7 @@ CI agent는 문서화 리뷰 항목을 판단하고, 항목마다 판정 객체(
 - `points`에 수치(영업일 수, comment 수, 줄 수)를 적을 때는 셈 기준(기간의 시작과 끝, 무엇을 셌는지)을 함께 적는다.
   영업일 수는 "영업일 기준 N일"로 적는다("N영업일"로 적지 않는다).
   docFacts의 키 이름은 적지 않는다. 예: "작업 기간(첫 in-progress 전환부터 마지막 request 전환까지) 영업일 기준 8일 동안 사람 comment 1건"
-- `points`는 검수 comment 검사 표의 내용 칸에 그대로 들어가므로 항목당 1–3개로 짧게 적는다(`scripts/apply.py`의 `check_table`).
+- `points`는 검수 comment 검사 표의 내용 칸에 그대로 들어가므로 항목당 1–3개로 짧게 적는다(`scripts/src/jira/comment.py`의 `check_table`).
   같은 항목의 checks `detail`은 points가 없을 때만 표시되는 한 줄 요약이다.
 - 문서화 리뷰의 요청 문장은 `requests`에 넣지 않는다(`feedback[].request`에만 적는다). 결과 요약(`tasks[].comment`)에도 넣지 않는다.
 
@@ -62,10 +62,10 @@ CI agent는 문서화 리뷰 항목을 판단하고, 항목마다 판정 객체(
 ## 검수 결과 코드값의 공통 기준
 
 검수 결과 코드값(`verdict.verdict`)에는 pass, fix, escalate 중 하나를 적는다. 괄호 안은 검수 comment와 TL;DR에 나가는 검수 결과 이름이다.
-검수 결과 코드값은 문서화 리뷰 항목을 빼고 정한다. 문서화 리뷰 결과의 반영은 apply.py가 한다(`scripts/apply.py`의 `recheck_verdict`).
+검수 결과 코드값은 문서화 리뷰 항목을 빼고 정한다. 문서화 리뷰 결과의 반영은 apply.py가 한다(`scripts/src/jira/verdict.py`의 `recheck_verdict`).
 
 - pass(통과): 완료 판단 기준(work type 검수 파일, Task는 `prompts/types/task/deliverables.md`)을 충족하고, 필수 검사(위 "공통 검사 항목" 표와 work type 검수 파일의 검사 항목 표에서 "보류" 또는 "검토 요청"으로 이어지는 항목)가 모두 통과한 경우다.
 - fix(보류): 담당자가 고칠 수 있는 경우다. 무엇을 어디에 남기면 되는지 requests에 적는다.
 - escalate(검토 요청): 팀장 판단이 필요한 경우다. 근거가 서로 모순되면 work type과 관계없이 escalate로 정한다.
 - 세 코드값의 work type별 조건은 work type 검수 파일의 "검수 결과" 절에 있다.
-- R4가 fail이고 검수 결과가 보류이면 apply.py가 R4 요청 문장(stop의 사유를 "stop 사유:"로 시작하는 comment로 남긴 뒤 다시 request 전환을 하라는 문장)을 requests에 넣으므로(`scripts/apply.py`의 `apply_issue`), R4 요청 문장은 requests에 적지 않는다
+- R4가 fail이고 검수 결과가 보류이면 apply.py가 R4 요청 문장(stop의 사유를 "stop 사유:"로 시작하는 comment로 남긴 뒤 다시 request 전환을 하라는 문장)을 requests에 넣으므로(`scripts/src/jira/issue.py`의 `apply_issue`), R4 요청 문장은 requests에 적지 않는다
