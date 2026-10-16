@@ -25,7 +25,7 @@
 - 리뷰: 기준에 따라 task 문서를 확인하고 판정하는 일. 사람과 문서화 Agent가 모두 한다.
   - 기준은 `prompts/rules.md`의 "검사 항목" 표다.
 - 검사 ID: T1, R4처럼 검사 항목에 붙인 코드. 이름과 내용은 `prompts/rules.md`의 "검사 항목" 표에 있다.
-- 검수 comment: 문서화 Agent가 리뷰 결과를 Jira task에 게시하는 comment. 첫 줄이 `[ai-doc-agent]`이고 `검수 결과: *통과*` 꼴의 줄이 있다(`scripts/apply.py`의 `agent_comment`, `review_comment`).
+- 검수 comment: 문서화 Agent가 리뷰 결과를 Jira task에 게시하는 comment. 첫 줄이 `[ai-doc-agent]`이고 `검수 결과: *통과*` 꼴의 줄이 있다(`scripts/src/jira/comment.py`의 `agent_comment`, `review_comment`).
 - request 전환: 담당자가 완료를 요청해 task를 ready-to-done(완료 요청 뒤 확인을 기다리는 Jira 상태)으로 보내는 Jira 전환(`docs/jira-doc-agent/README.md`의 "용어" 절)
 - 판정 값: 문서화 Agent의 판정은 통과, 검토 요청, 보류 세 가지다(`docs/jira-doc-agent/README.md`의 "검수 결과와 ticket 상태 전환" 절).
   - 세 판정 모두 task를 ready-to-done에 남긴다.
@@ -94,7 +94,7 @@
   - 이유: 문서화 Agent가 다시 리뷰하지 않아 고쳐졌는지 확인할 수 없기 때문이다.
 - J5는 마지막 검수 comment의 결과로 도입 이전 현황과 비교한다.
   - 이유: 도입 이전 현황은 Done 이후 집계 시점의 페이지 상태로 구한 값이라, 첫 리뷰보다 마지막 리뷰와 조건이 가깝다.
-- J6의 A1 task 수는 주간 점검 메시지(Slack, GitHub Actions의 Summary 탭)에서 확인한다(`scripts/apply.py`의 `slack_weekly`).
+- J6의 A1 task 수는 주간 점검 메시지(Slack, GitHub Actions의 Summary 탭)에서 확인한다(`scripts/src/jira/issue.py`의 `slack_weekly`).
 - J7의 기준값 80%는 도입 계획 페이지의 도입 기준과 같다.
   - 도입 기준: 문서화 Agent가 리뷰한 task 20건 중 팀장이 판정을 뒤집은 건수가 4건 이하(일치율 80% 이상)이면 도입을 확정하고 게이트 모드로 전환한다(도입 계획 페이지의 "Agent 도입 기준 설정").
 - J7의 세부 규칙은 `docs/jira-doc-agent/alerts.md`의 "판정 일치율" 절에 있다.
@@ -192,7 +192,7 @@
 | 스크립트 | 집계하는 지표 | 읽는 곳 |
 |---|---|---|
 | `scripts/dev/notion_baseline.py` | 도입 이전 현황 N1–N9 | Notion REST API |
-| `scripts/dev/jira_metrics.py` | J1, J3–J8(J6의 A1 제외) | Jira REST API(`scripts/jira_api.py`의 읽기 함수) |
+| `scripts/dev/jira_metrics.py` | J1, J3–J8(J6의 A1 제외) | Jira REST API(`scripts/src/jira/client.py`의 읽기 함수) |
 
 - 정기 보고 메시지도 일부 지표를 매달 팀장 채널로 보낸다.
   - 보내는 지표는 `docs/jira-doc-agent/alerts.md`의 "정기 보고 메시지" 절에 있다.

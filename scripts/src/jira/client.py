@@ -4,28 +4,30 @@
 - v2를 쓰는 이유: description, comment, TL;DR을 위키 마크업 문자열로 다루기 위해서.
 - 환경 변수: JIRA_CLOUD_ID, JIRA_EMAIL, JIRA_API_TOKEN, (선택) JIRA_SITE_URL, JIRA_TLDR_FIELD_ID
 """
+
 from __future__ import annotations
 
 import base64
 import json
 import os
-import re
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from typing import Any
 
-PROPERTY_KEY = "ai-doc-agent"
-AGENT_MARK = "[ai-doc-agent]"          # agent가 쓰는 모든 comment의 첫 줄 표식
-STOP_REASON_PREFIX = "stop 사유:"       # 늦게 남긴 stop 사유 comment의 시작 표시. precheck.py(R4 계산)와 apply.py(R4 요청 문장)가 사용함
-H2 = re.compile(r"^h2\.\s*(.+?)\s*$", re.M)
+from src.constant.jira import PROPERTY_KEY
 
 
 class JiraError(RuntimeError):
+    """Jira API 호출이 실패했을 때의 예외."""
+
     pass
 
 
 class Jira:
+    """Jira Cloud REST API v2 클라이언트. 인증 정보는 환경 변수에서 읽는다."""
+
     def __init__(self) -> None:
         cloud = os.environ["JIRA_CLOUD_ID"]
         email = os.environ["JIRA_EMAIL"]
@@ -36,7 +38,24 @@ class Jira:
         self._site = os.environ.get("JIRA_SITE_URL", "").rstrip("/")
 
     # ------------------------------------------------------------------ 기본 호출
-    def _req(self, method: str, path: str, params: dict | None = None, body=None, ok404: bool = False):
+    def _req(
+        self, method: str, path: str, params: dict | None = None, body: dict | None = None, ok404: bool = False
+    ) -> Any:
+        """API를 호출한다. 일시 오류(429, 5xx, 연결 실패)는 최대 4번까지 다시 시도한다.
+
+        Args:
+            method: HTTP 메서드.
+            path: base 뒤에 붙는 경로.
+            params: 쿼리 문자열 인자.
+            body: JSON 요청 본문.
+            ok404: True이면 404를 오류로 보지 않고 None을 돌려준다.
+
+        Returns:
+            JSON으로 읽은 응답. 응답 본문이 비면 None.
+
+        Raises:
+            JiraError: 재시도 뒤에도 실패했거나 재시도할 수 없는 HTTP 오류일 때.
+        """
         url = self.base + path
         if params:
             url += "?" + urllib.parse.urlencode(params)
@@ -80,12 +99,31 @@ class Jira:
         return self._site
 
     def issue(self, key: str, fields: list[str]) -> dict:
+        """issue 하나를 읽는다.
+
+        Args:
+            key: ticket 키.
+            fields: 읽을 필드 이름 목록.
+
+        Returns:
+            issue 응답.
+        """
         return self._req("GET", f"/issue/{key}", {"fields": ",".join(fields)})
 
     def comments(self, key: str) -> list[dict]:
+        """issue의 comment를 작성 순서대로 모두 읽는다.
+
+        Args:
+            key: ticket 키.
+
+        Returns:
+            comment 목록.
+        """
         out, start = [], 0
         while True:
-            page = self._req("GET", f"/issue/{key}/comment", {"orderBy": "created", "maxResults": 100, "startAt": start})
+            page = self._req(
+                "GET", f"/issue/{key}/comment", {"orderBy": "created", "maxResults": 100, "startAt": start}
+            )
             items = page.get("comments", [])
             out.extend(items)
             start += len(items)
@@ -93,6 +131,14 @@ class Jira:
                 return out
 
     def changelog(self, key: str) -> list[dict]:
+        """issue의 변경 이력을 모두 읽는다.
+
+        Args:
+            key: ticket 키.
+
+        Returns:
+            변경 이력 목록.
+        """
         out, start = [], 0
         while True:
             page = self._req("GET", f"/issue/{key}/changelog", {"maxResults": 100, "startAt": start})
@@ -103,6 +149,16 @@ class Jira:
                 return out
 
     def search(self, jql: str, fields: list[str], limit: int = 500) -> list[dict]:
+        """JQL로 issue를 검색한다.
+
+        Args:
+            jql: 검색 질의문.
+            fields: 읽을 필드 이름 목록.
+            limit: 돌려줄 issue 수의 상한.
+
+        Returns:
+            issue 목록. 최대 limit개.
+        """
         out, token = [], None
         while True:
             body = {"jql": jql, "fields": fields, "maxResults": 100}
@@ -115,87 +171,44 @@ class Jira:
                 return out[:limit]
 
     def prop_get(self, key: str) -> dict:
+        """issue property(PROPERTY_KEY)의 값을 읽는다.
+
+        Args:
+            key: ticket 키.
+
+        Returns:
+            property 값. 없으면 빈 dict.
+        """
         res = self._req("GET", f"/issue/{key}/properties/{PROPERTY_KEY}", ok404=True)
         return (res or {}).get("value", {}) or {}
 
     # ------------------------------------------------------------------ 쓰기 (apply.py만 사용)
     def prop_set(self, key: str, value: dict) -> None:
+        """issue property(PROPERTY_KEY)의 값을 쓴다.
+
+        Args:
+            key: ticket 키.
+            value: 쓸 값.
+        """
         self._req("PUT", f"/issue/{key}/properties/{PROPERTY_KEY}", body=value)
 
     def set_fields(self, key: str, fields: dict) -> None:
+        """issue의 필드를 바꾼다.
+
+        Args:
+            key: ticket 키.
+            fields: 필드 이름 -> 새 값.
+        """
         self._req("PUT", f"/issue/{key}", body={"fields": fields})
 
     def add_comment(self, key: str, body: str) -> dict:
+        """issue에 comment를 단다.
+
+        Args:
+            key: ticket 키.
+            body: comment 본문(위키 마크업).
+
+        Returns:
+            만든 comment 응답.
+        """
         return self._req("POST", f"/issue/{key}/comment", body={"body": body})
-
-
-# ---------------------------------------------------------------------- 공통 유틸
-def is_agent_comment(c: dict) -> bool:
-    """agent 또는 Automation이 쓴 comment인지. 사람이 쓴 comment만 근거로 삼기 위해 쓴다."""
-    body = (c.get("body") or "").lstrip()
-    if body.startswith(AGENT_MARK):
-        return True
-    author = c.get("author") or {}
-    if author.get("accountType") == "app":
-        return True
-    name = (author.get("displayName") or "").lower()
-    return "automation for jira" in name
-
-
-def sections(desc: str) -> list[tuple[str, int, int, int]]:
-    """description(wiki markup)의 h2 구역 목록: (제목, 제목 시작, 본문 시작, 본문 끝)."""
-    desc = desc or ""
-    heads = list(H2.finditer(desc))
-    out = []
-    for i, m in enumerate(heads):
-        end = heads[i + 1].start() if i + 1 < len(heads) else len(desc)
-        out.append((m.group(1), m.start(), m.end(), end))
-    return out
-
-
-def norm_title(title: str) -> str:
-    """구역 제목 비교용. 굵게(*), 기울임(_), 밑줄(+), 색 표식과 공백을 뗀다. 'h2. *진행 배경*'도 잡기 위해."""
-    return re.sub(r"\{color[^}]*\}|[*_+\s]", "", title or "").lower()
-
-
-def find_section(desc: str, prefix: str):
-    """제목이 prefix로 시작하는 첫 구역. 괄호 설명이 붙은 제목('예상 산출물 (Task 완료 기준)')도 잡는다."""
-    p = norm_title(prefix)
-    for title, hs, bs, be in sections(desc):
-        if norm_title(title).startswith(p):
-            return title, hs, bs, be
-    return None
-
-
-def section_body(desc: str, prefix: str) -> str:
-    hit = find_section(desc, prefix)
-    return (desc or "")[hit[2]:hit[3]].strip() if hit else ""
-
-
-def set_section(desc: str, prefix: str, body: str, stamp: str, note: str) -> str:
-    """prefix 구역의 본문만 body로 바꾼다. 다른 구역은 건드리지 않는다. 구역이 없으면 맨 뒤에 추가."""
-    desc = desc or ""
-    block = f"\n{{color:#6b778c}}_{note} 마지막 갱신 {stamp}_{{color}}\n{body.strip()}\n\n"
-    hit = find_section(desc, prefix)
-    if hit:
-        title, hs, bs, be = hit
-        return desc[:bs] + block + desc[be:]
-    return desc.rstrip() + f"\n\nh2. {prefix}" + block
-
-
-def strip_placeholders(text: str) -> list[str]:
-    """템플릿 안내문(괄호로만 된 줄, 빈 글머리표)을 뺀 실제 내용 줄 목록."""
-    lines = []
-    for raw in (text or "").splitlines():
-        s = raw.strip()
-        if not s:
-            continue
-        core = re.sub(r"^[*#\-\s]+", "", s).strip()
-        if not core:
-            continue
-        if re.fullmatch(r"[\(（].*[\)）]", core):     # (안내문)
-            continue
-        if core.startswith("{color:#6b778c}"):        # agent 안내 줄
-            continue
-        lines.append(core)
-    return lines

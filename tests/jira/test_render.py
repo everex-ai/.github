@@ -1,9 +1,10 @@
-"""jira-doc이 결과로 산출하는 문서 중 scripts/apply.py, scripts/precheck.py가 조립하는 부분의 형식.
+"""jira-doc이 결과로 산출하는 문서 중 scripts/apply.py, scripts/src/jira/가 조립하는 부분의 형식.
 
-scripts/apply.py, scripts/precheck.py는 scripts/review/의 같은 이름 파일과 섞이지 않게 모듈 이름 jira_apply,
-jira_precheck로 불러온다(tests/review/는 scripts/review/를 sys.path에 넣고 apply, precheck로 불러온다).
+scripts/apply.py는 scripts/review/의 같은 이름 파일과 섞이지 않게 모듈 이름 jira_apply로 불러온다
+(tests/review/는 scripts/review/를 sys.path에 넣고 apply, precheck로 불러온다).
 fixture를 conftest.py에 두지 않는 이유: tests/review/test_precheck.py가 `from conftest import ...`로
 tests/review/conftest.py를 불러오므로, tests/jira/conftest.py가 있으면 모듈 이름 conftest가 겹친다.
+그래서 scripts/src를 불러오기 위한 sys.path 설정도 이 파일에 둔다(맨 뒤에 넣어 scripts/review/보다 뒤에 둔다).
 """
 
 from __future__ import annotations
@@ -13,54 +14,101 @@ import importlib.util
 import json
 import re
 import sys
-import types
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT / "scripts") not in sys.path:
+    sys.path.append(str(ROOT / "scripts"))  # scripts/src 패키지를 불러오기 위함
 
 
 @pytest.fixture(scope="module")
 def render():
-    """scripts/dev/render_jira_samples.py 모듈."""
-    name = "render_jira_samples"
+    """scripts/src/dev/samples/render.py (모듈 이름 src.dev.samples.render)."""
+    return importlib.import_module("src.dev.samples.render")
+
+
+@pytest.fixture(scope="module")
+def ja():
+    """scripts/apply.py (모듈 이름 jira_apply). main을 실행하는 테스트가 사용한다."""
+    name = "jira_apply"
     if name not in sys.modules:
-        spec = importlib.util.spec_from_file_location(name, ROOT / "scripts" / "dev" / "render_jira_samples.py")
+        saved = list(sys.path)  # apply.py가 scripts/를 sys.path 맨 앞에 넣으므로 불러온 뒤 되돌린다
+        spec = importlib.util.spec_from_file_location(name, ROOT / "scripts" / "apply.py")
         mod = importlib.util.module_from_spec(spec)
         sys.modules[name] = mod
-        spec.loader.exec_module(mod)
+        try:
+            spec.loader.exec_module(mod)
+        finally:
+            sys.path[:] = saved
     return sys.modules[name]
 
 
 @pytest.fixture(scope="module")
-def ja(render):
-    """scripts/apply.py (모듈 이름 jira_apply)."""
-    return render.load_modules()[0]
-
-
-@pytest.fixture(scope="module")
 def jp(render):
-    """scripts/precheck.py (모듈 이름 jira_precheck)."""
-    return render.load_modules()[1]
+    """scripts/src/jira/precheck/의 검사 함수 묶음."""
+    return render.PRECHECK
 
 
 @pytest.fixture(scope="module")
-def jc(render):
-    """scripts/collect.py (모듈 이름 jira_collect). tests/review/가 불러오는 scripts/review/collect.py와 섞이지 않게 한다."""
-    return render.load_module("jira_collect", ROOT / "scripts" / "collect.py")
+def jc():
+    """scripts/src/jira/collect.py (모듈 이름 src.jira.collect). scripts/review/collect.py와 섞이지 않는다."""
+    return importlib.import_module("src.jira.collect")
+
+
+@pytest.fixture(scope="module")
+def jw():
+    """scripts/src/jira/wiki.py (모듈 이름 src.jira.wiki)."""
+    return importlib.import_module("src.jira.wiki")
+
+
+@pytest.fixture(scope="module")
+def jrn():
+    """scripts/src/jira/runs.py (모듈 이름 src.jira.runs)."""
+    return importlib.import_module("src.jira.runs")
+
+
+@pytest.fixture(scope="module")
+def ji():
+    """scripts/src/jira/issue.py (모듈 이름 src.jira.issue)."""
+    return importlib.import_module("src.jira.issue")
+
+
+@pytest.fixture(scope="module")
+def jrr():
+    """scripts/src/jira/report/run.py (모듈 이름 src.jira.report.run). report 모드가 지연 import하는 run_report를 가진다."""
+    return importlib.import_module("src.jira.report.run")
+
+
+@pytest.fixture(scope="module")
+def jsl():
+    """scripts/src/jira/slack.py (모듈 이름 src.jira.slack)."""
+    return importlib.import_module("src.jira.slack")
+
+
+@pytest.fixture(scope="module")
+def jcm():
+    """scripts/src/jira/comment.py (모듈 이름 src.jira.comment)."""
+    return importlib.import_module("src.jira.comment")
+
+
+@pytest.fixture(scope="module")
+def jv():
+    """scripts/src/jira/verdict.py (모듈 이름 src.jira.verdict)."""
+    return importlib.import_module("src.jira.verdict")
 
 
 @pytest.fixture(autouse=True)
-def slack(ja, monkeypatch, tmp_path_factory):
+def slack(jsl, monkeypatch, tmp_path_factory):
     """apply_issue가 Slack에 보내려던 본문을 모은다. 실제 Slack에는 보내지 않는다."""
     sent: list[str] = []
     users = tmp_path_factory.mktemp("slack") / "slack-users.json"
     users.write_text(json.dumps({"acc-assignee": "U-ASSIGNEE", "acc-lead": "U-LEAD"}), encoding="utf-8")
     monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
     monkeypatch.delenv("SLACK_USERS_JSON", raising=False)  # 대응표를 secret이 아니라 아래 임시 파일에서 읽게 한다
-    monkeypatch.setattr(ja, "SLACK_USERS", users)
-    monkeypatch.setattr(ja, "slack_post", lambda text: sent.append(text) or "전송 완료")
+    monkeypatch.setattr(jsl, "SLACK_USERS", users)
+    monkeypatch.setattr(jsl, "slack_post", lambda text: sent.append(text) or "전송 완료")
     return sent
 
 
@@ -116,8 +164,8 @@ def run_review(
     return j, summ
 
 
-def test_deliverables_request_line(ja):
-    body = ja.deliverables_wiki(EXPECTED, ITEMS, EXTRA)
+def test_deliverables_request_line(jcm):
+    body = jcm.deliverables_wiki(EXPECTED, ITEMS, EXTRA)
     assert body.startswith("예상 산출물 2개 중 1개 달성, 초과 달성 1건\n")  # 달성 요약을 맨 앞에 적음
     assert "#* 요청: 평가 리포트 링크 comment 필요" in body
     assert "필요한 것" not in body
@@ -125,17 +173,17 @@ def test_deliverables_request_line(ja):
     assert body.split("# *오류율 1% 미만*")[0].count("#* 요청:") == 0
 
 
-def test_deliverables_reason_lines_by_mode(ja):
-    review = ja.deliverables_wiki(EXPECTED, ITEMS, EXTRA, final=True)
+def test_deliverables_reason_lines_by_mode(jcm):
+    review = jcm.deliverables_wiki(EXPECTED, ITEMS, EXTRA, final=True)
     assert "#* 미달성 사유: 사유 미기재" in review and "** 추가 사유: 사유 미기재" in review
-    digest = ja.deliverables_wiki(EXPECTED, ITEMS, EXTRA, final=False)  # F3 정리: 사유가 기록에 없으면 사유 줄 생략
+    digest = jcm.deliverables_wiki(EXPECTED, ITEMS, EXTRA, final=False)  # F3 정리: 사유가 기록에 없으면 사유 줄 생략
     assert "미달성 사유" not in digest and "추가 사유" not in digest
     items = [ITEMS[0], {**ITEMS[1], "why": "라벨 재수집이 다음 분기로 밀림"}]
-    assert "#* 미달성 사유: 라벨 재수집이 다음 분기로 밀림" in ja.deliverables_wiki(EXPECTED, items, [], final=False)
+    assert "#* 미달성 사유: 라벨 재수집이 다음 분기로 밀림" in jcm.deliverables_wiki(EXPECTED, items, [], final=False)
 
 
-def test_t8_names_items_and_request(ja):
-    t8 = ja.check_t8(EXPECTED, ITEMS, EXTRA)
+def test_t8_names_items_and_request(jv):
+    t8 = jv.check_t8(EXPECTED, ITEMS, EXTRA)
     assert t8["result"] == "fail"
     assert t8["detail"] == "사유 없는 미달성 항목 2번, 사유 없는 초과 달성 1건('대시보드 추가')"
     assert (
@@ -144,28 +192,28 @@ def test_t8_names_items_and_request(ja):
     )
     feedback = [{"id": "T5", "points": [], "request": "3번 항목의 완료 기준 추가 필요"}]
     checks = [t8, {"id": "T5", "result": "fail"}, {"id": "T6", "result": "pass"}]
-    assert ja.doc_requests(checks, feedback) == [t8["request"], "3번 항목의 완료 기준 추가 필요"]
+    assert jv.doc_requests(checks, feedback) == [t8["request"], "3번 항목의 완료 기준 추가 필요"]
 
 
-def test_review_comment_puts_verdict_reasons_first(ja):
+def test_review_comment_puts_verdict_reasons_first(jcm):
     checks = [{"id": "A2", "result": "fail", "detail": "완료 기준 변경"}]
-    text = ja.review_comment(
+    text = jcm.review_comment(
         "escalate", checks, EXPECTED, ITEMS, EXTRA, "* 요약", ["평가 리포트 링크 comment 필요"], ["A2로 검토 요청"]
     )
     assert text.startswith("검수 결과: *검토 요청*\n* A2로 검토 요청\n\n예상 산출물 2개 중 1개 달성, 초과 달성 1건")
     assert text.index("*결과 요약*") < text.index("*요청*") < text.index("|| 검사 || 결과 || 내용 ||")
 
 
-def test_doc_review_comment_first_line(ja):
-    t8 = ja.check_t8(EXPECTED, ITEMS, EXTRA)
-    text = ja.doc_review_comment([t8], [], "acc-lead")
+def test_doc_review_comment_first_line(jv, jcm):
+    t8 = jv.check_t8(EXPECTED, ITEMS, EXTRA)
+    text = jcm.doc_review_comment([t8], [], "acc-lead")
     assert text.startswith("문서화 리뷰 결과(관찰 모드): *보완 필요*\n\n|| 검사 || 결과 || 내용 ||")
     assert "*담당자에게 보낼 요청 후보*\n# 미달성 항목 2번의 달성 근거 또는 미달성 사유" in text
     assert text.endswith("\n\n[~accountid:acc-lead]")
-    ok = ja.doc_review_comment([{"id": "T4", "result": "pass", "detail": "a"}], [], "")
+    ok = jcm.doc_review_comment([{"id": "T4", "result": "pass", "detail": "a"}], [], "")
     assert ok.startswith("문서화 리뷰 결과(관찰 모드): *통과*\n\n")
     assert "요청 후보" not in ok and "accountid" not in ok
-    assert ja.doc_review_md("INNO-1", [t8], [])[0] == "### 문서화 리뷰 INNO-1(관찰 모드): 보완 필요"
+    assert jcm.doc_review_md("INNO-1", [t8], [])[0] == "### 문서화 리뷰 INNO-1(관찰 모드): 보완 필요"
 
 
 @pytest.mark.parametrize(
@@ -203,8 +251,8 @@ def test_doc_review_comment_first_line(ja):
         "Task가 아니면 그대로",
     ],
 )
-def test_recheck_verdict(ja, v, itype, items, checks, gate, doc_fails, want):
-    assert ja.recheck_verdict(v, itype, items, checks, gate, doc_fails) == want
+def test_recheck_verdict(jv, v, itype, items, checks, gate, doc_fails, want):
+    assert jv.recheck_verdict(v, itype, items, checks, gate, doc_fails) == want
 
 
 def test_hold_does_not_transition_and_mentions_lead_only(render, ja, tmp_path, slack):
@@ -227,8 +275,8 @@ def test_hold_mentions_lead_by_name_when_not_in_slack_users(render, ja, tmp_path
     assert slack[0].startswith("팀장 [INNO-17] 검수 결과: 보류. 상태 변경 없음\n")
 
 
-def test_state_note_says_status_is_not_changed(ja):
-    assert ja.STATE_NOTE == ("상태를 바꾸지 않고 팀장 확인을 요청함", "상태 변경 없음")
+def test_state_note_says_status_is_not_changed(ja, ji):
+    assert ji.STATE_NOTE == ("상태를 바꾸지 않고 팀장 확인을 요청함", "상태 변경 없음")
     assert not hasattr(ja, "review_transition") and not hasattr(ja, "IN_PROGRESS")
 
 
@@ -258,8 +306,8 @@ def test_pass_asks_lead_to_move_done(render, ja, tmp_path, slack):
     assert not any(e in slack[0] for e in FORMAL_ENDINGS)
 
 
-def test_slack_failure_stays_in_summary(render, ja, tmp_path, monkeypatch):
-    monkeypatch.setattr(ja, "slack_post", lambda text: "전송 실패: HTTP Error 500")
+def test_slack_failure_stays_in_summary(render, ja, jsl, tmp_path, monkeypatch):
+    monkeypatch.setattr(jsl, "slack_post", lambda text: "전송 실패: HTTP Error 500")
     _, summ = run_review(render, ja, tmp_path, "fix", ITEMS)
     assert "Slack 보류 알림: 전송 실패: HTTP Error 500" in summ.rows[0]
 
@@ -404,9 +452,9 @@ def test_weekly_message_sections_have_actions_and_a3_mentions_lead(ja, tmp_path,
     ],
     ids=["lead 없음", "대응표에 없음", "대응표에 있음"],
 )
-def test_weekly_a3_lead_display(ja, tmp_path, lead, want_text, want_mentions):
+def test_weekly_a3_lead_display(jsl, tmp_path, lead, want_text, want_mentions):
     (tmp_path / "INNO-42.alerts.json").write_text(json.dumps(READY_WAIT_ALERTS, ensure_ascii=False), "utf-8")
-    lines, mentions = ja.weekly_lines(tmp_path, {"acc-assignee": "U-ASSIGNEE", "acc-lead": "U-LEAD"}, lead)
+    lines, mentions = jsl.weekly_lines(tmp_path, {"acc-assignee": "U-ASSIGNEE", "acc-lead": "U-LEAD"}, lead)
     assert f"    • INNO-42 추론 지연 개선 — 담당 담당자A, {want_text}, {READY_WAIT_DETAIL}" in lines
     assert mentions == want_mentions  # A3 항목만 있으면 담당자는 멘션 목록에 들어가지 않음
 
@@ -416,7 +464,7 @@ def test_weekly_a3_lead_display(ja, tmp_path, lead, want_text, want_mentions):
     [("{}", "fixture"), ('{"_설명": "설명만 있음"}', "fixture"), ("", {"_설명": "설명만 있음"}), (None, None)],
     ids=["secret이 빈 객체", "secret에 설명만 있음", "secret이 비고 파일에 설명만 있음", "secret과 파일이 모두 없음"],
 )
-def test_slack_users_empty_table_warns(render, ja, tmp_path, monkeypatch, slack, env, file_table):
+def test_slack_users_empty_table_warns(render, ja, jsl, tmp_path, monkeypatch, slack, env, file_table):
     if env is None:
         monkeypatch.delenv("SLACK_USERS_JSON", raising=False)
     else:
@@ -425,7 +473,7 @@ def test_slack_users_empty_table_warns(render, ja, tmp_path, monkeypatch, slack,
         users = tmp_path / "slack-users.json"
         if file_table is not None:
             users.write_text(json.dumps(file_table, ensure_ascii=False), encoding="utf-8")
-        monkeypatch.setattr(ja, "SLACK_USERS", users)
+        monkeypatch.setattr(jsl, "SLACK_USERS", users)
     assert ja.load_slack_users() == ({}, SLACK_USERS_EMPTY_WARNING)
     _, summ = run_review(render, ja, tmp_path / "review", "fix", ITEMS)
     assert slack[0].startswith("팀장 [INNO-17] 검수 결과: 보류. ")
@@ -436,7 +484,7 @@ def test_slack_users_empty_table_warns(render, ja, tmp_path, monkeypatch, slack,
 
 
 @pytest.mark.parametrize("source", ["env", "file"])
-def test_slack_users_skips_description_and_non_string_values(ja, tmp_path, monkeypatch, source):
+def test_slack_users_skips_description_and_non_string_values(ja, jsl, tmp_path, monkeypatch, source):
     table = {"_설명": "Jira accountId -> Slack 멤버 ID", "acc-assignee": "U-ASSIGNEE", "acc-num": 7, "acc-list": ["U1"]}
     table["acc-null"] = None
     if source == "env":
@@ -444,7 +492,7 @@ def test_slack_users_skips_description_and_non_string_values(ja, tmp_path, monke
     else:
         monkeypatch.delenv("SLACK_USERS_JSON", raising=False)
         (tmp_path / "slack-users.json").write_text(json.dumps(table, ensure_ascii=False), encoding="utf-8")
-        monkeypatch.setattr(ja, "SLACK_USERS", tmp_path / "slack-users.json")
+        monkeypatch.setattr(jsl, "SLACK_USERS", tmp_path / "slack-users.json")
     assert ja.load_slack_users() == ({"acc-assignee": "U-ASSIGNEE"}, None)
 
 
@@ -456,41 +504,41 @@ def test_tldr_verdict_follows_changed_result(render, ja, tmp_path, prefix):
     assert f"{prefix}검토 요청, 갱신" in field and f"{prefix}보류" not in field
 
 
-def test_wiki_to_slack(ja):
+def test_wiki_to_slack(jsl):
     text = "{color:#6b778c}근거: [PR #42|https://example.com/42], [comment|https://e.com/c?focusedCommentId=1]{color}"
     assert (
-        ja.wiki_to_slack(text) == "근거: <https://example.com/42|PR #42>, <https://e.com/c?focusedCommentId=1|comment>"
+        jsl.wiki_to_slack(text) == "근거: <https://example.com/42|PR #42>, <https://e.com/c?focusedCommentId=1|comment>"
     )
-    assert ja.wiki_to_slack("[~accountid:acc-lead] 확인 필요") == "[~accountid:acc-lead] 확인 필요"
-    assert ja.wiki_to_slack("지연 < 50ms & [PR|https://e.com/?a=1&b=2]") == (
+    assert jsl.wiki_to_slack("[~accountid:acc-lead] 확인 필요") == "[~accountid:acc-lead] 확인 필요"
+    assert jsl.wiki_to_slack("지연 < 50ms & [PR|https://e.com/?a=1&b=2]") == (
         "지연 &lt; 50ms &amp; <https://e.com/?a=1&amp;b=2|PR>"
     )
 
 
-def test_slack_text_escapes_title_and_requests(ja):
-    text = ja.review_slack_text(
+def test_slack_text_escapes_title_and_requests(jsl):
+    text = jsl.review_slack_text(
         "fix", "INNO-1", "지연 <50ms & 경량화", "https://e.com/INNO-1", "담당자", "", [], ["a > b 확인 필요"], ""
     )
     assert "<https://e.com/INNO-1|INNO-1 지연 &lt;50ms &amp; 경량화>" in text
     assert "\n    1. a &gt; b 확인 필요" in text
 
 
-def test_slack_post_reports_timeout(ja, monkeypatch):
+def test_slack_post_reports_timeout(jsl, monkeypatch):
     monkeypatch.undo()  # autouse fixture slack이 바꾼 slack_post를 원래 함수로 되돌린다
     monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.example.com/x")
 
     def timeout(*args, **kwargs):
         raise TimeoutError("timed out")
 
-    monkeypatch.setattr(ja.urllib.request, "urlopen", timeout)
-    assert ja.slack_post("본문") == "전송 실패: timed out"
+    monkeypatch.setattr(jsl.urllib.request, "urlopen", timeout)
+    assert jsl.slack_post("본문") == "전송 실패: timed out"
 
 
-def test_slack_post_invalid_url_does_not_raise_or_leak(ja, monkeypatch):
+def test_slack_post_invalid_url_does_not_raise_or_leak(jsl, monkeypatch):
     """webhook 값이 URL 형식이 아니면 예외 없이 실패 문구를 돌려준다. public 로그에 남지 않게 값은 적지 않는다."""
     monkeypatch.undo()  # autouse fixture slack이 바꾼 slack_post를 원래 함수로 되돌린다
     monkeypatch.setenv("SLACK_LEAD_WEBHOOK_URL", "<지금 SLACK_WEBHOOK_URL과 같은 URL>")
-    result = ja.slack_post("본문", "SLACK_LEAD_WEBHOOK_URL")
+    result = jsl.slack_post("본문", "SLACK_LEAD_WEBHOOK_URL")
     assert result == "전송 실패: SLACK_LEAD_WEBHOOK_URL 값이 URL 형식이 아님"
 
 
@@ -544,10 +592,10 @@ def test_failure_slack_text(ja, monkeypatch):
     )
 
 
-def test_validate_verdict_message_names_doc_review_checks(ja):
+def test_validate_verdict_message_names_doc_review_checks(jv):
     v = {"issueKey": "INNO-1", "mode": "review", "verdict": "pass", "checks": [], "items": [], "extra": []}
     v |= {"requests": [], "feedback": [{"id": "T8", "points": []}]}  # T8은 apply.py가 계산하므로 feedback에 쓸 수 없음
-    err = ja.validate_verdict(v, "review", "INNO-1")
+    err = jv.validate_verdict(v, "review", "INNO-1")
     assert (
         "진행 배경 충실도 (T4), 예상 산출물 분할 단위 (T5), 진행 기록 comment (T6), sub-task 기록 (T7), "
         "진행 배경부터 결과 산출물까지의 연결 (T9), 문제(As-Is) 재현 정보 (B5), 원인 분석 기록 (B6), 해결 확인 기록 (B7), "
@@ -557,10 +605,10 @@ def test_validate_verdict_message_names_doc_review_checks(ja):
 
 
 @pytest.mark.parametrize("cid", ["B5", "B6", "B7", "I4", "I5"])
-def test_validate_verdict_accepts_bug_and_issue_feedback(ja, cid):
+def test_validate_verdict_accepts_bug_and_issue_feedback(jv, cid):
     v = {"issueKey": "INNO-1", "mode": "review", "verdict": "pass", "checks": [], "items": [], "extra": []}
     v |= {"requests": [], "feedback": [{"id": cid, "points": ["a"], "request": "b 필요"}]}
-    assert ja.validate_verdict(v, "review", "INNO-1") is None
+    assert jv.validate_verdict(v, "review", "INNO-1") is None
 
 
 def test_alert_messages(jp, tmp_path):
@@ -606,26 +654,31 @@ def test_rendered_samples_have_no_formal_endings(render, tmp_path):
         assert "~" not in text.replace("[~accountid:", ""), p.name
 
 
-def test_render_restores_module_state(render, ja, tmp_path):
-    before = (ja.now_stamp, ja.dt, ja.slack_post, ja.SLACK_USERS)
+def test_render_restores_module_state(render, jsl, ji, tmp_path):
+    before = (ji.now_stamp, ji.dt, jsl.slack_post, jsl.SLACK_USERS)
     render.render(tmp_path)
-    assert (ja.now_stamp, ja.dt, ja.slack_post, ja.SLACK_USERS) == before
+    assert (ji.now_stamp, ji.dt, jsl.slack_post, jsl.SLACK_USERS) == before
 
 
 def test_sources_have_no_formal_endings():
-    for rel in ("scripts/apply.py", "scripts/precheck.py"):
-        text = (ROOT / rel).read_text(encoding="utf-8")
-        assert not any(e in text for e in FORMAL_ENDINGS), rel
+    paths = [
+        ROOT / "scripts" / "apply.py",
+        ROOT / "scripts" / "precheck.py",
+        *(ROOT / "scripts" / "src").glob("**/*.py"),
+    ]
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        assert not any(e in text for e in FORMAL_ENDINGS), path.name
 
 
-def test_deliverables_summary_counts_expected_ids_only(ja):
+def test_deliverables_summary_counts_expected_ids_only(jcm):
     items = [*ITEMS, {"id": "9", "done": True, "result": "번호 밖 결과"}]
-    assert ja.deliverables_summary(EXPECTED, items, []) == "예상 산출물 2개 중 1개 달성"
+    assert jcm.deliverables_summary(EXPECTED, items, []) == "예상 산출물 2개 중 1개 달성"
 
 
-def test_short_name_strips_wiki_link_and_truncates(ja):
-    assert ja.short_name("[PR #46 오류 로그|https://example.com/46] 추가") == "PR #46 오류 로그 추가"
-    assert ja.short_name("가" * 50) == "가" * 40 + "…"
+def test_short_name_strips_wiki_link_and_truncates(jw):
+    assert jw.short_name("[PR #46 오류 로그|https://example.com/46] 추가") == "PR #46 오류 로그 추가"
+    assert jw.short_name("가" * 50) == "가" * 40 + "…"
 
 
 def test_a2_detail(jp):
@@ -703,7 +756,7 @@ def test_bug_template_b2_fails_with_placeholder_only(jp):
 
 
 def test_bug_sample_passes_template_and_fails_a2(render, jp):
-    """INNO-30 샘플(scripts/dev/render_jira_samples.py)은 B1, B2를 통과하고, 개선(To-Be)이 바뀌어 A2가 fail이다."""
+    """INNO-30 샘플(scripts/src/dev/samples/data.py)은 B1, B2를 통과하고, 개선(To-Be)이 바뀌어 A2가 fail이다."""
     checks = render.precheck_checks(jp, "Bug")
     assert (checks["B1"]["result"], checks["B2"]["result"], checks["A2"]["result"]) == ("pass", "pass", "fail")
     assert "에 '개선(To-Be)' 구역이 바뀜" in checks["A2"]["detail"]
@@ -832,21 +885,21 @@ def test_t3_mismatch_detail(render, ja, tmp_path):
     ) in body
 
 
-def test_check_table_uses_same_labels_for_all_checks(ja):
+def test_check_table_uses_same_labels_for_all_checks(jcm):
     checks = [{"id": "T1", "result": "pass", "detail": "a"}, {"id": "T5", "result": "fail", "detail": "b"}]
     checks.append({"id": "A2", "result": "n/a", "detail": "c"})
-    table = ja.check_table(checks)
+    table = jcm.check_table(checks)
     assert "| 예상 산출물 작성 (T1) | ✅ 만족 | a |" in table
     assert "| 예상 산출물 분할 단위 (T5) | ❌ 보완 필요 | b |" in table
     assert "| 완료 기준의 사후 변경 (A2) | ➖ 해당 없음 | c |" in table
     assert "통과" not in table and "실패" not in table
 
 
-def test_check_table_keeps_wiki_links_in_cells(ja):
+def test_check_table_keeps_wiki_links_in_cells(jcm):
     link = "[stop 사유 comment 2026-09-25|https://e.com/c?focusedCommentId=1]"
     checks = [{"id": "R4", "result": "pass", "detail": f"a|b {link} c|d"}, {"id": "T5", "result": "fail"}]
     feedback = [{"id": "T5", "points": ["[PR #1|https://e.com/1] 링크 밖 x|y", "둘째 줄"]}]
-    table = ja.check_table(checks, feedback)
+    table = jcm.check_table(checks, feedback)
     assert f"| stop 사유 comment (R4) | ✅ 만족 | a/b {link} c/d |" in table  # 링크 안의 "|"는 그대로 둠
     assert "| 예상 산출물 분할 단위 (T5) | ❌ 보완 필요 | [PR #1|https://e.com/1] 링크 밖 x/y \\\\ 둘째 줄 |" in table
 
@@ -908,32 +961,32 @@ def test_tldr_missing_note_stays_out_of_comment(render, ja, tmp_path):
     assert "CI agent 출력에 TL;DR 본문 없음 또는 비어 있음" in summ.rows[0]
 
 
-def test_t8_counts_not_a_reason_as_missing_reason(ja):
-    t8 = ja.check_t8(EXPECTED, [ITEMS[0], NOT_A_REASON], [])
+def test_t8_counts_not_a_reason_as_missing_reason(jv):
+    t8 = jv.check_t8(EXPECTED, [ITEMS[0], NOT_A_REASON], [])
     assert t8["result"] == "fail"
     assert t8["detail"] == "사유 없는 미달성 항목 2번"
     assert t8["request"] == "미달성 항목 2번의 달성 근거 또는 미달성 사유 comment 필요"
 
 
-def test_t8_passes_with_owner_reason(ja):
-    t8 = ja.check_t8(EXPECTED, [ITEMS[0], REASONED], [])
+def test_t8_passes_with_owner_reason(jv):
+    t8 = jv.check_t8(EXPECTED, [ITEMS[0], REASONED], [])
     assert t8["result"] == "pass"
     assert "request" not in t8
 
 
-def test_doc_review_comment_lists_t9_after_t8(ja):
-    t8 = ja.check_t8(EXPECTED, [ITEMS[0], REASONED], [])
+def test_doc_review_comment_lists_t9_after_t8(jv, jcm, ji):
+    t8 = jv.check_t8(EXPECTED, [ITEMS[0], REASONED], [])
     t9 = {"id": "T9", "result": "pass", "detail": "진행 배경, 예상 산출물, 결과 산출물이 이어짐"}
-    text = ja.doc_review_comment([t9, t8], [], "")  # 넘긴 순서와 달리 표는 T8 다음에 T9를 보인다
+    text = jcm.doc_review_comment([t9, t8], [], "")  # 넘긴 순서와 달리 표는 T8 다음에 T9를 보인다
     assert "| 진행 배경부터 결과 산출물까지의 연결 (T9) | ✅ 만족 |" in text
     assert text.index("초과 달성·미달성 사유 (T8)") < text.index("진행 배경부터 결과 산출물까지의 연결 (T9)")
-    assert ja.DOC_CHECKS["Task"][-2:] == ("T8", "T9")
+    assert ji.DOC_CHECKS["Task"][-2:] == ("T8", "T9")
 
 
-def test_validate_verdict_accepts_t9_feedback_and_reports_missing_t9(render, ja, tmp_path):
+def test_validate_verdict_accepts_t9_feedback_and_reports_missing_t9(render, ja, jv, tmp_path):
     v = {"issueKey": "INNO-1", "mode": "review", "verdict": "pass", "checks": [], "items": [], "extra": []}
     v |= {"requests": [], "feedback": [{"id": "T9", "points": ["a"], "request": "b 필요"}]}
-    assert ja.validate_verdict(v, "review", "INNO-1") is None
+    assert jv.validate_verdict(v, "review", "INNO-1") is None
     no_t9 = render.task_verdict("INNO-17", "review", "fix") | {"items": ITEMS, "extra": []}
     no_t9["checks"] = [c for c in no_t9["checks"] if c["id"] != "T9"]
     ctx, out = tmp_path / "ctx", tmp_path / "out"
@@ -1015,7 +1068,7 @@ def test_agent_error_cause_is_appended_to_every_failure(render, ja, tmp_path):
     assert failure["reason"] in summ.rows[0]
 
 
-def test_no_verdict_default_fails_without_format_wrapper(render, ja, tmp_path):
+def test_no_verdict_default_fails_without_format_wrapper(render, ja, jv, tmp_path):
     ctx, out = tmp_path / "ctx", tmp_path / "out"
     render.write_issue(ctx, "INNO-17", "Task", EXPECTED, {})
     default = render.task_verdict("INNO-17", "review", "no_verdict") | {
@@ -1025,11 +1078,11 @@ def test_no_verdict_default_fails_without_format_wrapper(render, ja, tmp_path):
     j = render.FakeJira({"INNO-17": ""})
     summ = ja.Summary(str(tmp_path / "summary.md"))
     failure = ja.apply_issue(j, ctx / "INNO-17", out, "review", False, "acc-lead", summ)
-    assert failure["reason"] == ja.NO_VERDICT_KO == "CI agent 판정 없음"
+    assert failure["reason"] == jv.NO_VERDICT_KO == "CI agent 판정 없음"
     assert j.comments == [] and j.fields == {}
     # items의 done만 null이어도(정리 모드 포함) 같은 이유로 실패함
     only_items = render.task_verdict("INNO-17", "digest", None) | {"items": [{"id": "1", "done": None, "result": ""}]}
-    assert ja.validate_verdict(only_items, "digest", "INNO-17") == ja.NO_VERDICT_KO
+    assert jv.validate_verdict(only_items, "digest", "INNO-17") == jv.NO_VERDICT_KO
 
 
 def run_main(render, ja, monkeypatch, work, mode, keys, *, lead="acc-lead", jira=None):
@@ -1250,7 +1303,7 @@ def test_check_r4_late_reason_passes_with_both_dates(jp):
     [(False, ["HOLD_REASON_MISSING:2026-09-08"]), (True, [])],
     ids=["늦은 사유가 없으면 R4 항목", "늦은 사유가 있으면 R4 항목 없음"],
 )
-def test_run_scan_skips_r4_alert_for_late_reason(ja, jp, tmp_path, late_reason, want_codes):
+def test_run_scan_skips_r4_alert_for_late_reason(jsl, jp, tmp_path, late_reason, want_codes):
     # 예전 stop(2026-09-08)은 다음 상태 변경까지 사유가 없고, 지금 stop(2026-09-20)은 사유가 있음
     marked = human_comment("2026-09-15T11:00:00.000+0900", "stop 사유: 고객사 데이터 대기", 1)
     current = human_comment("2026-09-21T10:00:00.000+0900", "장비 수리 대기", 2)
@@ -1267,10 +1320,10 @@ def test_run_scan_skips_r4_alert_for_late_reason(ja, jp, tmp_path, late_reason, 
     jp.run_scan(tmp_path / "INNO-40.json", NOW)
     alerts = json.loads((tmp_path / "INNO-40.alerts.json").read_text(encoding="utf-8"))["alerts"]
     assert [a["code"] for a in alerts] == want_codes
-    lines, _ = ja.weekly_lines(tmp_path, {})  # 주간 점검 메시지의 R4 항목
+    lines, _ = jsl.weekly_lines(tmp_path, {})  # 주간 점검 메시지의 R4 항목
     assert any(line.startswith("*stop 사유 미기재*") for line in lines) == bool(want_codes)
     if want_codes:  # 항목 줄은 묶음 제목 아래로 들여 씀(검수 알림과 같은 공백 4칸)
-        assert any(line.startswith(f"{ja.SLACK_INDENT}• INNO-40 ") for line in lines)
+        assert any(line.startswith(f"{jsl.SLACK_INDENT}• INNO-40 ") for line in lines)
 
 
 class ScanJira:
@@ -1368,22 +1421,22 @@ def test_r4_request_not_added_in_digest_mode(render, ja, jp, tmp_path, slack):
     ],
     ids=["통과", "검토 요청", "이유가 비면 결과 요약 줄 뒤에 붙임"],
 )
-def test_slack_reasons_show_late_r4(ja, v, itype, items, changes, want):
+def test_slack_reasons_show_late_r4(jsl, v, itype, items, changes, want):
     late = [{"id": "R4", "result": "pass", "detail": R4_LATE_DETAIL, "late": True}]
-    base = ja.review_slack_reasons(v, itype, EXPECTED, items, [], [], changes, "* 요약")
-    got = ja.review_slack_reasons(v, itype, EXPECTED, items, [], late, changes, "* 요약")
+    base = jsl.review_slack_reasons(v, itype, EXPECTED, items, [], [], changes, "* 요약")
+    got = jsl.review_slack_reasons(v, itype, EXPECTED, items, [], late, changes, "* 요약")
     assert base == want and got == [*want, R4_LATE_LINE]
     on_time = [{"id": "R4", "result": "pass", "detail": "stop 1회 모두 사유 comment 있음"}]
-    assert ja.review_slack_reasons(v, itype, EXPECTED, items, [], on_time, changes, "* 요약") == base
+    assert jsl.review_slack_reasons(v, itype, EXPECTED, items, [], on_time, changes, "* 요약") == base
 
 
-def test_slack_reasons_hold_omits_late_r4(ja):
+def test_slack_reasons_hold_omits_late_r4(jsl):
     late = [{"id": "R4", "result": "pass", "detail": R4_LATE_DETAIL, "late": True}]
-    got = ja.review_slack_reasons("fix", "Task", EXPECTED, ITEMS, [], late, [], "* 요약")
+    got = jsl.review_slack_reasons("fix", "Task", EXPECTED, ITEMS, [], late, [], "* 요약")
     assert got == ['사유 없는 미달성: 예상 산출물 2번 "오류율 1% 미만"']
 
 
-def test_hold_reason_for_r4_is_a_sentence(ja, jp):
+def test_hold_reason_for_r4_is_a_sentence(jv, jsl, jp):
     stops = jp.stop_events(
         [
             {"created": "2026-10-02T09:00:00.000+0900", "field": "status", "to": "Backlog"},
@@ -1396,8 +1449,8 @@ def test_hold_reason_for_r4_is_a_sentence(ja, jp):
     want = "stop 전환(In Progress → Backlog)에 대한 사유를 담당자가 comment에 남기지 않음(stop 시점: 2026-10-02)"
     assert r4["result"] == "fail" and r4["detail"] == want
     t1 = {"id": "T1", "result": "fail", "detail": "예상 산출물 구역에 항목 없음"}
-    got = ja.review_slack_reasons("fix", "Task", EXPECTED, ITEMS[:1], [], [t1, r4], [], "* 요약")
-    assert got == [f"{ja.check_label('T1')}: 예상 산출물 구역에 항목 없음", want]
+    got = jsl.review_slack_reasons("fix", "Task", EXPECTED, ITEMS[:1], [], [t1, r4], [], "* 요약")
+    assert got == [f"{jv.check_label('T1')}: 예상 산출물 구역에 항목 없음", want]
 
 
 # Bug, Issue 문서화 리뷰(Bug B5–B7, Issue I4–I5)
@@ -1442,9 +1495,9 @@ def run_type_review(render, ja, work, itype, pre_checks, checks, feedback, gate=
     return j
 
 
-def test_check_table_puts_bug_and_issue_doc_review_after_template_checks(ja):
+def test_check_table_puts_bug_and_issue_doc_review_after_template_checks(jcm):
     ids = ["I5", "B7", "I3", "B5", "B4", "I4", "B6"]
-    table = ja.check_table([{"id": cid, "result": "pass", "detail": cid} for cid in ids])
+    table = jcm.check_table([{"id": cid, "result": "pass", "detail": cid} for cid in ids])
     labels = [row.split(" | ")[0].removeprefix("| ") for row in table.splitlines()[1:]]
     assert labels == [
         "To-Be 동작 확인 comment (B4)",
@@ -1472,16 +1525,16 @@ def test_bug_observe_doc_review_goes_to_lead_comment_only(render, ja, tmp_path):
 
 
 @pytest.mark.parametrize(("failed", "want"), [("I4", "보류"), ("I5", "보류"), (None, "통과")])
-def test_issue_gate_doc_review_fail_turns_pass_into_hold(render, ja, tmp_path, failed, want):
+def test_issue_gate_doc_review_fail_turns_pass_into_hold(render, ja, jv, tmp_path, failed, want):
     checks = [{**c, "result": "fail"} if c["id"] == failed else c for c in ISSUE_AGENT_CHECKS]
     j = run_type_review(render, ja, tmp_path, "Issue", ISSUE_PRE, checks, [], gate=True)
     assert len(j.comments) == 1  # 게이트 모드는 팀장용 문서화 리뷰 comment를 따로 남기지 않음
     body = j.comments[0][1]
     assert f"검수 결과: *{want}*" in body
     if failed:
-        note = f"* 문서화 리뷰에 보완 필요 항목이 있어 통과에서 보류로 바꿈: {ja.check_label(failed)}\n"
+        note = f"* 문서화 리뷰에 보완 필요 항목이 있어 통과에서 보류로 바꿈: {jv.check_label(failed)}\n"
         assert note in body
-        assert f"| {ja.check_label(failed)} | ❌ 보완 필요 |" in body
+        assert f"| {jv.check_label(failed)} | ❌ 보완 필요 |" in body
 
 
 @pytest.mark.parametrize(
@@ -1667,9 +1720,9 @@ def expiry_json(**days):
     )
 
 
-def test_token_expiry_sends_only_30_days_or_less(ja):
+def test_token_expiry_sends_only_30_days_or_less(jsl):
     raw = expiry_json(JIRA_API_TOKEN=30, ORG_READ_TOKEN=31, F1_PAT=0, CLAUDE_CODE_OAUTH_TOKEN=-3, OTHER_KEY=10)
-    text, warning = ja.token_expiry_text(raw, TODAY)
+    text, warning = jsl.token_expiry_text(raw, TODAY)
     assert warning == ""
     lines = text.splitlines()
     assert lines[0] == "[jira-doc 토큰(인증 키) 만료 알림]"
@@ -1697,9 +1750,9 @@ def test_token_expiry_sends_only_30_days_or_less(ja):
         assert len(re.sub(r"`[^`]*`", "", line).strip(" •◦-")) <= 50, line
 
 
-def test_token_expiry_bad_item_is_skipped_and_others_continue(ja):
+def test_token_expiry_bad_item_is_skipped_and_others_continue(jsl):
     raw = json.dumps({"JIRA_API_TOKEN": "2026-10-20", "ORG_READ_TOKEN": "내일", "F1 PAT": "2026-13-01"})
-    text, warning = ja.token_expiry_text(raw, TODAY)
+    text, warning = jsl.token_expiry_text(raw, TODAY)
     assert "JIRA_API_TOKEN: 남은 날 6일" in text and "ORG_READ_TOKEN" not in text
     assert (
         warning
@@ -1707,8 +1760,8 @@ def test_token_expiry_bad_item_is_skipped_and_others_continue(ja):
     )
 
 
-def test_token_expiry_sends_nothing_when_all_over_30_days(ja):
-    assert ja.token_expiry_text(expiry_json(JIRA_API_TOKEN=31, ORG_READ_TOKEN=300), TODAY) == ("", "")
+def test_token_expiry_sends_nothing_when_all_over_30_days(jsl):
+    assert jsl.token_expiry_text(expiry_json(JIRA_API_TOKEN=31, ORG_READ_TOKEN=300), TODAY) == ("", "")
 
 
 @pytest.mark.parametrize(
@@ -1724,15 +1777,15 @@ def test_token_expiry_sends_nothing_when_all_over_30_days(ja):
     ],
     ids=["없음", "공백", "JSON 오류", "객체가 아님", "날짜 형식 오류", "없는 달", "문자열이 아님"],
 )
-def test_token_expiry_bad_value_only_warns(ja, raw):
-    text, warning = ja.token_expiry_text(raw, TODAY)
+def test_token_expiry_bad_value_only_warns(jsl, raw):
+    text, warning = jsl.token_expiry_text(raw, TODAY)
     assert text == "" and "TOKEN_EXPIRY" in warning
 
 
-def test_slack_token_expiry_posts_to_lead_channel(ja, tmp_path, monkeypatch):
+def test_slack_token_expiry_posts_to_lead_channel(ja, jsl, tmp_path, monkeypatch):
     posted = []
     monkeypatch.setattr(
-        ja, "slack_post", lambda text, env="SLACK_WEBHOOK_URL": posted.append((text, env)) or "전송 완료"
+        jsl, "slack_post", lambda text, env="SLACK_WEBHOOK_URL": posted.append((text, env)) or "전송 완료"
     )
     today = ja.dt.datetime.now(ja.KST).date()
     monkeypatch.setenv(
@@ -1752,10 +1805,10 @@ def test_slack_token_expiry_posts_to_lead_channel(ja, tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("raw", [None, "{틀림"], ids=["TOKEN_EXPIRY 없음", "JSON 오류"])
-def test_slack_token_expiry_warns_without_sending(ja, tmp_path, monkeypatch, raw):
+def test_slack_token_expiry_warns_without_sending(ja, jsl, tmp_path, monkeypatch, raw):
     posted = []
     monkeypatch.setattr(
-        ja, "slack_post", lambda text, env="SLACK_WEBHOOK_URL": posted.append((text, env)) or "전송 완료"
+        jsl, "slack_post", lambda text, env="SLACK_WEBHOOK_URL": posted.append((text, env)) or "전송 완료"
     )
     if raw is None:
         monkeypatch.delenv("TOKEN_EXPIRY", raising=False)
@@ -1767,15 +1820,15 @@ def test_slack_token_expiry_warns_without_sending(ja, tmp_path, monkeypatch, raw
 
 
 # ---------------------------------------------------------------------- 팀장 채널 전송과 report 모드
-def test_slack_post_skips_when_webhook_env_missing(ja, monkeypatch):
+def test_slack_post_skips_when_webhook_env_missing(jsl, monkeypatch):
     monkeypatch.undo()  # autouse fixture slack이 바꾼 slack_post를 원래 함수로 되돌린다
     monkeypatch.delenv("SLACK_LEAD_WEBHOOK_URL", raising=False)
     monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
-    assert ja.slack_post("본문", "SLACK_LEAD_WEBHOOK_URL") == "SLACK_LEAD_WEBHOOK_URL 없음. 전송 건너뜀"
-    assert ja.slack_post("본문") == "SLACK_WEBHOOK_URL 없음. 전송 건너뜀"
+    assert jsl.slack_post("본문", "SLACK_LEAD_WEBHOOK_URL") == "SLACK_LEAD_WEBHOOK_URL 없음. 전송 건너뜀"
+    assert jsl.slack_post("본문") == "SLACK_WEBHOOK_URL 없음. 전송 건너뜀"
 
 
-def test_slack_post_uses_given_webhook_env(ja, monkeypatch):
+def test_slack_post_uses_given_webhook_env(jsl, monkeypatch):
     monkeypatch.undo()
     monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
     monkeypatch.setenv("SLACK_LEAD_WEBHOOK_URL", "https://hooks.example.com/lead")
@@ -1790,8 +1843,8 @@ def test_slack_post_uses_given_webhook_env(ja, monkeypatch):
         def __exit__(self, *exc):
             return False
 
-    monkeypatch.setattr(ja.urllib.request, "urlopen", lambda req, timeout: urls.append(req.full_url) or Resp())
-    assert ja.slack_post("본문", "SLACK_LEAD_WEBHOOK_URL") == "전송 완료"
+    monkeypatch.setattr(jsl.urllib.request, "urlopen", lambda req, timeout: urls.append(req.full_url) or Resp())
+    assert jsl.slack_post("본문", "SLACK_LEAD_WEBHOOK_URL") == "전송 완료"
     assert urls == ["https://hooks.example.com/lead"]
 
 
@@ -1800,17 +1853,17 @@ def test_last_month(ja):
     assert ja.last_month(dt.date(2027, 1, 1)) == "2026-12"
 
 
-def test_report_mode_sends_run_report_text_to_lead_channel(ja, tmp_path, monkeypatch):
+def test_report_mode_sends_run_report_text_to_lead_channel(ja, jsl, jrr, tmp_path, monkeypatch):
     calls, posted = [], []
 
     def fake_run_report(j, month, lead, summ):
         calls.append((j, month, lead, summ))
         return ["정기 보고 본문"]
 
-    monkeypatch.setitem(sys.modules, "report", types.SimpleNamespace(run_report=fake_run_report))
+    monkeypatch.setattr(jrr, "run_report", fake_run_report)
     monkeypatch.setattr(ja, "Jira", lambda: "가짜 Jira")
     monkeypatch.setattr(
-        ja, "slack_post", lambda text, env="SLACK_WEBHOOK_URL": posted.append((text, env)) or "전송 완료"
+        jsl, "slack_post", lambda text, env="SLACK_WEBHOOK_URL": posted.append((text, env)) or "전송 완료"
     )
     monkeypatch.setenv("JIRA_LEAD_ACCOUNT_ID", "acc-lead")
     summary = tmp_path / "summary.md"
@@ -1823,15 +1876,13 @@ def test_report_mode_sends_run_report_text_to_lead_channel(ja, tmp_path, monkeyp
     assert "| - | - | report | 전송 완료 | 2026-09 정기 보고 1/1 |" in text
 
 
-def test_report_mode_sends_each_message(ja, tmp_path, monkeypatch):
+def test_report_mode_sends_each_message(ja, jsl, jrr, tmp_path, monkeypatch):
     """run_report가 메시지 목록을 돌려주면(12월 보고의 연간 묶음) 메시지마다 팀장 채널로 보낸다."""
     posted = []
-    monkeypatch.setitem(
-        sys.modules, "report", types.SimpleNamespace(run_report=lambda j, month, lead, summ: ["월간", "연간"])
-    )
+    monkeypatch.setattr(jrr, "run_report", lambda j, month, lead, summ: ["월간", "연간"])
     monkeypatch.setattr(ja, "Jira", lambda: None)
     monkeypatch.setattr(
-        ja, "slack_post", lambda text, env="SLACK_WEBHOOK_URL": posted.append((text, env)) or "전송 완료"
+        jsl, "slack_post", lambda text, env="SLACK_WEBHOOK_URL": posted.append((text, env)) or "전송 완료"
     )
     summary = tmp_path / "summary.md"
     monkeypatch.setattr(sys, "argv", ["apply.py", "--mode", "report", "--month", "2026-12", "--summary", str(summary)])
@@ -1841,36 +1892,32 @@ def test_report_mode_sends_each_message(ja, tmp_path, monkeypatch):
     assert "2026-12 정기 보고 1/2" in text and "2026-12 정기 보고 2/2" in text
 
 
-def test_report_mode_defaults_to_last_month(ja, tmp_path, monkeypatch):
+def test_report_mode_defaults_to_last_month(ja, jsl, jrr, tmp_path, monkeypatch):
     months = []
-    monkeypatch.setitem(
-        sys.modules,
-        "report",
-        types.SimpleNamespace(run_report=lambda j, month, lead, summ: months.append(month) or ["본문"]),
-    )
+    monkeypatch.setattr(jrr, "run_report", lambda j, month, lead, summ: months.append(month) or ["본문"])
     monkeypatch.setattr(ja, "Jira", lambda: None)
-    monkeypatch.setattr(ja, "slack_post", lambda text, env="SLACK_WEBHOOK_URL": "전송 완료")
+    monkeypatch.setattr(jsl, "slack_post", lambda text, env="SLACK_WEBHOOK_URL": "전송 완료")
     monkeypatch.setattr(sys, "argv", ["apply.py", "--mode", "report", "--summary", str(tmp_path / "s.md")])
     ja.main()
     assert months == [ja.last_month(ja.dt.datetime.now(ja.KST).date())]
 
 
 # ---------------------------------------------------------------------- runs 크기와 Jira 오류 경로
-def test_runs_drop_oldest_when_property_exceeds_30000_bytes(ja):
+def test_runs_drop_oldest_when_property_exceeds_30000_bytes(jrn):
     big = {"at": "x", "note": "가" * 1000}  # UTF-8 3000바이트
     prop = {"runs": [dict(big, n=i) for i in range(30)]}
-    ja.add_run(prop, {"at": "new", "verdict": "pass"})
+    jrn.add_run(prop, {"at": "new", "verdict": "pass"})
     assert len(json.dumps(prop, ensure_ascii=False).encode("utf-8")) <= 30000
     assert prop["runs"][-1] == {"at": "new", "verdict": "pass"} and 1 < len(prop["runs"]) < 11
     assert prop["runs"][0]["n"] == 30 - (len(prop["runs"]) - 1)  # 오래된 것부터 지워짐
     prop = {"runs": [{"note": "가" * 20000}]}
-    ja.add_run(prop, {"note": "나" * 20000})
+    jrn.add_run(prop, {"note": "나" * 20000})
     assert len(prop["runs"]) == 1 and prop["runs"][0]["note"].startswith("나")
 
 
-def test_run_cost_is_rounded_to_4_decimals(render, ja, tmp_path):
+def test_run_cost_is_rounded_to_4_decimals(render, ji, tmp_path):
     render.write_json(tmp_path / "out" / "_usage.json", [{"costUsd": 0.123456, "tokens": {}, "models": []}])
-    entry = ja.run_entry(tmp_path / "ctx" / "INNO-17", tmp_path / "out", "digest", "digest")
+    entry = ji.run_entry(tmp_path / "ctx" / "INNO-17", tmp_path / "out", "digest", "digest")
     assert entry["costUsd"] == 0.1235
 
 

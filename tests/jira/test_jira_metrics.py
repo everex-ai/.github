@@ -1,6 +1,6 @@
-"""scripts/dev/jira_metrics.py(문서화 Agent 지표 집계)의 파싱과 계산.
+"""scripts/dev/jira_metrics.py와 scripts/src/dev/jira_metrics/(문서화 Agent 지표 집계)의 파싱과 계산.
 
-검수 comment는 scripts/apply.py의 review_comment와 agent_comment로 만들어 실제 형식과 같게 한다.
+검수 comment는 scripts/src/jira/comment.py의 review_comment와 agent_comment로 만들어 실제 형식과 같게 한다.
 Jira는 읽기 메서드(search, changelog, comments)만 가진 가짜 객체로 대신하고 실제 API를 호출하지 않는다.
 """
 
@@ -14,6 +14,8 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT / "scripts") not in sys.path:
+    sys.path.append(str(ROOT / "scripts"))  # scripts/src 패키지를 불러오기 위함(test_render.py 참고)
 LEAD = {"accountId": "acc-lead", "displayName": "팀장", "accountType": "atlassian"}
 ASSIGNEE = {"accountId": "acc-assignee", "displayName": "담당자", "accountType": "atlassian"}
 LINK = "[comment 2026-09-01|https://example.atlassian.net/browse/INNO-1?focusedCommentId=1]"
@@ -51,9 +53,21 @@ def jm():
 
 
 @pytest.fixture(scope="module")
-def ja(jm):
-    """scripts/apply.py (모듈 이름 jira_apply)."""
-    return jm.JA
+def ja():
+    """scripts/src/jira/comment.py (모듈 이름 src.jira.comment)."""
+    return importlib.import_module("src.jira.comment")
+
+
+@pytest.fixture(scope="module")
+def jm_analyze():
+    """scripts/src/dev/jira_metrics/analyze.py (모듈 이름 src.dev.jira_metrics.analyze). task_record, build_jql을 가진다."""
+    return importlib.import_module("src.dev.jira_metrics.analyze")
+
+
+@pytest.fixture(scope="module")
+def rp_parse():
+    """scripts/src/jira/report/parse.py (모듈 이름 src.jira.report.parse). parse_review를 가진다."""
+    return importlib.import_module("src.jira.report.parse")
 
 
 def ts(at: str) -> str:
@@ -165,19 +179,19 @@ def run(jm, fake, tmp_path, *extra: str) -> Path:
     return out
 
 
-def test_parse_review_reads_verdict_and_check_table(jm, ja):
-    verdict, results = jm.parse_review(review_body(ja, "fix", FIRST_CHECKS))
+def test_parse_review_reads_verdict_and_check_table(rp_parse, ja):
+    verdict, results = rp_parse.parse_review(review_body(ja, "fix", FIRST_CHECKS))
     assert verdict == "보류"
     assert results == {"T1": "pass", "T2": "fail", "R3": "fail", "R4": "fail", "A2": "n/a"}
-    assert jm.parse_review(review_body(ja, "escalate", BUG_CHECKS))[0] == "검토 요청"
+    assert rp_parse.parse_review(review_body(ja, "escalate", BUG_CHECKS))[0] == "검토 요청"
 
 
-def test_doc_review_and_failure_comments_are_not_reviews(jm, ja):
+def test_doc_review_and_failure_comments_are_not_reviews(jm_analyze, rp_parse, ja):
     doc_review = ja.agent_comment(ja.doc_review_comment([{"id": "T4", "result": "pass", "detail": "x"}], [], ""))
     failure = ja.agent_comment("자동 검수 실행 실패: 판정 파일 없음\n팀장 확인 필요")
-    assert jm.parse_review(doc_review) is None
-    assert jm.parse_review(failure) is None
-    rec = jm.task_record(
+    assert rp_parse.parse_review(doc_review) is None
+    assert rp_parse.parse_review(failure) is None
+    rec = jm_analyze.task_record(
         "INNO-9",
         "Task",
         [],
@@ -193,8 +207,8 @@ def test_doc_review_and_failure_comments_are_not_reviews(jm, ja):
     assert rec.corrections == []
 
 
-def test_correction_comments_counted_from_humans_only(jm, ja):
-    rec = jm.task_record(
+def test_correction_comments_counted_from_humans_only(jm_analyze, ja):
+    rec = jm_analyze.task_record(
         "INNO-9",
         "Task",
         [],
@@ -208,13 +222,13 @@ def test_correction_comments_counted_from_humans_only(jm, ja):
     assert len(rec.corrections) == 2
 
 
-def test_build_jql(jm):
+def test_build_jql(jm, jm_analyze):
     since = jm.dt.date(2026, 9, 1)  # JQL 날짜는 API 계정의 시간대로 해석되므로 하루 앞선 날부터 찾음
-    assert jm.build_jql("project = INNO", since) == '(project = INNO) AND updated >= "2026-08-31"'
-    assert jm.build_jql("project = INNO ORDER BY created", since) == (
+    assert jm_analyze.build_jql("project = INNO", since) == '(project = INNO) AND updated >= "2026-08-31"'
+    assert jm_analyze.build_jql("project = INNO ORDER BY created", since) == (
         '(project = INNO) AND updated >= "2026-08-31" ORDER BY created'
     )
-    assert jm.build_jql("project = INNO", None) == "project = INNO"
+    assert jm_analyze.build_jql("project = INNO", None) == "project = INNO"
 
 
 def test_tasks_csv_hold_rerequest_pass(jm, fake, tmp_path):
@@ -336,7 +350,7 @@ def test_period_uses_kst_dates_and_includes_until(jm, tmp_path):
 
 
 def test_j7_uses_report_definition(jm, ja, tmp_path):
-    """J7은 scripts/report.py의 judge를 사용함: 자동 보류 제외, 팀장 외 전환 제외, 팀장 전환만 셈."""
+    """J7은 scripts/src/jira/report/metrics.py의 judge를 사용함: 자동 보류 제외, 팀장 외 전환 제외, 팀장 전환만 셈."""
     item = {"issuetype": {"name": "Task"}}
     fake = FakeJira(
         [{"key": k, "fields": item} for k in ("INNO-6", "INNO-7", "INNO-8")],

@@ -1,13 +1,13 @@
-"""scripts/report.py(정기 보고 메시지)의 계산과 Slack 본문.
+"""scripts/src/jira/report/(정기 보고 메시지)의 계산과 Slack 본문.
 
-검수 comment와 문서화 리뷰 comment는 scripts/apply.py의 review_comment, doc_review_comment, agent_comment로 만들어
+검수 comment와 문서화 리뷰 comment는 scripts/src/jira/comment.py의 review_comment, doc_review_comment, agent_comment로 만들어
 실제 형식과 같게 한다. Jira는 읽기 메서드(search, changelog, comments, prop_get)만 가진 가짜 객체로 대신하고
 실제 API를 호출하지 않는다. PR 검색(gh search prs)은 가짜 함수로 바꿔 gh를 실행하지 않는다.
 """
 
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import re
 import sys
 import types
@@ -28,34 +28,66 @@ TOKENS = {"input": 100, "output": 50, "cacheWrite": 10, "cacheRead": 1000}
 HOLD_NOTE = "상태를 in-progress로 되돌림"
 
 
-def _load(name: str, path: Path):
-    """스크립트를 모듈 이름 name으로 불러오고, 스크립트가 바꾼 sys.path를 되돌린다(jira_metrics.load_module과 같음)."""
-    if name in sys.modules:
-        return sys.modules[name]
-    saved = list(sys.path)
-    spec = importlib.util.spec_from_file_location(name, path)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
-    try:
-        spec.loader.exec_module(mod)
-    except BaseException:
-        sys.modules.pop(name, None)
-        raise
-    finally:
-        sys.path[:] = saved
-    return mod
-
-
 @pytest.fixture(scope="module")
 def ja():
-    """scripts/apply.py (모듈 이름 jira_apply)."""
-    return _load("jira_apply", ROOT / "scripts" / "apply.py")
+    """scripts/src/jira/comment.py (모듈 이름 src.jira.comment). 검수 comment 조립 함수와 표시 문구를 가진다."""
+    if str(ROOT / "scripts") not in sys.path:
+        sys.path.append(str(ROOT / "scripts"))  # scripts/src 패키지를 불러오기 위함(test_render.py 참고)
+    return importlib.import_module("src.jira.comment")
 
 
 @pytest.fixture(scope="module")
-def rp(ja):
-    """scripts/report.py (모듈 이름 jira_report). apply.py가 불러온 jira_api를 함께 쓰게 apply.py를 먼저 불러온다."""
-    return _load("jira_report", ROOT / "scripts" / "report.py")
+def rp_time(ja):
+    """scripts/src/constant/time.py (모듈 이름 src.constant.time). 한국 시간 KST를 가진다."""
+    return importlib.import_module("src.constant.time")
+
+
+@pytest.fixture(scope="module")
+def rp_model(ja):
+    """scripts/src/jira/report/model.py (모듈 이름 src.jira.report.model)."""
+    return importlib.import_module("src.jira.report.model")
+
+
+@pytest.fixture(scope="module")
+def rp_parse(ja):
+    """scripts/src/jira/report/parse.py (모듈 이름 src.jira.report.parse)."""
+    return importlib.import_module("src.jira.report.parse")
+
+
+@pytest.fixture(scope="module")
+def rp_period(ja):
+    """scripts/src/jira/report/period.py (모듈 이름 src.jira.report.period)."""
+    return importlib.import_module("src.jira.report.period")
+
+
+@pytest.fixture(scope="module")
+def rp_fetch(ja):
+    """scripts/src/jira/report/fetch.py (모듈 이름 src.jira.report.fetch). search_prs, subprocess, SEARCH_LIMIT을 찾는 모듈."""
+    return importlib.import_module("src.jira.report.fetch")
+
+
+@pytest.fixture(scope="module")
+def rp_metrics(ja):
+    """scripts/src/jira/report/metrics.py (모듈 이름 src.jira.report.metrics)."""
+    return importlib.import_module("src.jira.report.metrics")
+
+
+@pytest.fixture(scope="module")
+def rp_text(ja):
+    """scripts/src/jira/report/text.py (모듈 이름 src.jira.report.text)."""
+    return importlib.import_module("src.jira.report.text")
+
+
+@pytest.fixture(scope="module")
+def rp_message(ja):
+    """scripts/src/jira/report/message.py (모듈 이름 src.jira.report.message). Report가 dt.datetime.now를 부르는 모듈."""
+    return importlib.import_module("src.jira.report.message")
+
+
+@pytest.fixture(scope="module")
+def rp_run(ja):
+    """scripts/src/jira/report/run.py (모듈 이름 src.jira.report.run)."""
+    return importlib.import_module("src.jira.report.run")
 
 
 @pytest.fixture(autouse=True)
@@ -65,31 +97,31 @@ def project(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def clock(rp, monkeypatch):
+def clock(rp_time, rp_message, monkeypatch):
     """Report의 실행 시각 기본값(dt.datetime.now)을 2027-01-01 09:00(한국 시간)으로 고정한다.
 
     매월 1일 cron 실행처럼 2026년 대상 달이 모두 끝난 뒤 시각이라 팀장 확인 대기는 대상 기간 끝까지 센다.
-    report.py의 dt만 바꾸고 datetime 모듈 자체는 바꾸지 않는다.
+    message.py의 dt만 바꾸고 datetime 모듈 자체는 바꾸지 않는다.
     """
-    real = rp.dt
-    fixed = real.datetime(2027, 1, 1, 9, tzinfo=rp.KST)
+    real = rp_message.dt
+    fixed = real.datetime(2027, 1, 1, 9, tzinfo=rp_time.KST)
 
     class Clock(real.datetime):
         @classmethod
         def now(cls, tz=None):
             return fixed.astimezone(tz) if tz else fixed.replace(tzinfo=None)
 
-    monkeypatch.setattr(rp, "dt", types.SimpleNamespace(**{**vars(real), "datetime": Clock}))
+    monkeypatch.setattr(rp_message, "dt", types.SimpleNamespace(**{**vars(real), "datetime": Clock}))
 
 
 @pytest.fixture(autouse=True)
-def no_gh(rp, monkeypatch):
+def no_gh(rp_fetch, monkeypatch):
     """run_report가 기본으로 부르는 search_prs를 PR 0건을 돌려주는 가짜로 바꾼다(gh를 실행하지 않음).
 
     바꾸기 전 search_prs를 돌려준다. search_prs 자체를 확인하는 테스트가 이 fixture 값으로 받는다.
     """
-    real = rp.search_prs
-    monkeypatch.setattr(rp, "search_prs", lambda org, since, until: [])
+    real = rp_fetch.search_prs
+    monkeypatch.setattr(rp_fetch, "search_prs", lambda org, since, until: [])
     return real
 
 
@@ -158,7 +190,7 @@ def ticket(
 
 
 class FakeJira:
-    """report.py가 부르는 Jira 읽기 메서드만 흉내 낸다. 쓰기 메서드와 issue를 부르면 AttributeError가 난다."""
+    """scripts/src/jira/report/가 부르는 Jira 읽기 메서드만 흉내 낸다. 쓰기 메서드와 issue를 부르면 AttributeError가 난다."""
 
     def __init__(self, tickets: dict[str, dict], subtasks: list[dict] = ()):
         self.tickets = tickets
@@ -188,7 +220,7 @@ class FakeJira:
 
 
 class Summ:
-    """scripts/apply.py Summary의 extra와 row만 흉내 낸다."""
+    """scripts/src/common/github.py Summary의 extra와 row만 흉내 낸다."""
 
     def __init__(self):
         self.extra: list[str] = []
@@ -214,12 +246,12 @@ def block(body: str, head: str, n: int) -> list[str]:
     return lines[i + 1 : i + 1 + n]
 
 
-def load(rp, tickets: dict[str, dict]) -> list:
-    return rp.collect(FakeJira(tickets), "jql")
+def load(rp_fetch, tickets: dict[str, dict]) -> list:
+    return rp_fetch.collect(FakeJira(tickets), "jql")
 
 
-def month(rp, m: str):
-    return rp.months_span(m, m)
+def month(rp_period, m: str):
+    return rp_period.months_span(m, m)
 
 
 @pytest.fixture()
@@ -381,29 +413,29 @@ PRS = [
 ]
 
 
-def report(rp, sample: dict, m: str = "2026-12", prs=PRS, summ=None) -> list[str]:
+def report(rp_run, sample: dict, m: str = "2026-12", prs=PRS, summ=None) -> list[str]:
     """sample과 SUBTASKS, PRS로 run_report를 실행한 메시지 목록. prs가 None이면 PR 검색 실패."""
-    return rp.run_report(FakeJira(sample, SUBTASKS), m, LEAD_ID, summ or Summ(), pr_search=lambda o, a, b: prs)
+    return rp_run.run_report(FakeJira(sample, SUBTASKS), m, LEAD_ID, summ or Summ(), pr_search=lambda o, a, b: prs)
 
 
-def test_comment_format_matches_apply(rp, ja):
-    """report.py가 따로 둔 문구가 apply.py와 같고, apply.py가 만든 comment를 읽음."""
-    assert rp.VERDICT_KO == {k: v for k, v in ja.VERDICT_KO.items() if k is not None}
-    assert rp.RESULT_KO == ja.RESULT_KO
+def test_comment_format_matches_apply(rp_parse, rp_metrics, ja):
+    """scripts/src/jira/report/parse.py가 따로 둔 문구가 comment.py와 같고, apply.py가 만든 comment를 읽음."""
+    assert rp_parse.VERDICT_KO == {k: v for k, v in ja.VERDICT_KO.items() if k is not None}
+    assert rp_parse.RESULT_KO == ja.RESULT_KO
     head = ja.review_comment("pass", [], [], [], [], "", [], []).splitlines()[0]
-    assert head == f"{rp.VERDICT_PREFIX}{ja.VERDICT_KO['pass']}{rp.VERDICT_SUFFIX}"
+    assert head == f"{rp_parse.VERDICT_PREFIX}{ja.VERDICT_KO['pass']}{rp_parse.VERDICT_SUFFIX}"
     body = review(ja, "2026-12-01T09:00", "fix", checks(T2="fail", R4="pass", A2="n/a"))["body"]
-    assert rp.parse_review(body) == ("보류", {"T2": "fail", "R4": "pass", "A2": "n/a"})
-    assert rp.parse_doc_review(body) is None
+    assert rp_parse.parse_review(body) == ("보류", {"T2": "fail", "R4": "pass", "A2": "n/a"})
+    assert rp_parse.parse_doc_review(body) is None
     doc_body = doc(ja, "2026-12-01T09:00", checks(T4="fail", T5="pass"))["body"]
-    assert rp.parse_review(doc_body) is None
-    assert rp.parse_doc_review(doc_body) == {"T4": "fail", "T5": "pass"}
-    assert rp.table_rows(doc_body)[0] == ("T4", ja.check_label("T4"), "fail")
+    assert rp_parse.parse_review(doc_body) is None
+    assert rp_parse.parse_doc_review(doc_body) == {"T4": "fail", "T5": "pass"}
+    assert rp_parse.table_rows(doc_body)[0] == ("T4", ja.check_label("T4"), "fail")
     line = ja.deliverables_summary([{"id": 1}, {"id": 2}], [{"id": 1, "done": True}], [{"result": "x"}])
-    assert rp.DELIVERABLES_RE.search(line).groups() == ("2", "1")
+    assert rp_metrics.DELIVERABLES_RE.search(line).groups() == ("2", "1")
 
 
-def test_run_branch(rp):
+def test_run_branch(rp_parse):
     cases = [
         ({"mode": "review", "verdict": "pass", "requestNo": 1, "retry": False}, "first"),
         ({"mode": "review", "verdict": "fix", "requestNo": None, "retry": False}, "first"),
@@ -414,12 +446,12 @@ def test_run_branch(rp):
         ({"mode": "digest", "verdict": "digest", "requestNo": None, "retry": False}, "digest"),
         ({"mode": "digest", "verdict": "failed", "requestNo": None, "retry": False}, "retry"),
     ]
-    assert [rp.run_branch(e) for e, _ in cases] == [b for _, b in cases]
+    assert [rp_parse.run_branch(e) for e, _ in cases] == [b for _, b in cases]
 
 
-def test_usage_sums_by_kst_month(rp):
+def test_usage_sums_by_kst_month(rp_period, rp_fetch, rp_metrics):
     tickets = load(
-        rp,
+        rp_fetch,
         {
             "INNO-1": ticket(
                 runs=[
@@ -432,39 +464,39 @@ def test_usage_sums_by_kst_month(rp):
             )
         },
     )
-    u = rp.usage(tickets, month(rp, "2026-12"))
+    u = rp_metrics.usage(tickets, month(rp_period, "2026-12"))
     assert dict(u.runs) == {"cycle": 1, "digest": 1, "retry": 1}
     assert u.cost == {"first": 0.0, "cycle": 1.0, "retry": 0.5, "digest": 0.0}
     assert (u.review_runs, u.missing_cost, u.total_runs) == (2, 1, 3)
     assert u.tokens == {"input": 300, "output": 150, "cacheWrite": 30, "cacheRead": 3000}
-    assert rp.usage(tickets, month(rp, "2026-11")).cost["first"] == 2.0
+    assert rp_metrics.usage(tickets, month(rp_period, "2026-11")).cost["first"] == 2.0
 
 
-def test_usage_judgement_boundaries(rp):
+def test_usage_judgement_boundaries(rp_model, rp_metrics):
     def u(cost: float, reviews: int):
-        x = rp.Usage()
+        x = rp_model.Usage()
         x.cost["first"], x.review_runs = cost, reviews
         return x
 
-    assert rp.usage_judgement(u(15.0, 0), u(10.0, 10)) == (
+    assert rp_metrics.usage_judgement(u(15.0, 0), u(10.0, 10)) == (
         True,
         "해당함",
         ["이번 달 15.00 USD ≥ 전월 × 1.5(15.00 USD)", "전월 검수 실행 10건 ≥ 10건"],
     )
-    assert rp.usage_judgement(u(14.99, 0), u(10.0, 10))[:2] == (False, "해당하지 않음")
-    assert rp.usage_judgement(u(14.99, 0), u(10.0, 10))[2][0] == "이번 달 14.99 USD < 전월 × 1.5(15.00 USD)"
-    assert rp.usage_judgement(u(0.3, 0), u(0.2, 10))[0] is True  # 0.2 × 1.5의 부동소수 오차에도 경계 포함
-    assert rp.usage_judgement(u(100.0, 0), u(10.0, 9)) == (None, "판정 불가", ["전월 검수 실행 9건 < 10건"])
-    assert rp.usage_judgement(u(1.0, 0), u(0.0, 12)) == (None, "판정 불가", ["전월 API 환산 비용 기록 없음"])
+    assert rp_metrics.usage_judgement(u(14.99, 0), u(10.0, 10))[:2] == (False, "해당하지 않음")
+    assert rp_metrics.usage_judgement(u(14.99, 0), u(10.0, 10))[2][0] == "이번 달 14.99 USD < 전월 × 1.5(15.00 USD)"
+    assert rp_metrics.usage_judgement(u(0.3, 0), u(0.2, 10))[0] is True  # 0.2 × 1.5의 부동소수 오차에도 경계 포함
+    assert rp_metrics.usage_judgement(u(100.0, 0), u(10.0, 9)) == (None, "판정 불가", ["전월 검수 실행 9건 < 10건"])
+    assert rp_metrics.usage_judgement(u(1.0, 0), u(0.0, 12)) == (None, "판정 불가", ["전월 API 환산 비용 기록 없음"])
 
 
-def test_rerun_of_same_request_is_retry(rp):
+def test_rerun_of_same_request_is_retry(rp_fetch):
     """같은 ticket에서 requestNo가 같고 반영에 성공한 review 실행이 앞서 있으면 그 뒤 실행은 재실행·실패 갈래.
 
     앞선 실행이 반영에 실패했으면 첫 성공 실행은 원래 갈래로 둔다.
     """
     tickets = load(
-        rp,
+        rp_fetch,
         {
             "INNO-1": ticket(
                 runs=[
@@ -486,9 +518,9 @@ def test_rerun_of_same_request_is_retry(rp):
     }
 
 
-def test_candidates_conditions_a_b(rp, ja):
+def test_candidates_conditions_a_b(rp_period, rp_fetch, rp_metrics, ja):
     tickets = load(
-        rp,
+        rp_fetch,
         {
             "INNO-1": ticket(  # 김담당: 12월 반려 2회(팀장, 담당자 1회씩) -> 조건 A. 11월 반려는 세지 않음
                 who=KIM,
@@ -521,7 +553,7 @@ def test_candidates_conditions_a_b(rp, ja):
             "INNO-5": ticket(changelog=[change(f"2026-12-0{d}T10:00", "ready-to-done", "In Progress") for d in (1, 2)]),
         },
     )
-    cands = rp.candidates(tickets, month(rp, "2026-12"))
+    cands = rp_metrics.candidates(tickets, month(rp_period, "2026-12"))
     assert set(cands) == {"acc-kim", "acc-lee"}  # 담당자가 없는 INNO-5는 세지 않음
     assert (cands["acc-kim"].name, cands["acc-kim"].rejected, cands["acc-kim"].failed) == (
         "김담당",
@@ -532,7 +564,7 @@ def test_candidates_conditions_a_b(rp, ja):
     assert cands["acc-lee"].failed == [("T2", 2), ("T4", 2)]
 
 
-def test_followup_four_results(rp, ja):
+def test_followup_four_results(rp_period, rp_fetch, rp_metrics, ja):
     """11월 후보 네 명(모두 T2 ❌ 2회, 11월 첫 검수 통과율 0/1)의 12월 개선 여부."""
 
     def person(who: dict, december: list[dict]) -> dict:
@@ -547,7 +579,7 @@ def test_followup_four_results(rp, ja):
 
     a, b, c, d = ({**KIM, "accountId": f"acc-{x}", "displayName": f"담당{x}"} for x in "abcd")
     tickets = load(
-        rp,
+        rp_fetch,
         {
             **person(a, [review(ja, "2026-12-03T10:00", "fix", checks(T2="fail"))]),  # 재발
             **person(b, [review(ja, "2026-12-03T10:00", "pass", checks(T2="pass"))]),  # 개선: 0/1 -> 1/1
@@ -555,17 +587,17 @@ def test_followup_four_results(rp, ja):
             **person(d, []),  # 판단 불가: 12월 검수 없음
         },
     )
-    dec, nov = month(rp, "2026-12"), month(rp, "2026-11")
-    prev = rp.candidates(tickets, nov)
+    dec, nov = month(rp_period, "2026-12"), month(rp_period, "2026-11")
+    prev = rp_metrics.candidates(tickets, nov)
     assert set(prev) == {"acc-a", "acc-b", "acc-c", "acc-d"}
-    result = {name: (res, detail) for name, res, detail in rp.followup(prev, tickets, dec, nov)}
+    result = {name: (res, detail) for name, res, detail in rp_metrics.followup(prev, tickets, dec, nov)}
     assert result["담당a"] == ("재발", ["이번 달 T2 ❌ 1회"])
     assert result["담당b"] == ("개선", ["지난달 첫 검수 통과율 0/1건, 0.0%", "이번 달 첫 검수 통과율 1/1건, 100.0%"])
     assert result["담당c"] == ("유지", ["지난달 첫 검수 통과율 0/1건, 0.0%", "이번 달 첫 검수 통과율 0/1건, 0.0%"])
     assert result["담당d"] == ("판단 불가", ["이번 달 검수 comment 0건"])
 
 
-def test_judge_cells_and_exclusions(rp, ja):
+def test_judge_cells_and_exclusions(rp_period, rp_fetch, rp_metrics, ja):
     """3.3절 표의 여섯 칸, 팀장 외 전환 제외, 자동 보류 제외, 다음 검수 comment 전까지만 봄."""
     rtd, ip, done = "ready-to-done", "In Progress", "Done"
 
@@ -595,8 +627,8 @@ def test_judge_cells_and_exclusions(rp, ja):
             ],
         ),
     }
-    tickets = {t.key: t for t in load(rp, specs)}
-    got = {k: rp.judge(t.reviews, t.changes, LEAD_ID) for k, t in tickets.items()}
+    tickets = {t.key: t for t in load(rp_fetch, specs)}
+    got = {k: rp_metrics.judge(t.reviews, t.changes, LEAD_ID) for k, t in tickets.items()}
     assert got == {
         "P-done": ["일치"],
         "P-ip": ["불일치"],
@@ -610,33 +642,35 @@ def test_judge_cells_and_exclusions(rp, ja):
         "F-none": ["전환 없음"],
         "Two": ["전환 없음", "일치"],
     }
-    a = rp.agreement_summary(rp.agreement_cases(tickets.values(), LEAD_ID), rp.months_span("2026-10", "2026-12"))
+    a = rp_metrics.agreement_summary(
+        rp_metrics.agreement_cases(tickets.values(), LEAD_ID), rp_period.months_span("2026-10", "2026-12")
+    )
     assert (a["match"], a["judged"]) == (3, 5)
     assert (a["escalate"], a["total"]) == (2, 12)
     assert a["excluded"] == {"자동 보류": 1, "팀장 외 전환": 1, "전환 없음": 2, "기타 전환": 1}
-    no_lead = rp.judge(tickets["P-done"].reviews, tickets["P-done"].changes, "")
+    no_lead = rp_metrics.judge(tickets["P-done"].reviews, tickets["P-done"].changes, "")
     assert no_lead == ["팀장 외 전환"]
 
 
-def test_recent_20(rp):
-    dt = rp.dt
-    base = dt.datetime(2026, 10, 1, tzinfo=rp.KST)
+def test_recent_20(rp_time, rp_period, rp_metrics, rp_message):
+    dt = rp_message.dt
+    base = dt.datetime(2026, 10, 1, tzinfo=rp_time.KST)
     cases = [(base + dt.timedelta(days=i), "불일치") for i in range(2)]
     cases += [(base + dt.timedelta(days=2 + i), "일치") for i in range(20)]
-    cases += [(base + dt.timedelta(days=30), "검토 요청"), (dt.datetime(2027, 1, 2, tzinfo=rp.KST), "불일치")]
-    a = rp.agreement_summary(sorted(cases), rp.months_span("2026-10", "2026-12"))
+    cases += [(base + dt.timedelta(days=30), "검토 요청"), (dt.datetime(2027, 1, 2, tzinfo=rp_time.KST), "불일치")]
+    a = rp_metrics.agreement_summary(sorted(cases), rp_period.months_span("2026-10", "2026-12"))
     assert (a["match"], a["judged"]) == (20, 22)  # 분기값
     assert (a["recent_match"], a["recent_n"]) == (20, 20)  # 분기 끝 전 최근 20건. 2027-01 건과 검토 요청은 뺌
     assert (a["escalate"], a["total"]) == (1, 23)
 
 
-def test_kr_rows(rp):
+def test_kr_rows(rp_period, rp_fetch, rp_metrics):
     def task(parent, done_at: str | None, desc: str = "", itype: str = "Task") -> dict:
         log = [change(done_at, "ready-to-done", "Done")] if done_at else []
         return ticket(itype=itype, who=KIM, parent=parent, desc=desc, changelog=log)
 
     tickets = load(
-        rp,
+        rp_fetch,
         {
             "INNO-1": task(KR23, "2026-11-02T10:00", "h2. 결과 산출물\n예상 산출물 3개 중 2개 달성\n# *a* / ✅ 달성"),
             "INNO-2": task(KR23, "2026-12-02T10:00", "예상 산출물 2개 중 2개 달성, 초과 달성 1건"),
@@ -648,7 +682,7 @@ def test_kr_rows(rp):
             "INNO-8": task(EPIC, "2026-12-03T10:00", "예상 산출물 1개 중 1개 달성"),  # 상위가 KR 아님
         },
     )
-    rows = rp.kr_rows(tickets, rp.months_span("2026-10", "2026-12"))
+    rows = rp_metrics.kr_rows(tickets, rp_period.months_span("2026-10", "2026-12"))
     got = [(r.key, r.name, r.done, r.achieved, r.expected, r.no_line) for r in rows]
     assert got == [
         ("INNO-23", "문서화 품질 개선", 3, 4, 5, 1),
@@ -672,11 +706,15 @@ def assert_shape(msg: str, title: str, span: str) -> None:
 
 
 @pytest.mark.parametrize("m", range(1, 13))
-def test_bundles_by_month_and_empty_data(rp, m):
+def test_bundles_by_month_and_empty_data(rp_period, rp_message, rp_run, m):
     fake, summ = FakeJira({}), Summ()
-    msgs = rp.run_report(fake, f"2026-{m:02d}", LEAD_ID, summ)
+    msgs = rp_run.run_report(fake, f"2026-{m:02d}", LEAD_ID, summ)
     assert len(msgs) == (3 if m == 12 else 2 if m % 3 == 0 else 1)
-    last = (rp.months_span(f"2026-{m:02d}", f"2026-{m:02d}")[1] - rp.dt.timedelta(days=1)).date().isoformat()
+    last = (
+        (rp_period.months_span(f"2026-{m:02d}", f"2026-{m:02d}")[1] - rp_message.dt.timedelta(days=1))
+        .date()
+        .isoformat()
+    )
     assert_shape(msgs[0], f"[2026-{m:02d} jira-doc 월간 보고]", f"2026-{m:02d}-01–{last}")
     if m % 3 == 0:
         assert_shape(msgs[1], f"[2026 Q{m // 3} jira-doc 분기 보고]", f"2026-{m - 2:02d}-01–{last}")
@@ -720,29 +758,29 @@ def test_bundles_by_month_and_empty_data(rp, m):
             "project = INNO AND issuetype in (Task, Bug, Issue) "
             f'AND (updated >= "{since[m]}" OR status not in ("done", "Backlog", "Deleted"))'
         )
-    sp = rp.months_span(f"2026-{m:02d}", f"2026-{m:02d}")
-    sub_day = (sp[0] - rp.dt.timedelta(days=1)).date().isoformat()
+    sp = rp_period.months_span(f"2026-{m:02d}", f"2026-{m:02d}")
+    sub_day = (sp[0] - rp_message.dt.timedelta(days=1)).date().isoformat()
     assert fake.searches[1] == (
         "project = INNO AND issuetype in subTaskIssueTypes() "
-        f'AND created >= "{sub_day}" AND created < "{(sp[1] + rp.dt.timedelta(days=1)).date().isoformat()}"',
+        f'AND created >= "{sub_day}" AND created < "{(sp[1] + rp_message.dt.timedelta(days=1)).date().isoformat()}"',
         ["parent", "created"],
     )
     assert summ.extra and summ.rows == []
 
 
-def test_build_jql(rp):
-    assert rp.build_jql("INNO", rp.dt.date(2026, 10, 1)) == (
+def test_build_jql(rp_fetch, rp_message):
+    assert rp_fetch.build_jql("INNO", rp_message.dt.date(2026, 10, 1)) == (
         'project = INNO AND issuetype in (Task, Bug, Issue) AND (updated >= "2026-09-30" '
         'OR status not in ("done", "Backlog", "Deleted"))'
     )
 
 
-def test_state_at(rp):
+def test_state_at(rp_period, rp_fetch, rp_metrics):
     """1일 0시 전 마지막 변경의 도착 상태, 없으면 뒤 첫 변경의 출발 상태, 변경이 없으면 지금 상태."""
     tickets = {
         t.key: t
         for t in load(
-            rp,
+            rp_fetch,
             {
                 "BEFORE": ticket(
                     status="done",
@@ -757,13 +795,13 @@ def test_state_at(rp):
             },
         )
     }
-    start = rp.months_span("2026-12", "2026-12")[0]
-    assert rp.state_at(tickets["BEFORE"], start) == "ready-to-done"
-    assert rp.state_at(tickets["AFTER"], start) == "Backlog"  # 0시 정각의 변경은 그 뒤 첫 변경으로 봄
-    assert rp.state_at(tickets["NONE"], start) == "To Do"
+    start = rp_period.months_span("2026-12", "2026-12")[0]
+    assert rp_metrics.state_at(tickets["BEFORE"], start) == "ready-to-done"
+    assert rp_metrics.state_at(tickets["AFTER"], start) == "Backlog"  # 0시 정각의 변경은 그 뒤 첫 변경으로 봄
+    assert rp_metrics.state_at(tickets["NONE"], start) == "To Do"
 
 
-def test_ticket_overview_update_records_and_causes(rp, ja):
+def test_ticket_overview_update_records_and_causes(rp_period, rp_fetch, rp_metrics, ja):
     """업데이트 기록 다섯 가지를 하나씩 세고, 업데이트 없는 기존 ticket은 기간 끝 상태 이름별로 셈."""
     old = "2026-11-01T09:00"
     specs = {
@@ -789,36 +827,36 @@ def test_ticket_overview_update_records_and_causes(rp, ja):
         "NEW4": ticket(created="2026-12-22T10:00", status="In Progress"),
         "LATER": ticket(created="2027-01-02T10:00", status="To Do"),  # 기간 뒤에 만듦 -> 세지 않음
     }
-    tickets = load(rp, specs)
+    tickets = load(rp_fetch, specs)
     by_key = {t.key: t for t in tickets}
-    sp = month(rp, "2026-12")
-    rp.attach_updates(
+    sp = month(rp_period, "2026-12")
+    rp_fetch.attach_updates(
         tickets,
-        rp.fetch_subtasks(
+        rp_fetch.fetch_subtasks(
             FakeJira({}, [subtask("SUB-1", "SUB", "2026-12-04T10:00")]), "INNO", sp[0].date(), sp[1].date()
         ),
-        rp.pr_times([{"title": "[INNO-5] PR 추가", "createdAt": "2026-12-05T01:00:00Z"}], "INNO"),
+        rp_fetch.pr_times([{"title": "[INNO-5] PR 추가", "createdAt": "2026-12-05T01:00:00Z"}], "INNO"),
     )
     for key in ("COMMENT", "DESC", "STATUS", "SUB", "INNO-5"):
-        assert rp.updated_in(by_key[key], sp), key
+        assert rp_metrics.updated_in(by_key[key], sp), key
     for key in ("AGENT", "WAIT", "TODO"):
-        assert not rp.updated_in(by_key[key], sp), key
-    ov = rp.ticket_overview(tickets, sp, sp[0])
+        assert not rp_metrics.updated_in(by_key[key], sp), key
+    ov = rp_metrics.ticket_overview(tickets, sp, sp[0])
     assert (ov.existing, ov.updated, ov.updated_done) == (8, 5, 1)
     assert dict(ov.idle) == {"ready-to-done": 1, "In Progress": 1, "To Do": 1}
     assert dict(ov.new) == {"To Do": 1, "In Progress": 2, "done": 1}
     # PR 검색이 실패하면(PR 시각 없음) PR 추가만 있는 ticket은 업데이트 없음
-    rp.attach_updates(tickets, {}, {})
-    assert not rp.updated_in(by_key["INNO-5"], sp)
+    rp_fetch.attach_updates(tickets, {}, {})
+    assert not rp_metrics.updated_in(by_key["INNO-5"], sp)
 
 
-def test_max_request_count_and_members(rp, ja):
+def test_max_request_count_and_members(rp_period, rp_fetch, rp_metrics, ja):
     def reqs(who: dict, days: list[int], **kw) -> dict:
         log = [change(f"2026-12-{d:02d}T09:00", "In Progress", "ready-to-done", who) for d in days]
         return ticket(who=who, changelog=log, **kw)
 
     tickets = load(
-        rp,
+        rp_fetch,
         {
             "INNO-12": reqs(KIM, [1, 2]),
             "INNO-9": reqs(KIM, [3, 4]),  # 같은 횟수면 짧은 키가 앞섬
@@ -827,25 +865,25 @@ def test_max_request_count_and_members(rp, ja):
             "INNO-40": ticket(who=PARK, created="2026-10-01T09:00", status="done"),  # 기록 없음 -> 팀원별에서 뺌
         },
     )
-    sp = month(rp, "2026-12")
-    assert rp.max_request_count(tickets, sp) == (3, "INNO-30")
-    assert rp.max_request_count([t for t in tickets if t.assignee_id == "acc-kim"], sp) == (2, "INNO-9")
-    assert rp.max_request_count([], sp) == (0, "")
-    rows = {r.name: r for r in rp.member_rows(tickets, sp)}
+    sp = month(rp_period, "2026-12")
+    assert rp_metrics.max_request_count(tickets, sp) == (3, "INNO-30")
+    assert rp_metrics.max_request_count([t for t in tickets if t.assignee_id == "acc-kim"], sp) == (2, "INNO-9")
+    assert rp_metrics.max_request_count([], sp) == (0, "")
+    rows = {r.name: r for r in rp_metrics.member_rows(tickets, sp)}
     assert set(rows) == {"김담당", "이담당"}
     assert (rows["이담당"].first, rows["이담당"].max_request, rows["이담당"].stop) == ((1, 1), (3, "INNO-30"), (1, 1))
     assert rows["김담당"].max_request == (2, "INNO-9")
-    assert "박담당" in {r.name for r in rp.member_rows(tickets, sp, include=["acc-park"])}
+    assert "박담당" in {r.name for r in rp_metrics.member_rows(tickets, sp, include=["acc-park"])}
 
 
-def test_lead_wait_and_confirm(rp, ja):
+def test_lead_wait_and_confirm(rp_time, rp_period, rp_fetch, rp_metrics, rp_message, ja):
     """팀장 확인 대기는 기간 끝 ready-to-done ticket, 팀장 확인 시간은 팀장 계정의 전환만 셈.
 
     팀장 확인 시간에서 자동 보류 전환(진입 뒤 전환 전 마지막 검수 comment가 자동 보류)은 뺌.
     """
     rtd, ip = "ready-to-done", "In Progress"
     tickets = load(
-        rp,
+        rp_fetch,
         {
             "W1": ticket(  # 12-24(목) 진입 -> 12-31(목)까지 영업일 5일(25, 28, 29, 30, 31)
                 status=rtd,
@@ -892,42 +930,46 @@ def test_lead_wait_and_confirm(rp, ja):
             ),
         },
     )
-    sp = month(rp, "2026-12")
-    assert rp.lead_wait(tickets, sp[1]) == (3, 5)
-    assert rp.lead_wait([], sp[1]) == (0, 0)
-    assert sorted(rp.lead_confirm_minutes(tickets, sp, LEAD_ID)) == [30, 60, 180, 1440]
-    assert rp.lead_confirm_minutes(tickets, sp, "") == []
-    assert rp.business_days(rp.dt.datetime(2026, 12, 4, 18, tzinfo=rp.KST), sp[1]) == 19  # precheck와 같은 규칙
+    sp = month(rp_period, "2026-12")
+    assert rp_metrics.lead_wait(tickets, sp[1]) == (3, 5)
+    assert rp_metrics.lead_wait([], sp[1]) == (0, 0)
+    assert sorted(rp_metrics.lead_confirm_minutes(tickets, sp, LEAD_ID)) == [30, 60, 180, 1440]
+    assert rp_metrics.lead_confirm_minutes(tickets, sp, "") == []
+    assert (
+        rp_metrics.business_days(rp_message.dt.datetime(2026, 12, 4, 18, tzinfo=rp_time.KST), sp[1]) == 19
+    )  # precheck와 같은 규칙
 
 
-def test_lead_wait_counts_until_now(rp):
+def test_lead_wait_counts_until_now(rp_time, rp_fetch, rp_message):
     """달 중간 실행이면 팀장 확인 대기의 최장 영업일을 실행 시각까지만 셈. 실행 시각 뒤 진입과 생성은 뺌."""
     rtd, ip = "ready-to-done", "In Progress"
     tickets = load(
-        rp,
+        rp_fetch,
         {
             "W1": ticket(created="2026-11-02T09:00", status=rtd, changelog=[change("2026-12-01T09:00", ip, rtd, KIM)]),
             "W2": ticket(created="2026-11-02T09:00", status=rtd, changelog=[change("2026-12-20T09:00", ip, rtd, KIM)]),
             "NEW": ticket(created="2026-12-15T09:00", status=rtd),
         },
     )
-    mid = rp.Report(tickets, "2026-12", LEAD_ID, now=rp.dt.datetime(2026, 12, 10, 12, tzinfo=rp.KST))
+    mid = rp_message.Report(
+        tickets, "2026-12", LEAD_ID, now=rp_message.dt.datetime(2026, 12, 10, 12, tzinfo=rp_time.KST)
+    )
     assert "• 팀장 확인 대기: 1건(최장 7영업일)" in mid.monthly_message()  # 12-02–12-10의 영업일
     assert "- 팀장 확인 대기: 1건(최장 7영업일)" in mid.summary_lines()
-    full = rp.Report(tickets, "2026-12", LEAD_ID)  # 실행 시각 2027-01-01(clock fixture): 기간 끝까지 셈
+    full = rp_message.Report(tickets, "2026-12", LEAD_ID)  # 실행 시각 2027-01-01(clock fixture): 기간 끝까지 셈
     assert "• 팀장 확인 대기: 3건(최장 22영업일)" in full.monthly_message()  # 12-02–12-31의 영업일
 
 
-def test_idle_status_names(rp):
+def test_idle_status_names(rp_period, rp_fetch, rp_message):
     """업데이트 없음은 기간 끝 상태 이름으로 STATUS_ORDER 순(목록 밖 상태는 뒤에 이름 순), 두 줄 이내로 적음."""
     old = "2026-10-01T09:00"
     names = ["QA", "ready-to-done", "To Do", "In Progress", "In Progress"]
-    tickets = load(rp, {f"INNO-{i}": ticket(created=old, status=n) for i, n in enumerate(names)})
-    lines = rp.Report(tickets, "2026-12", LEAD_ID).overview_lines(month(rp, "2026-12"))
+    tickets = load(rp_fetch, {f"INNO-{i}": ticket(created=old, status=n) for i, n in enumerate(names)})
+    lines = rp_message.Report(tickets, "2026-12", LEAD_ID).overview_lines(month(rp_period, "2026-12"))
     assert lines[2:4] == ["    ◦ 업데이트 없음 5개: To Do 1, In Progress 2", "    ◦ ready-to-done 1, QA 1"]
     many = [f"상태{i:02d}" for i in range(12)]
-    tickets = load(rp, {f"INNO-{i}": ticket(created=old, status=n) for i, n in enumerate(many)})
-    lines = rp.Report(tickets, "2026-12", LEAD_ID).overview_lines(month(rp, "2026-12"))
+    tickets = load(rp_fetch, {f"INNO-{i}": ticket(created=old, status=n) for i, n in enumerate(many)})
+    lines = rp_message.Report(tickets, "2026-12", LEAD_ID).overview_lines(month(rp_period, "2026-12"))
     assert lines[2:5] == [
         "    ◦ 업데이트 없음 12개: 상태00 1, 상태01 1, 상태02 1, 상태03 1",
         "    ◦ 상태04 1, 상태05 1, 상태06 1, 상태07 1, 상태08 1, 외 3종",
@@ -935,34 +977,36 @@ def test_idle_status_names(rp):
     ]
 
 
-def test_pr_search_failure(rp, sample, monkeypatch, no_gh):
+def test_pr_search_failure(rp_fetch, rp_message, rp_run, sample, monkeypatch, no_gh):
     """GH_TOKEN이 없거나 gh가 실패하면 None. 그때 PR 추가를 업데이트에서 빼고 월간 메시지에 한 줄 적음."""
     monkeypatch.delenv("GH_TOKEN", raising=False)
-    assert no_gh("everex-ai", rp.dt.date(2026, 11, 30), rp.dt.date(2026, 12, 31)) is None
+    assert no_gh("everex-ai", rp_message.dt.date(2026, 11, 30), rp_message.dt.date(2026, 12, 31)) is None
     calls = []
 
     def fake_run(args, **kw):
         calls.append(args)
-        return rp.subprocess.CompletedProcess(args, 1, "", "HTTP 401")
+        return rp_fetch.subprocess.CompletedProcess(args, 1, "", "HTTP 401")
 
     monkeypatch.setenv("GH_TOKEN", "x")
-    monkeypatch.setattr(rp.subprocess, "run", fake_run)
-    assert no_gh("everex-ai", rp.dt.date(2026, 11, 30), rp.dt.date(2026, 12, 31)) is None
+    monkeypatch.setattr(rp_fetch.subprocess, "run", fake_run)
+    assert no_gh("everex-ai", rp_message.dt.date(2026, 11, 30), rp_message.dt.date(2026, 12, 31)) is None
     assert calls == [
         ["gh", "search", "prs", "--owner", "everex-ai", "--created", "2026-11-30..2026-12-31"]
         + ["--json", "title,createdAt", "--limit", "1000"]
     ]
     out = '[{"title": "INNO-1 a", "createdAt": "2026-12-01T00:00:00Z"}]'
-    monkeypatch.setattr(rp.subprocess, "run", lambda args, **kw: rp.subprocess.CompletedProcess(args, 0, out, ""))
-    assert no_gh("everex-ai", rp.dt.date(2026, 11, 30), rp.dt.date(2026, 12, 31)) == [
+    monkeypatch.setattr(
+        rp_fetch.subprocess, "run", lambda args, **kw: rp_fetch.subprocess.CompletedProcess(args, 0, out, "")
+    )
+    assert no_gh("everex-ai", rp_message.dt.date(2026, 11, 30), rp_message.dt.date(2026, 12, 31)) == [
         {"title": "INNO-1 a", "createdAt": "2026-12-01T00:00:00Z"}
     ]
     seen = []
     summ = Summ()
-    msgs = rp.run_report(
+    msgs = rp_run.run_report(
         FakeJira(sample, SUBTASKS), "2026-12", LEAD_ID, summ, pr_search=lambda *a: seen.append(a) or None
     )
-    assert seen == [("everex-ai", rp.dt.date(2026, 11, 30), rp.dt.date(2026, 12, 31))]
+    assert seen == [("everex-ai", rp_message.dt.date(2026, 11, 30), rp_message.dt.date(2026, 12, 31))]
     assert block(msgs[0], "*팀 전체*", 4) == [
         "• 기존 ticket 10개",
         "    ◦ 업데이트 6개(그중 done 전환 2개)",  # PR 추가만 있는 INNO-113이 빠짐
@@ -973,7 +1017,7 @@ def test_pr_search_failure(rp, sample, monkeypatch, no_gh):
     assert "- PR 검색 실패: PR 추가는 업데이트에서 뺌" in summ.extra
 
 
-def test_many_members_fold_into_others(rp, ja):
+def test_many_members_fold_into_others(rp_run, ja):
     """담당자가 많으면 메시지가 40줄을 넘지 않게 앞 담당자만 적고 나머지는 "외 n명"으로 줄임."""
     people = [
         {"accountId": f"acc-{i:02d}", "displayName": f"담당{i:02d}", "accountType": "atlassian"} for i in range(30)
@@ -982,7 +1026,7 @@ def test_many_members_fold_into_others(rp, ja):
         f"INNO-{i + 1}": ticket(who=who, comments=[review(ja, "2026-12-03T10:00", "pass", checks(T1="pass"))])
         for i, who in enumerate(people)
     }
-    for msg in rp.run_report(FakeJira(specs), "2026-12", LEAD_ID, Summ()):
+    for msg in rp_run.run_report(FakeJira(specs), "2026-12", LEAD_ID, Summ()):
         lines = msg.splitlines()
         assert len(lines) <= 40
         assert_line_length(msg)
@@ -993,7 +1037,7 @@ def test_many_members_fold_into_others(rp, ja):
         assert shown[0].startswith("• 담당00: 1/1")
 
 
-def test_description_edit_outside_deliverables_only(rp):
+def test_description_edit_outside_deliverables_only(rp_parse):
     """결과 산출물 구역만 바뀐 description 수정(jira-doc의 set_section)은 업데이트로 세지 않음."""
     base = "h2. 진행 배경\n배경\n\nh2. 결과 산출물\n이전 결과\n\nh2. 참고\n링크"
 
@@ -1010,16 +1054,16 @@ def test_description_edit_outside_deliverables_only(rp):
         edit("2026-12-03T10:00", base, base.replace("링크", "새 링크")),  # 구역 밖이 바뀜
         edit("2026-12-04T10:00", None, "h2. 진행 배경\n처음 작성"),  # 처음 작성
     ]
-    assert [t.day for t in rp.description_edits(log)] == [3, 4]
+    assert [t.day for t in rp_parse.description_edits(log)] == [3, 4]
 
 
-def test_new_ticket_statuses_and_worst_case_lines(rp):
+def test_new_ticket_statuses_and_worst_case_lines(rp_run):
     """새 ticket 상태가 많아도 줄마다 50자 이내이고, 하위 줄은 두 줄 이내."""
     statuses = ["To Do", "In Progress", "ready-to-done", "done", "Backlog"]
     five = {f"INNO-{i}": ticket(created="2026-12-10T10:00", status=st) for i, st in enumerate(statuses, 1)}
-    monthly = rp.run_report(FakeJira(five), "2026-11", LEAD_ID, Summ())[0]  # 12월 생성: 11월 보고에는 안 나옴
+    monthly = rp_run.run_report(FakeJira(five), "2026-11", LEAD_ID, Summ())[0]  # 12월 생성: 11월 보고에는 안 나옴
     assert "• 새 ticket 0개" in monthly
-    monthly = rp.run_report(FakeJira(five), "2026-12", LEAD_ID, Summ())[0]
+    monthly = rp_run.run_report(FakeJira(five), "2026-12", LEAD_ID, Summ())[0]
     assert block(monthly, "• 새 ticket 5개", 2) == [
         "    ◦ To Do 1, In Progress 1, ready-to-done 1, done 1",
         "    ◦ Backlog 1",
@@ -1027,13 +1071,13 @@ def test_new_ticket_statuses_and_worst_case_lines(rp):
     assert_line_length(monthly)
 
 
-def test_worst_case_stays_within_40_lines(rp, ja, monkeypatch):
+def test_worst_case_stays_within_40_lines(rp_fetch, rp_text, rp_run, ja, monkeypatch):
     """선택 줄이 모두 나와도 월간 묶음은 40줄이고, 팀원별 절에 담당자 한 명과 "외 n명"이 남음.
 
     선택 줄: 업데이트 없음 두 줄, PR 상한, 새 ticket 하위 두 줄, 검색 상한, 비용 기록 없음, Top3 세 ticket.
     담당자는 20명이다.
     """
-    monkeypatch.setattr(rp, "SEARCH_LIMIT", 1)
+    monkeypatch.setattr(rp_fetch, "SEARCH_LIMIT", 1)
     people = [
         {"accountId": f"acc-{i:02d}", "displayName": f"담당{i:02d}", "accountType": "atlassian"} for i in range(20)
     ]
@@ -1057,7 +1101,7 @@ def test_worst_case_stays_within_40_lines(rp, ja, monkeypatch):
     idle = [n for n in names if n not in ("done", "Backlog", "Deleted")]
     specs |= {f"INNO-{200 + i}": ticket(created="2026-10-01T09:00", status=n) for i, n in enumerate(idle)}
     prs = [{"title": "x", "createdAt": "2026-12-01T00:00:00Z"}] * 1000
-    msgs = rp.run_report(FakeJira(specs), "2026-12", LEAD_ID, Summ(), pr_search=lambda *a: prs)
+    msgs = rp_run.run_report(FakeJira(specs), "2026-12", LEAD_ID, Summ(), pr_search=lambda *a: prs)
     monthly = msgs[0]
     assert "• PR 검색이 상한 1000건에 닿음" in monthly
     assert "• 검색 결과 상한 1개에 닿음: 빠진 ticket 있을 수 있음" in monthly
@@ -1081,24 +1125,24 @@ def test_worst_case_stays_within_40_lines(rp, ja, monkeypatch):
     ]
     assert len(monthly.splitlines()) == 40
     # 남은 줄이 3줄 미만이면 절 제목과 요약 한 줄만 적음
-    assert rp._fit_members("순서", [["• a"]] * 4, 2) == ["*팀원별*", "• 담당자 4명: 줄 수 상한으로 생략"]
-    assert rp._fit_members("순서", [], 2) == ["*팀원별*", "• 기록 없음"]
+    assert rp_text._fit_members("순서", [["• a"]] * 4, 2) == ["*팀원별*", "• 담당자 4명: 줄 수 상한으로 생략"]
+    assert rp_text._fit_members("순서", [], 2) == ["*팀원별*", "• 기록 없음"]
     for msg in msgs:
         assert len(msg.splitlines()) <= 40
         assert [x for x in msg.splitlines() if x.startswith("*")] == SECTIONS
         assert_line_length(msg)
 
 
-def test_long_member_name_is_cut(rp, ja):
+def test_long_member_name_is_cut(rp_run, ja):
     long = {"accountId": "acc-long", "displayName": "가나다라마바사아자차카타파하", "accountType": "atlassian"}
     specs = {"INNO-1": ticket(who=long, comments=[review(ja, "2026-12-03T10:00", "pass", checks(T1="pass"))])}
-    for msg in rp.run_report(FakeJira(specs), "2026-12", LEAD_ID, Summ()):
+    for msg in rp_run.run_report(FakeJira(specs), "2026-12", LEAD_ID, Summ()):
         assert "• 가나다라마바사아자차카타…: 1/1" in msg
         assert "파하" not in msg
 
 
-def test_monthly_message(rp, sample):
-    msgs = report(rp, sample)
+def test_monthly_message(rp_run, sample):
+    msgs = report(rp_run, sample)
     assert len(msgs) == 3
     monthly = msgs[0]
     assert_shape(monthly, "[2026-12 jira-doc 월간 보고]", "2026-12-01–2026-12-31")
@@ -1142,8 +1186,8 @@ def test_monthly_message(rp, sample):
     ]
 
 
-def test_quarterly_and_yearly_messages(rp, sample):
-    _, quarter, year = report(rp, sample)
+def test_quarterly_and_yearly_messages(rp_run, sample):
+    _, quarter, year = report(rp_run, sample)
     assert_shape(quarter, "[2026 Q4 jira-doc 분기 보고]", "2026-10-01–2026-12-31")
     assert quarter.splitlines()[2:] == [
         "*팀장 업무*",
@@ -1213,31 +1257,43 @@ def test_quarterly_and_yearly_messages(rp, sample):
     ]
 
 
-def test_candidate_mark_and_wrap(rp):
-    mark = rp.Report.candidate_mark
-    assert mark(rp.Candidate("a", [("INNO-1", 2)], [])) == "후보(A)"
-    assert mark(rp.Candidate("a", [], [("T2", 3), ("R4", 2), ("T4", 2)])) == "후보(B: T2, R4 외 1)"
-    assert rp._wrap("갈래: ", ["a" * 20, "b" * 20, "c" * 20]) == ["갈래: " + "a" * 20 + ", " + "b" * 20, "c" * 20]
-    assert rp._wrap("갈래: ", []) == []
-    assert rp._capped_wrap(["a" * 20, "b" * 20, "c" * 20], 1, "앞: ") == ["앞: " + "a" * 20 + ", 외 2종"]
-    assert rp._capped_wrap([], 2, "앞: ") == []
+def test_candidate_mark_and_wrap(rp_model, rp_text, rp_message):
+    mark = rp_message.Report.candidate_mark
+    assert mark(rp_model.Candidate("a", [("INNO-1", 2)], [])) == "후보(A)"
+    assert mark(rp_model.Candidate("a", [], [("T2", 3), ("R4", 2), ("T4", 2)])) == "후보(B: T2, R4 외 1)"
+    assert rp_text._wrap("갈래: ", ["a" * 20, "b" * 20, "c" * 20]) == ["갈래: " + "a" * 20 + ", " + "b" * 20, "c" * 20]
+    assert rp_text._wrap("갈래: ", []) == []
+    assert rp_text._capped_wrap(["a" * 20, "b" * 20, "c" * 20], 1, "앞: ") == ["앞: " + "a" * 20 + ", 외 2종"]
+    assert rp_text._capped_wrap([], 2, "앞: ") == []
 
 
-def test_seconds_and_token_count(rp):
+def test_seconds_and_token_count(rp_text):
     """자동 검수 소요 시간(평균, 최소, 최대 초, 건수)과 토큰 단위 표기."""
-    assert rp._seconds([2, 6.5, 15]) == "평균 470초(120–900초, 3건)"
-    assert rp._seconds([0.25]) == "평균 15초(15–15초, 1건)"
-    assert rp._seconds([]) == "-"
+    assert rp_text._seconds([2, 6.5, 15]) == "평균 470초(120–900초, 3건)"
+    assert rp_text._seconds([0.25]) == "평균 15초(15–15초, 1건)"
+    assert rp_text._seconds([]) == "-"
     nums = [0, 999, 1000, 1300, 5000, 61000, 235000, 10**8, 123_000_000]
-    assert [rp._count(n) for n in nums] == ["0", "999", "1.0천", "1.3천", "5.0천", "6.1만", "23.5만", "1.0억", "1.2억"]
+    assert [rp_text._count(n) for n in nums] == [
+        "0",
+        "999",
+        "1.0천",
+        "1.3천",
+        "5.0천",
+        "6.1만",
+        "23.5만",
+        "1.0억",
+        "1.2억",
+    ]
 
 
-def test_claude_cost_change_and_high_mark(rp):
+def test_claude_cost_change_and_high_mark(rp_fetch, rp_message):
     """API 환산 금액의 직전 기간 대비 %(+, -, 0), 직전 기록 없음. 사용량 많음 표시는 월간 묶음에만 붙음."""
 
     def rep(prev: float, cur: float):
         runs = [run("2026-11-10T10:00", 1, prev)] if prev else []
-        return rp.Report(load(rp, {"INNO-1": ticket(runs=[*runs, run("2026-12-10T10:00", 2, cur)])}), "2026-12", "")
+        return rp_message.Report(
+            load(rp_fetch, {"INNO-1": ticket(runs=[*runs, run("2026-12-10T10:00", 2, cur)])}), "2026-12", ""
+        )
 
     def cost_line(r, monthly: bool = True) -> str:
         return r.claude_lines(r.cur, r.prev, "전월", monthly=monthly)[2]
@@ -1254,10 +1310,10 @@ def test_claude_cost_change_and_high_mark(rp):
     assert cost_line(r) == "• API 환산 금액: 3.62 USD(전월 대비 +81%)"
 
 
-def test_quarterly_and_yearly_compare_previous_period(rp):
+def test_quarterly_and_yearly_compare_previous_period(rp_fetch, rp_message):
     """분기 묶음은 전 분기, 연간 묶음은 전년과 비교하고 연간 묶음은 분기별 줄을 둠."""
     runs = [run("2025-06-01T10:00", 1, 1.0), run("2026-09-01T10:00", 2, 2.0), run("2026-12-01T10:00", 3, 3.0)]
-    r = rp.Report(load(rp, {"INNO-1": ticket(runs=runs)}), "2026-12", LEAD_ID)
+    r = rp_message.Report(load(rp_fetch, {"INNO-1": ticket(runs=runs)}), "2026-12", LEAD_ID)
     quarter, year = r.quarterly_message(), r.yearly_message()
     assert "• API 환산 금액: 3.00 USD(전 분기 대비 +50%)" in quarter.splitlines()
     assert block(year, "*Claude 활용 요약*", 3)[1:] == [
@@ -1266,11 +1322,11 @@ def test_quarterly_and_yearly_compare_previous_period(rp):
     ]
 
 
-def test_top_ticket_lines(rp):
+def test_top_ticket_lines(rp_period, rp_fetch, rp_text):
     """Top3: 비용 합 순, 같은 비용이면 키 순, 0회 갈래 뺌, 제목 20자 자르기, 둘째 줄 50자에 맞춰 제목 줄이기/빼기."""
-    sp = month(rp, "2026-12")
+    sp = month(rp_period, "2026-12")
     tickets = load(
-        rp,
+        rp_fetch,
         {
             "INNO-10": ticket(  # 1.00 USD(비용 없는 실행은 0)
                 who=KIM, title="가" * 25, runs=[run("2026-12-01T10:00", 1, 1.0), run("2026-12-02T10:00", 2, None)]
@@ -1283,7 +1339,7 @@ def test_top_ticket_lines(rp):
             "INNO-3": ticket(who=PARK, runs=[run("2026-11-03T10:00", 1, 5.0)]),  # 기간 안 실행 없음
         },
     )
-    assert rp.top_ticket_lines(tickets, sp) == [
+    assert rp_text.top_ticket_lines(tickets, sp) == [
         "• Claude 사용 ticket Top3(API 환산 금액 순)",
         "    ◦ (1) INNO-10 Task 김담당 1.00 USD",
         "        ◦ " + "가" * 20 + "… | 첫 검수 1회, 반려 cycle 재검수 1회",
@@ -1299,13 +1355,13 @@ def test_top_ticket_lines(rp):
     ]
     four = [*three, run("2026-12-03T10:00", 2, 0.3), run("2026-12-04T10:00", 3, 0.3)]
     tickets = load(
-        rp,
+        rp_fetch,
         {
             "INNO-1": ticket(title="다" * 25, runs=three),  # 사유 28자: 제목을 18자 + "…"로 줄임
             "INNO-2": ticket(title="라" * 25, runs=four),  # 사유 45자: 제목 자리 2자라 사유만
         },
     )
-    lines = rp.top_ticket_lines(tickets, sp)
+    lines = rp_text.top_ticket_lines(tickets, sp)
     assert lines[1:] == [
         "    ◦ (1) INNO-2 Task - 1.50 USD",
         "        ◦ 첫 검수 1회, 반려 cycle 재검수 2회, 재실행·실패 1회, 정리 모드 1회",
@@ -1313,20 +1369,20 @@ def test_top_ticket_lines(rp):
         "        ◦ " + "다" * 18 + "… | 첫 검수 1회, 재실행·실패 1회, 정리 모드 1회",
     ]
     assert_line_length("\n".join(lines))
-    assert rp.top_ticket_lines(tickets, month(rp, "2026-11")) == ["• Claude 사용 ticket Top3: -"]
+    assert rp_text.top_ticket_lines(tickets, month(rp_period, "2026-11")) == ["• Claude 사용 ticket Top3: -"]
     # 세 자리 횟수: 사유만으로 50자를 넘으면 뒤 갈래부터 "외 n종"으로 줄임
     many = [run(f"2026-12-01T09:{i % 60:02d}", None, 0.01) for i in range(100)]  # 첫 검수 100회(requestNo 없음)
     many += [run(f"2026-12-01T10:{i % 60:02d}", 2 + i, 0.01) for i in range(100)]  # 반려 cycle 재검수 100회
     many += [run(f"2026-12-02T10:{i % 60:02d}", 1, 0.01, verdict="failed") for i in range(100)]  # 재실행·실패
     many += [run(f"2026-12-03T10:{i % 60:02d}", None, 0.01, mode="digest", verdict="digest") for i in range(100)]
-    lines = rp.top_ticket_lines(load(rp, {"INNO-1": ticket(title="마" * 25, runs=many)}), sp)
+    lines = rp_text.top_ticket_lines(load(rp_fetch, {"INNO-1": ticket(title="마" * 25, runs=many)}), sp)
     assert lines[2] == "        ◦ 첫 검수 100회, 반려 cycle 재검수 100회, 재실행·실패 100회, 외 1종"
     assert_line_length("\n".join(lines))
 
 
-def test_summary_extra_has_team_totals_only(rp, sample):
+def test_summary_extra_has_team_totals_only(rp_run, sample):
     summ = Summ()
-    body = "\n".join(report(rp, sample, summ=summ))
+    body = "\n".join(report(rp_run, sample, summ=summ))
     extra = "\n".join(summ.extra)
     assert "김담당" in body and "이담당" in body
     for person in (KIM, LEE, PARK):
@@ -1347,17 +1403,17 @@ def test_summary_extra_has_team_totals_only(rp, sample):
     assert "- 분기 판정 일치율: 5/6건, 83.3%" in extra
 
 
-def test_search_fields_replace_issue_calls(rp, sample):
+def test_search_fields_replace_issue_calls(rp_run, sample):
     """ticket 필드는 검색 결과로 받고 ticket마다 Jira.issue를 부르지 않음(FakeJira에 issue 없음)."""
     fake = FakeJira(sample)
-    rp.run_report(fake, "2026-12", LEAD_ID, Summ())
+    rp_run.run_report(fake, "2026-12", LEAD_ID, Summ())
     want = {"assignee", "parent", "issuetype", "description", "status", "summary", "created"}
     assert set(fake.searches[0][1]) >= want
 
 
-def test_sample_body(rp, sample):
+def test_sample_body(rp_run, sample):
     """샘플 메시지(월 2026-12). `pytest -s`로 실행하면 출력됨."""
-    msgs = report(rp, sample)
+    msgs = report(rp_run, sample)
     body = "\n\n".join(msgs)
     print(body)
     assert "~" not in body
