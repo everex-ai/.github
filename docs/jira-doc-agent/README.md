@@ -29,7 +29,7 @@ Jira ticket의 결과 문서를 작성하고 검수한다.
   - 확인 결과 알림 모드: 팀장이 ticket을 전환하면 담당자에게 Slack을 보낸다.
     - 전환: ready-to-done에서 Done(통과) 또는 In Progress(보류)
 - 알림은 즉시, 주간, 월간, 분기, 연간의 다섯 주기로 나간다.
-  - 정기 실행은 수요일 cron과 매월 1일 cron 둘이다(`.github/workflows/jira-doc.yml:13-14`).
+  - 정기 실행은 수요일 cron과 매월 1일 cron 둘이다(`.github/workflows/jira-doc.yml:14-15`).
     - cron: 정해진 시각에 Actions 워크플로를 실행하는 일정
   - 알림 목록과 지표 정의는 `docs/jira-doc-agent/alerts.md`에 있다.
 - 독자별로 읽을 절은 아래와 같다.
@@ -69,8 +69,8 @@ Jira ticket의 결과 문서를 작성하고 검수한다.
   - 확인 결과 알림 모드(decision)
 - Jira 워크플로: ticket의 상태와 상태 사이 전환의 체계
 - Jira 전환: ticket 상태를 바꾸는 Jira 동작
-  - 이름과 도착 상태는 INNO-29의 전환 목록과 같다.
-    - 터미널에서는 `scripts/jira.sh transitions INNO-29`로 조회한다.
+  - 이름과 도착 상태는 INNO 프로젝트 ticket의 전환 목록과 같다.
+    - 터미널에서는 `scripts/jira.sh transitions <ticket 키>`로 조회한다.
   - request 전환: 담당자가 ticket을 ready-to-done으로 보내는 전환
     - 출발 상태는 In Progress다.
   - stop 전환: 진행 중인 ticket을 Backlog로 보내는 전환
@@ -132,8 +132,10 @@ Jira ticket의 결과 문서를 작성하고 검수한다.
 - 영업일: 토요일과 일요일만 뺀 날
   - 공휴일은 빼지 않는다(`scripts/src/jira/precheck/history.py`의 `business_days_since`).
 - jira-doc 기록: ticket마다 저장하는 Jira issue property `ai-doc-agent`
-  - 들어 있는 값은 아래 네 가지다(`scripts/src/jira/issue.py`의 `apply_issue`).
-    - 네 가지: 마지막 실행 시각, 사람 입력의 해시, 마지막 검수 결과, 실행 기록 `runs`
+  - 들어 있는 값은 아래 일곱 가지다(`scripts/src/jira/issue.py`의 `apply_issue`, `apply_decision`).
+    - 실행: 마지막 실행 시각, 마지막 실행 모드(`lastMode`), 사람 입력의 해시
+    - 검수: 마지막 검수 결과, 문서화 리뷰 보완 필요 항목(`docFails`)
+    - 기록: 실행 기록 `runs`, 알린 팀장 전환 시각(`lastDecisionAt`)
     - 마지막 실행 시각, 사람 입력의 해시
       - 사람 입력: 사람 구역, 사람 comment, sub-task, PR, 상태 전환(`scripts/src/jira/collect.py`의 `HUMAN_SECTIONS`)
     - 마지막 검수 결과
@@ -180,10 +182,11 @@ cron은 수요일과 매월 1일에 실행된다.
 
 | 실행 모드 | 시작 | 하는 일 | CI agent |
 |---|---|---|---|
-| 검수 모드(review) | F1, Actions 수동 실행(ticket 키 필수) | TL;DR, 결과 산출물 구역(Task만), 검수 comment, 문서화 리뷰 comment(관찰 모드), 상태 전환과 Slack 알림 | 실행 |
+| 검수 모드(review) | F1, Actions 수동 실행(ticket 키 필수) | TL;DR, 결과 산출물 구역(Task만), 검수 comment, 문서화 리뷰 comment(관찰 모드), Slack 알림 | 실행 |
 | 정리 모드(digest) | F3, Actions 수동 실행(ticket 키 필수) | 그 ticket의 TL;DR과 결과 산출물 구역을 지금까지의 기록으로 다시 작성. comment와 검수 결과 없음 | 실행 |
 | 주간 점검 모드(alerts) | 매주 수요일 09:00 KST(한국 표준시) cron, Actions 수동 실행 | 누락 항목(R4, A1, A3)을 Slack 메시지 한 건으로 보고. 토큰(인증 키) 만료 30일 전부터 팀장 채널로 알림 | 실행하지 않음 |
 | 보고 모드(report) | 매월 1일 09:00 KST cron, Actions 수동 실행(`month` 입력) | 지난달(또는 `month`)의 정기 보고 메시지를 팀장 채널로 보냄 | 실행하지 않음 |
+| 확인 결과 알림 모드(decision) | F4, Actions 수동 실행(ticket 키 필수) | 팀장의 전환 결과를 담당자에게 연동 채널로 알림 | 실행하지 않음 |
 
 - 이 표의 근거는 아래와 같다.
   - `scripts/collect.py`의 `main`
@@ -191,7 +194,9 @@ cron은 수요일과 매월 1일에 실행된다.
   - `scripts/src/jira/report/run.py`의 `run_report`
   - Actions 워크플로의 `schedule`, `MODE`, 각 스텝의 `if`
 - 정리 모드를 ticket 키 없이 실행하면 1단계가 종료 코드 1로 끝난다(`scripts/collect.py`의 `main`).
-  - 알림은 보내지 않는다. Actions 실행 상태가 failure로 표시된다.
+  - Actions 실행 상태가 failure로 표시된다.
+  - 5단계 실패 알림이 원인 "기록 없음"으로 나간다.
+    - 5단계: 앞 단계가 실패하면 실행되는 알림 단계(아래 "실행 실패 알림(5단계)" 절)
   - 예전에는 최근 3일 안에 바뀐 ticket을 모아 정리했다.
     - 누락 알림 comment도 게시했다.
     - 2026-10 알림 체계 재구성 때 없앴다(근거: commit `b9a7e28`의 `scripts/collect.py`의 `main`).
@@ -215,6 +220,7 @@ request 전환부터 ticket 갱신까지 아래 단계가 차례로 실행된다
 | 3-2. 출력 저장 | `scripts/save_output.py` | 구조화 출력, precheck.json, CI agent 실행 결과 파일 | `out/<ticket 키>/`의 verdict.json, tldr.wiki, comment.wiki, `_agent_error.txt`, `out/_usage.json`(Claude 사용량). 빠진 부분이 있으면 `retry=true` |
 | 3-R. 다시 실행 | CI agent, `scripts/save_output.py` | 3단계, 3-2 단계와 같음 | `out/` 파일을 덮어씀 |
 | 4. 반영 | `scripts/apply.py` | `ctx/` 파일, `out/` 파일 | Jira 반영, Slack 알림, Summary 탭 |
+| 5. 실패 알림 | `scripts/apply.py --mode failure` | `out/_run_error.json`, `out/_failure_notified` | 앞 단계가 실패했을 때만 연동 채널로 실패 알림 |
 
 - 이 표의 근거는 아래와 같다.
   - 1단계: `scripts/src/jira/collect.py`의 `collect_issue`, `prompts/rules.md`의 "입력 파일" 절
@@ -229,7 +235,7 @@ request 전환부터 ticket 갱신까지 아래 단계가 차례로 실행된다
     - 판정 없음, items의 `done` null, 빈 `tldr`, 빈 `comment`
     - items: 판정 객체 안의 예상 산출물별 결과 목록
   - 정리 모드는 다시 실행하지 않는다.
-  - 3-R 실행에는 3-1 단계 같은 실행 결과 요약 단계가 없다(`.github/workflows/jira-doc.yml:133-157`).
+  - 3-R 실행에는 3-1 단계 같은 실행 결과 요약 단계가 없다(`.github/workflows/jira-doc.yml:131-155`).
 - 4단계의 apply.py는 ticket마다 아래 순서로 처리한다(`scripts/src/jira/issue.py`의 `apply_issue`).
   1. verdict.json, tldr.wiki, comment.wiki, `_agent_error.txt`를 검사한다.
      - 문제가 있으면 실패로 처리하고 Jira에 반영하지 않는다("실패 처리" 절).
@@ -402,6 +408,8 @@ apply.py는 CI agent가 정한 검수 결과를 다시 정한다.
 ### 문서화 리뷰 comment
 
 - 문서화 리뷰 comment는 관찰 모드의 검수 모드에서만 게시된다(`scripts/src/jira/comment.py`의 `doc_review_comment`).
+  - 문서화 리뷰 항목이 하나도 없으면 게시하지 않는다(`scripts/src/jira/issue.py`의 `apply_issue`).
+  - Bug와 Issue는 CI agent가 항목을 내지 않으면 이 경우가 된다.
 - 구성은 아래와 같다.
   - 둘째 줄: `문서화 리뷰 결과(관찰 모드):` 뒤에 통과나 보완 필요가 굵게 표시된다.
   - 문서화 리뷰 항목의 검사 표와 항목별 피드백
@@ -432,6 +440,9 @@ apply.py는 CI agent가 정한 검수 결과를 다시 정한다.
 실행 모드마다 단계와 분기, 알림이 나가는 지점을 흐름도로 그렸다.
 
 - 주황 노드가 알림이다.
+- 어느 실행 모드든 단계가 실패하면 5단계 실패 알림이 나간다.
+  - 세부는 아래 "실행 실패 알림(5단계)" 절에 있다.
+  - 흐름도에는 그리지 않았다.
 
 ### 검수 모드 흐름도
 
@@ -543,6 +554,27 @@ flowchart TD
 | 단계 건너뜀 | Actions 워크플로 각 스텝의 `if`(`MODE`가 report) |
 | 계산과 메시지 | `scripts/src/jira/report/run.py`의 `run_report` |
 | 지표 정의 | `docs/jira-doc-agent/alerts.md`의 "지표 정의" 절 |
+
+### 확인 결과 알림 모드 흐름도
+
+```mermaid
+flowchart TD
+    A1["팀장 전환<br>ready-to-done → Done, In Progress"] --> F["F4: repository_dispatch"]
+    A2["Actions 수동 실행<br>(ticket 키, decision)"] --> J
+    F --> J["1–3-R 단계 건너뜀<br>4. apply.py가 그 ticket만 읽음"]
+    J --> L{"팀장 accountId"}
+    L -- "없음" --> W["보내지 않음<br>Summary 탭 경고"]
+    L -- "있음" --> C{"팀장이 한 전환이고<br>아직 알리지 않음"}
+    C -- "아니오" --> S["건너뜀"]
+    C -- "예" --> M["팀장 확인 결과 알림<br>연동 채널, 담당자"]
+    classDef alert fill:#ffe0b2,stroke:#e65100,color:#000
+    class M alert
+```
+
+| 분기나 노드 | 근거 |
+|---|---|
+| 단계 건너뜀 | Actions 워크플로 각 스텝의 `if`(`MODE`가 decision) |
+| 팀장 accountId, 전환 확인, 한 번만 알림 | `scripts/src/jira/issue.py`의 `apply_decision` |
 
 ## work type별 동작 흐름
 
@@ -682,14 +714,14 @@ flowchart LR
 
 | 화살표 | 가리키는 문장 |
 |---|---|
-| 워크플로 prompt → rules.md, 실행 모드 파일 | `.github/workflows/jira-doc.yml:92`("먼저 prompts/rules.md와 prompts/${{ env.MODE }}.md를 읽고"). 3-R 단계도 같음(`:142`) |
+| 워크플로 prompt → rules.md, 실행 모드 파일 | `.github/workflows/jira-doc.yml:103`("먼저 prompts/rules.md와 prompts/${{ env.MODE }}.md를 읽고"). 3-R 단계도 같음(`:140`) |
 | rules.md → common.md, work type 실행 모드 파일 | `prompts/rules.md:72-74`(공통 처리 순서 1단계) |
 | 실행 모드 파일 → rules.md의 공통 처리 순서 | `prompts/review.md:10`, `prompts/digest.md:12` |
 | common.md → deliverables.md(Task만) | `prompts/types/task/common.md:4`. `prompts/types/task/review.md:9`, `prompts/types/task/digest.md:10`도 가리킴 |
 | work type 실행 모드 파일 → common.md의 절 | 예: `prompts/types/task/review.md:12-13`("tldr 형식", "링크 추가 요청 문장") |
 | work type 검수 파일 → `prompts/review.md`의 절 | 예: `prompts/types/task/review.md:14`, `:17-19` |
 | work type 정리 파일 → `prompts/digest.md`의 "정리 모드 규칙" | 예: `prompts/types/task/digest.md:16` |
-| 스키마 → 3단계 | `.github/workflows/jira-doc.yml:68-79`, `:99`(`--json-schema`). 지시 파일에는 스키마를 읽으라는 문장이 없고 형식으로만 언급함(`prompts/rules.md:82`) |
+| 스키마 → 3단계 | `.github/workflows/jira-doc.yml:77-90`, `:110`(`--json-schema`). 지시 파일에는 스키마를 읽으라는 문장이 없고 형식으로만 언급함(`prompts/rules.md:82`) |
 
 - 이 그림은 지시 파일이 가리키는 순서다.
   - CI agent가 실제로 그 순서대로 읽었는지는 이 그림으로 알 수 없다.
@@ -699,7 +731,7 @@ flowchart LR
 ### CI agent의 권한
 
 - CI agent는 `ctx/`, `prompts/`, `schemas/`를 읽기만 한다.
-  - 3단계의 `--allowedTools`에는 읽기 규칙 `Read(ctx/**)`, `Read(prompts/**)`, `Read(schemas/**)`만 있다(`.github/workflows/jira-doc.yml:98`).
+  - 3단계의 `--allowedTools`에는 읽기 규칙 `Read(ctx/**)`, `Read(prompts/**)`, `Read(schemas/**)`만 있다(`.github/workflows/jira-doc.yml:109`).
   - `out/<ticket 키>/`의 파일은 3-2 단계의 save_output.py가 구조화 출력으로 만든다.
   - 구조화 출력에 없는 부분은 판정 없음 기본값으로 채운다(`scripts/src/jira/output/save.py`의 `build_verdict`).
 - 허용 규칙에 없는 도구 호출은 모두 자동으로 거부된다.
@@ -761,8 +793,8 @@ precheck.py는 스크립트 검사 10개와 docFacts를 계산한다(`scripts/sr
 | `ORG_READ_TOKEN` | secret | Organization 전체 repo의 Pull requests 읽기 권한이 있는 GitHub fine-grained PAT(권한과 대상 repo를 골라 발급하는 personal access token). 없으면 PR 수집을 건너뜀(`scripts/src/jira/collect.py`의 `gh`) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | secret | `claude setup-token`으로 발급한 Claude Team plan 토큰. 발급한 사람의 좌석(Team plan에서 구성원 한 명에게 배정된 사용 권한) 사용량 한도를 소모함(https://support.claude.com/en/articles/9266767-what-is-the-team-plan: "Usage limits on Team plans are per-member") |
 | `SLACK_WEBHOOK_URL` | secret | 주간 점검 메시지, 검수 뒤 Slack 알림, 팀장 확인 결과 알림, 실패 알림을 받을 Slack 채널의 Incoming Webhook URL |
-| `SLACK_USERS_JSON` | secret | Jira accountId를 키로, Slack 멤버 ID를 값으로 둔 JSON 문자열. 주간 점검 메시지, 검수 뒤 Slack 알림, 실패 알림의 멘션에 사용(`scripts/src/jira/slack.py`의 `load_slack_users`) |
-| `SLACK_LEAD_WEBHOOK_URL` | secret | 팀장 채널의 Incoming Webhook URL. 정기 보고 메시지와 토큰(인증 키) 만료 알림을 받음. 없으면 두 알림을 보내지 않고 Summary 탭에 남김 |
+| `SLACK_USERS_JSON` | secret | Jira accountId를 키로, Slack 멤버 ID를 값으로 둔 JSON 문자열. 주간 점검 메시지, 검수 뒤 Slack 알림, 팀장 확인 결과 알림, 실패 알림의 멘션에 사용(`scripts/src/jira/slack.py`의 `load_slack_users`) |
+| `SLACK_LEAD_WEBHOOK_URL` | secret | 팀장 채널의 Incoming Webhook URL. 정기 보고 메시지와 토큰(인증 키) 만료 알림을 받음. 없으면 두 알림을 보내지 않고 Summary 탭에 전송 결과 행만 남김(본문은 남기지 않음) |
 | `JIRA_DOC_GATE` | variable | `false`(관찰 모드). 게이트 모드에서는 `true` |
 | `JIRA_PROJECT_KEY` | variable | `INNO` |
 | `JIRA_LEAD_ACCOUNT_ID` | variable | 팀장의 Jira accountId |
@@ -779,6 +811,7 @@ precheck.py는 스크립트 검사 10개와 docFacts를 계산한다(`scripts/sr
        - 도착 상태: Done, In Progress
      - 조건(선택): User condition으로 실행한 사람을 팀장으로 제한
        - 조건이 없어도 apply.py가 팀장의 전환인지 확인한다(`scripts/src/jira/issue.py`의 `apply_decision`).
+       - variable `JIRA_LEAD_ACCOUNT_ID`가 비면 알림을 보내지 않고 Summary 탭에 경고를 남긴다.
      - 웹 요청 본문의 종류: `"event_type": "jira-doc-decision"`
        - `client_payload`의 `issueKey`는 F1과 같게 `{{issue.key}}`로 둔다.
 4. Jira 워크플로의 전환을 아래처럼 준비한다.
@@ -816,13 +849,15 @@ Jira에는 기록하지 않고 Slack 실패 알림으로 팀장에게 알린다.
       - 로그: `"subtype": "error_max_turns"`, 4단계의 `TL;DR 출력 없음`
 - 정리 모드에서 tldr.wiki가 없으면 실패로 처리하지 않는다.
   - Summary 탭에 "TL;DR 출력 없음"만 남긴다.
-- 상태 전환이나 Slack 전송의 실패는 ticket 실패가 아니다.
+- 검수 comment 게시나 Slack 전송의 실패는 ticket 실패가 아니다.
   - 실패 내용이 Summary 탭에 남는다(`scripts/src/jira/issue.py`의 `apply_issue`, `scripts/src/jira/slack.py`의 `slack_post`).
-  - 상태 전환 실패는 검수 comment에도 남는다.
 
 ### 실패한 ticket의 처리와 실패 알림 형식
 
 - 실패한 ticket에는 Jira에 아무것도 남기지 않는다(`scripts/src/jira/issue.py`의 `apply_issue`, `scripts/apply.py`의 `main`).
+  - 예외: jira-doc 기록 저장에서 Jira 오류가 나도 실패로 처리한다.
+    - 기록 저장은 검수 comment 게시 뒤에 한다.
+    - 이때는 TL;DR, 결과 산출물 구역, 검수 comment가 이미 반영된 뒤다.
   - 아래 다섯 가지를 하지 않는다.
     - comment, 상태 전환, 검수 뒤 Slack 알림
     - TL;DR 갱신, 결과 산출물 구역 갱신
@@ -850,9 +885,29 @@ Jira에는 기록하지 않고 Slack 실패 알림으로 팀장에게 알린다.
 - 실패가 하나라도 있으면 apply.py가 종료 코드 1로 끝난다(`scripts/apply.py`의 `main`).
   - 그래서 Actions 실행 상태가 failure가 된다.
 - Actions 워크플로 실행을 취소해도 3-2 단계와 4단계는 실행된다.
-  - 두 단계의 실행 조건에 `always()`가 있기 때문이다(`.github/workflows/jira-doc.yml:126`, 4단계의 `if`).
+  - 두 단계의 실행 조건에 `always()`가 있기 때문이다(`.github/workflows/jira-doc.yml:124`, 4단계의 `if`).
   - 검수 모드에서 3단계가 끝나기 전에 취소하면 구조화 출력이 없다.
     - 4단계가 "CI agent 판정 없음"으로 실패 처리하고 Slack 실패 알림을 보낸다.
+
+### 실행 실패 알림(5단계)
+
+- 앞 단계가 실패하면 5단계가 연동 채널로 실패 알림을 보낸다(`.github/workflows/jira-doc.yml`의 `5. 실패 알림`).
+  - 실행 조건은 `if: failure()`다.
+  - 모든 실행 모드에 적용된다.
+  - 3단계와 3-R 단계의 실패는 이 알림을 일으키지 않는다.
+    - 두 단계에는 `continue-on-error: true`가 있다(`.github/workflows/jira-doc.yml:97`, `:134`).
+    - `continue-on-error`: 스텝이 실패해도 워크플로를 실패로 치지 않는 설정
+    - 그 실패는 4단계의 ticket 실패 알림이 맡는다.
+- 실패 알림은 두 가지다.
+  - ticket 실패 알림: 검수·정리 모드에서 4단계가 반영하지 못한 ticket을 알린다.
+  - 실행 실패 알림: 모든 실행 모드에서 5단계가 단계 실패를 알린다.
+- 원인은 `out/_run_error.json`에서 읽는다(`scripts/src/common/github.py`의 `write_run_error`).
+  - 1단계와 4단계가 예외를 잡아 단계 이름과 오류 앞부분을 남긴다.
+  - 인자 검사로 끝난 실행은 파일이 없어 원인을 "기록 없음"으로 적는다.
+- 4단계가 ticket 실패 알림을 보냈으면 5단계는 보내지 않는다(`scripts/apply.py`의 `failure_notice`).
+  - 4단계가 전송에 성공했을 때 `out/_failure_notified`를 남긴다(`scripts/apply.py`의 `main`).
+- 알림 첫 줄은 `[jira-doc 실패] <실행 모드> 실행 실패 <팀장 멘션>`이다(`scripts/src/jira/slack.py`의 `run_failure_slack_text`).
+- Summary 탭에는 멘션을 뺀 사본을 남긴다.
 
 ### 다시 실행(3-R 단계)
 
@@ -882,23 +937,29 @@ Jira에는 기록하지 않고 Slack 실패 알림으로 팀장에게 알린다.
   - 형식: `[save] <ticket 키>: verdict=<값> 없음=<빠진 부분>`
   - tldr, comment, 실행 결과의 `result` 같은 Jira 기록 내용은 출력하지 않는다.
 
-## 시험 실행 (INNO-29)
+## 시험 실행
 
-시험 실행은 시험용 ticket(예: INNO-29)을 다섯 실행 모드로 실행하는 절차다.
+시험 실행은 시험용 ticket을 다섯 실행 모드로 실행하는 절차다.
 Actions 수동 실행으로 실행하고, 단계별 로그와 결과 문서를 확인한다.
 테스트 시나리오와 문서·코드 대조 항목은 `docs/jira-doc-agent/test-scenarios.md`에 있다.
 
+- 시험용 ticket은 실행할 때마다 새로 만든다.
+  - 지난 시험 ticket은 2026-10-19에 삭제했다.
+  - 만드는 방법: `docs/jira-doc-agent/test-scenarios.md`의 "시험 ticket 준비" 절
+  - 제목 머리말 `[jira-doc 테스트]`를 붙이면 정기 보고에서 빠진다(`scripts/src/constant/jira.py`의 `TEST_TITLE_PREFIXES`).
+- 아래 절차의 `<ticket 키>`는 새로 만든 시험 ticket의 키다.
+
 1. Actions 탭에서 Actions 워크플로 `jira-doc`을 고르고 Run workflow를 누른다.
-   - issueKey에 `INNO-29`, mode에 `review`를 넣는다.
+   - issueKey에 `<ticket 키>`, mode에 `review`를 넣는다.
 2. 로그에서 Jira 읽기를 확인한다.
-   - 1단계: `[collect] INNO-29: 수집 완료 (comment …)`(`scripts/src/jira/collect.py`의 `collect_issue`)
-   - 2단계: `[precheck] INNO-29 (Task): 예상 산출물 n개, 실패 …`(`scripts/src/jira/precheck/run.py`의 `run_issue_dir`)
+   - 1단계: `[collect] <ticket 키>: 수집 완료 (comment …)`(`scripts/src/jira/collect.py`의 `collect_issue`)
+   - 2단계: `[precheck] <ticket 키> (Task): 예상 산출물 n개, 실패 …`(`scripts/src/jira/precheck/run.py`의 `run_issue_dir`)
 3. Summary 탭의 "jira-doc 실행 결과" 표에서 Jira 반영을 확인한다.
-   - 행은 `| INNO-29 | Task | review | 통과 | … |` 꼴이다(`scripts/src/common/github.py`의 `Summary.row`).
+   - 행은 `| <ticket 키> | Task | review | 통과 | … |` 꼴이다(`scripts/src/common/github.py`의 `Summary.row`).
    - 결과 칸은 통과, 검토 요청, 보류, 실패 중 하나다.
    - 실패 행이 있으면 Slack 실패 알림 한 건이 가고 실행 상태가 failure가 된다.
      - 마지막 행 `| - | - | review | 전송 완료 | 실패 알림 ticket n건 |`이 실패 알림 전송 결과다(`scripts/apply.py`의 `main`).
-4. INNO-29를 열어 결과 문서를 확인한다.
+4. 시험 ticket을 열어 결과 문서를 확인한다.
    - TL;DR과 결과 산출물 구역이 바뀌었고, 진행 배경과 예상 산출물은 그대로다.
    - 검수 comment가 달렸다.
    - 관찰 모드이면 문서화 리뷰 comment도 달렸다.
@@ -906,7 +967,7 @@ Actions 수동 실행으로 실행하고, 단계별 로그와 결과 문서를 �
 5. 상태가 ready-to-done에 머무는지 확인한다.
    - 기준: "검수 결과와 ticket 상태 전환" 절의 표
    - Slack 알림은 `docs/jira-doc-agent/alerts.md`의 "주기별 알림" 절대로 가는지 확인한다.
-   - `scripts/jira.sh prop-get INNO-29` 출력의 `runs`에 이 실행의 기록이 있는지 확인한다.
+   - `scripts/jira.sh prop-get <ticket 키>` 출력의 `runs`에 이 실행의 기록이 있는지 확인한다.
 6. mode를 `digest`, issueKey에 ticket 키를 넣어 실행한다.
    - TL;DR과 결과 산출물 구역만 갱신되고 comment는 달리지 않는다.
      - F3과 같은 동작이다.
@@ -999,7 +1060,7 @@ jira-doc은 팀장 개인 계정과 만료가 있는 토큰으로 동작한다.
     - verdict.json이 없었기 때문이다.
     - INNO-29의 comment `57997`
   - 구조화 출력 전환 전 예: 실행 38221063946은 3단계가 건너뛰어졌다.
-    - 이유는 "시험 실행 (INNO-29)" 절의 워크플로 파일 조건이다.
+    - 이유는 "시험 실행" 절의 워크플로 파일 조건이다.
     - 3단계 로그: `Exiting due to workflow validation skip`
     - 4단계 로그: `[apply] INNO-47: 실패 … verdict.json 없음`
 - 구조화 출력 전환 전에는 apply.py가 종료 코드 0으로 끝났다.

@@ -12,8 +12,16 @@ SLACK_CLOSING = {
 ALERT_SECTIONS = [
     ("R4", "stop 사유 미기재", "담당자: stop 사유 comment 필요"),
     ("A1", "영업일 기준 5일 이상 활동 없음", "담당자: 진행 상황 comment, 또는 멈춘 ticket이면 stop 전환 필요"),
-    ("A3", "ready-to-done 영업일 기준 3일 이상 대기", "팀장: done 전환, 또는 미루는 이유 comment 필요"),
+    ("A3", "ready-to-done 영업일 기준 3일 이상 대기", "팀장: done 전환, 또는 보완이 필요하면 In Progress 전환 필요"),
 ]
+# 실행 모드 이름 -> 실패 알림에 적는 한국어 이름
+MODE_KO = {
+    "review": "검수 모드",
+    "digest": "정리 모드",
+    "alerts": "주간 점검 모드",
+    "report": "보고 모드",
+    "decision": "확인 결과 알림 모드",
+}
 LEAD_ALERTS = ("A3",)  # 팀장이 할 조치의 알림. 주간 점검 Slack(weekly_lines)에서 담당자 대신 팀장을 멘션한다
 LEAD_WEBHOOK_ENV = "SLACK_LEAD_WEBHOOK_URL"  # 팀장 채널 webhook 환경 변수 이름
 TOKEN_EXPIRY_DAYS = 30  # 만료까지 남은 날이 이 값 이하인 토큰(인증 키)을 알린다

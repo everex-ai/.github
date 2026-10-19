@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -61,3 +62,64 @@ def test_digest_without_issue_exit_status_is_1(tmp_path):
     )  # fmt: skip
     assert res.returncode == 1 and "digest 모드에는 --issue가 필요하다" in res.stderr
     assert not (tmp_path / "ctx").exists()
+
+
+def test_jira_error_leaves_run_error_and_reraises(jc, monkeypatch, tmp_path):
+    """Jira 호출이 예외를 내면 out/_run_error.json(step "1. 입력 수집")을 남기고 예외를 다시 올린다."""
+
+    def broken():
+        raise RuntimeError("Jira 연결 실패")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(jc, "Jira", broken)
+    monkeypatch.setattr(sys, "argv", ["collect.py", "--mode", "review", "--issue", "INNO-17"])
+    with pytest.raises(RuntimeError, match="Jira 연결 실패"):
+        jc.main()
+    error = json.loads((tmp_path / "out" / "_run_error.json").read_text(encoding="utf-8"))
+    assert error == {
+        "step": "1. 입력 수집",
+        "error": "RuntimeError: Jira 연결 실패",
+    }
+
+
+def test_argument_check_exit_leaves_no_run_error(jc, no_jira, monkeypatch, tmp_path):
+    """인자 검사의 SystemExit은 실패 기록을 남기지 않는다."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["collect.py", "--mode", "digest"])
+    with pytest.raises(SystemExit):
+        jc.main()
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.fixture(scope="module")
+def jci():
+    """scripts/src/jira/collect.py (모듈 이름 src.jira.collect). collect_issue를 가진다."""
+    if str(ROOT / "scripts") not in sys.path:
+        sys.path.append(str(ROOT / "scripts"))  # scripts/src 패키지를 불러오기 위함
+    return importlib.import_module("src.jira.collect")
+
+
+class TypeOnlyJira:
+    """issue()만 있는 가짜 Jira. collect_issue가 건너뛰기 전에 다른 Jira 메서드를 부르면 AttributeError가 난다."""
+
+    tldr_field = ""
+
+    def __init__(self, issuetype: dict) -> None:
+        self.issuetype = issuetype
+
+    def issue(self, key: str, fields: list[str]) -> dict:
+        """work type만 있는 issue 응답을 돌려준다."""
+        return {"fields": {"issuetype": self.issuetype}}
+
+
+@pytest.mark.parametrize(
+    "issuetype",
+    [{"name": "Story"}, {"name": "Task", "subtask": True}, {"name": "Sub-task", "subtask": True}],
+    ids=["Story", "sub-task 표시가 있는 Task", "Sub-task"],
+)
+def test_collect_issue_skips_non_target_type_and_subtask(jci, monkeypatch, tmp_path, capsys, issuetype):
+    """CM-7: 대상이 아닌 work type과 sub-task는 None을 돌려주고 ctx를 만들지 않는다."""
+    monkeypatch.setattr(jci, "CTX", tmp_path / "ctx")
+    assert jci.collect_issue(TypeOnlyJira(issuetype), "INNO-60", "https://example.atlassian.net", "", "review") is None
+    assert not (tmp_path / "ctx").exists()
+    assert "INNO-60: work type" in capsys.readouterr().out

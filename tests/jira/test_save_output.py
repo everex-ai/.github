@@ -379,6 +379,14 @@ def test_workflow_has_structured_output_steps():
     assert steps["claude"]["continue-on-error"] is True and steps["claude_retry"]["continue-on-error"] is True
 
 
+def test_workflow_has_failure_notification_step():
+    """5단계는 앞 스텝이 실패하면 apply.py failure 모드로 연동 채널에 알린다."""
+    step = workflow_steps()["notify_failure"]
+    assert step["name"].startswith("5.") and step["if"] == "failure()"
+    assert "--mode failure" in step["run"] and '--failed-mode "$MODE"' in step["run"]
+    assert set(step["env"]) == {"SLACK_WEBHOOK_URL", "SLACK_USERS_JSON"}
+
+
 @pytest.mark.parametrize("step_id", ["save", "save_retry"])
 def test_workflow_save_command_is_accepted_by_parser(so, step_id):
     run = workflow_steps()[step_id]["run"]

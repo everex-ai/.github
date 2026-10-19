@@ -362,7 +362,8 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
     add_run(prop, run_entry(d, out_dir, mode, v if mode == "review" else "digest"))
     j.prop_set(key, prop)
 
-    # 5) Slack 알림 (검수 모드만). 검수 결과와 관계없이 팀장에게 보낸다. 담당자는 팀장이 상태를 전환한 뒤 decision 모드로 알린다
+    # 5) Slack 알림 (검수 모드만). 검수 결과와 관계없이 팀장에게 보낸다. 담당자는 통과·보류 검수 comment의 멘션으로 검수 결과를 받고,
+    # 팀장이 상태를 전환하면 decision 모드로 상태 변경을 받는다
     if mode == "review":
         users, warning = load_slack_users()
         if warning:
@@ -419,12 +420,15 @@ def apply_decision(j: Jira, key: str, lead: str, summ: Summary) -> None:
     Args:
         j: Jira 클라이언트.
         key: ticket 키.
-        lead: 팀장 accountId. 비어 있으면 전환한 사람을 확인하지 않는다.
+        lead: 팀장 accountId. 비어 있으면 전환한 사람을 확인할 수 없어 changelog를 읽지 않고 알리지 않으며 Summary 탭에 "경고"로 남긴다.
         summ: Actions 요약.
     """
     issue = j.issue(key, ["summary", "status", "assignee", "issuetype"])
     f = issue.get("fields") or {}
     itype = (f.get("issuetype") or {}).get("name") or "?"
+    if not lead:  # 전환한 사람을 확인할 수 없어 changelog를 읽지 않고 경고만 남긴다
+        summ.row(key, itype, "decision", "경고", "팀장 accountId(JIRA_LEAD_ACCOUNT_ID)가 비어 알리지 않음")
+        return
     status = ((f.get("status") or {}).get("name") or "").strip()
     last = last_ready_exit(j.changelog(key))
     decision = DECISION_KO.get(status.lower())
@@ -433,7 +437,7 @@ def apply_decision(j: Jira, key: str, lead: str, summ: Summary) -> None:
         skip = f"지금 상태가 {status or '?'}라 알리지 않음"
     elif last is None or last["to"].strip().lower() != status.lower():
         skip = "ready-to-done에서 지금 상태로 온 전환이 없어 알리지 않음"
-    elif lead and last["author"] != lead:
+    elif last["author"] != lead:
         skip = "팀장이 한 전환이 아니라 알리지 않음"
     prop = j.prop_get(key) if not skip else {}
     if not skip and prop.get("lastDecisionAt") == last["at"]:

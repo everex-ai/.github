@@ -775,6 +775,19 @@ def test_build_jql(rp_fetch, rp_message):
     )
 
 
+def test_collect_skips_test_tickets(rp_fetch):
+    """제목이 시험 ticket 머리말(앞 공백 무시)로 시작하는 ticket은 정기 보고에서 빠지고 일반 ticket만 남는다."""
+    tickets = {
+        "INNO-1": ticket(title="[jira-doc 테스트] 검수 확인"),
+        "INNO-2": ticket(title="[jira-doc 시험] 정리 확인"),
+        "INNO-3": ticket(title="[automation 테스트] 전환 확인"),
+        "INNO-4": ticket(title="  [jira-doc 테스트] 앞 공백"),
+        "INNO-5": ticket(title="추론 지연 개선"),
+        "INNO-6": ticket(title="설명 중 [jira-doc 테스트] 언급"),  # 머리말이 앞에 없으면 일반 ticket
+    }
+    assert [t.key for t in load(rp_fetch, tickets)] == ["INNO-5", "INNO-6"]
+
+
 def test_state_at(rp_period, rp_fetch, rp_metrics):
     """1일 0시 전 마지막 변경의 도착 상태, 없으면 뒤 첫 변경의 출발 상태, 변경이 없으면 지금 상태."""
     tickets = {
