@@ -69,8 +69,8 @@ Jira ticket의 결과 문서를 작성하고 검수한다.
   - 확인 결과 알림 모드(decision)
 - Jira 워크플로: ticket의 상태와 상태 사이 전환의 체계
 - Jira 전환: ticket 상태를 바꾸는 Jira 동작
-  - 이름과 도착 상태는 INNO-29의 전환 목록과 같다.
-    - 터미널에서는 `scripts/jira.sh transitions INNO-29`로 조회한다.
+  - 이름과 도착 상태는 INNO 프로젝트 ticket의 전환 목록과 같다.
+    - 터미널에서는 `scripts/jira.sh transitions <ticket 키>`로 조회한다.
   - request 전환: 담당자가 ticket을 ready-to-done으로 보내는 전환
     - 출발 상태는 In Progress다.
   - stop 전환: 진행 중인 ticket을 Backlog로 보내는 전환
@@ -937,23 +937,29 @@ Jira에는 기록하지 않고 Slack 실패 알림으로 팀장에게 알린다.
   - 형식: `[save] <ticket 키>: verdict=<값> 없음=<빠진 부분>`
   - tldr, comment, 실행 결과의 `result` 같은 Jira 기록 내용은 출력하지 않는다.
 
-## 시험 실행 (INNO-29)
+## 시험 실행
 
-시험 실행은 시험용 ticket(예: INNO-29)을 다섯 실행 모드로 실행하는 절차다.
+시험 실행은 시험용 ticket을 다섯 실행 모드로 실행하는 절차다.
 Actions 수동 실행으로 실행하고, 단계별 로그와 결과 문서를 확인한다.
 테스트 시나리오와 문서·코드 대조 항목은 `docs/jira-doc-agent/test-scenarios.md`에 있다.
 
+- 시험용 ticket은 실행할 때마다 새로 만든다.
+  - 지난 시험 ticket은 2026-10-19에 삭제했다.
+  - 만드는 방법: `docs/jira-doc-agent/test-scenarios.md`의 "시험 ticket 준비" 절
+  - 제목 머리말 `[jira-doc 테스트]`를 붙이면 정기 보고에서 빠진다(`scripts/src/constant/jira.py`의 `TEST_TITLE_PREFIXES`).
+- 아래 절차의 `<ticket 키>`는 새로 만든 시험 ticket의 키다.
+
 1. Actions 탭에서 Actions 워크플로 `jira-doc`을 고르고 Run workflow를 누른다.
-   - issueKey에 `INNO-29`, mode에 `review`를 넣는다.
+   - issueKey에 `<ticket 키>`, mode에 `review`를 넣는다.
 2. 로그에서 Jira 읽기를 확인한다.
-   - 1단계: `[collect] INNO-29: 수집 완료 (comment …)`(`scripts/src/jira/collect.py`의 `collect_issue`)
-   - 2단계: `[precheck] INNO-29 (Task): 예상 산출물 n개, 실패 …`(`scripts/src/jira/precheck/run.py`의 `run_issue_dir`)
+   - 1단계: `[collect] <ticket 키>: 수집 완료 (comment …)`(`scripts/src/jira/collect.py`의 `collect_issue`)
+   - 2단계: `[precheck] <ticket 키> (Task): 예상 산출물 n개, 실패 …`(`scripts/src/jira/precheck/run.py`의 `run_issue_dir`)
 3. Summary 탭의 "jira-doc 실행 결과" 표에서 Jira 반영을 확인한다.
-   - 행은 `| INNO-29 | Task | review | 통과 | … |` 꼴이다(`scripts/src/common/github.py`의 `Summary.row`).
+   - 행은 `| <ticket 키> | Task | review | 통과 | … |` 꼴이다(`scripts/src/common/github.py`의 `Summary.row`).
    - 결과 칸은 통과, 검토 요청, 보류, 실패 중 하나다.
    - 실패 행이 있으면 Slack 실패 알림 한 건이 가고 실행 상태가 failure가 된다.
      - 마지막 행 `| - | - | review | 전송 완료 | 실패 알림 ticket n건 |`이 실패 알림 전송 결과다(`scripts/apply.py`의 `main`).
-4. INNO-29를 열어 결과 문서를 확인한다.
+4. 시험 ticket을 열어 결과 문서를 확인한다.
    - TL;DR과 결과 산출물 구역이 바뀌었고, 진행 배경과 예상 산출물은 그대로다.
    - 검수 comment가 달렸다.
    - 관찰 모드이면 문서화 리뷰 comment도 달렸다.
@@ -961,7 +967,7 @@ Actions 수동 실행으로 실행하고, 단계별 로그와 결과 문서를 �
 5. 상태가 ready-to-done에 머무는지 확인한다.
    - 기준: "검수 결과와 ticket 상태 전환" 절의 표
    - Slack 알림은 `docs/jira-doc-agent/alerts.md`의 "주기별 알림" 절대로 가는지 확인한다.
-   - `scripts/jira.sh prop-get INNO-29` 출력의 `runs`에 이 실행의 기록이 있는지 확인한다.
+   - `scripts/jira.sh prop-get <ticket 키>` 출력의 `runs`에 이 실행의 기록이 있는지 확인한다.
 6. mode를 `digest`, issueKey에 ticket 키를 넣어 실행한다.
    - TL;DR과 결과 산출물 구역만 갱신되고 comment는 달리지 않는다.
      - F3과 같은 동작이다.
@@ -1054,7 +1060,7 @@ jira-doc은 팀장 개인 계정과 만료가 있는 토큰으로 동작한다.
     - verdict.json이 없었기 때문이다.
     - INNO-29의 comment `57997`
   - 구조화 출력 전환 전 예: 실행 38221063946은 3단계가 건너뛰어졌다.
-    - 이유는 "시험 실행 (INNO-29)" 절의 워크플로 파일 조건이다.
+    - 이유는 "시험 실행" 절의 워크플로 파일 조건이다.
     - 3단계 로그: `Exiting due to workflow validation skip`
     - 4단계 로그: `[apply] INNO-47: 실패 … verdict.json 없음`
 - 구조화 출력 전환 전에는 apply.py가 종료 코드 0으로 끝났다.
