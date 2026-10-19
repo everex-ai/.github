@@ -886,6 +886,7 @@ Jira에는 기록하지 않고 Slack 실패 알림으로 팀장에게 알린다.
 
 시험 실행은 시험용 ticket(예: INNO-29)을 다섯 실행 모드로 실행하는 절차다.
 Actions 수동 실행으로 실행하고, 단계별 로그와 결과 문서를 확인한다.
+테스트 시나리오와 문서·코드 대조 항목은 `docs/jira-doc-agent/test-scenarios.md`에 있다.
 
 1. Actions 탭에서 Actions 워크플로 `jira-doc`을 고르고 Run workflow를 누른다.
    - issueKey에 `INNO-29`, mode에 `review`를 넣는다.
