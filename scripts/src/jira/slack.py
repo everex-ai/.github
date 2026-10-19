@@ -16,6 +16,7 @@ from src.constant.slack import (
     ALERT_LIMIT,
     ALERT_SECTIONS,
     LEAD_ALERTS,
+    MODE_KO,
     SLACK_CLOSING,
     SLACK_INDENT,
     TOKEN_EXPIRY_DAYS,
@@ -104,6 +105,15 @@ def wiki_to_slack(text: str) -> str:
     return WIKI_COLOR_RE.sub("", WIKI_LINK_PARTS_RE.sub(r"<\2|\1>", escaped))
 
 
+def lead_mention(users: dict[str, str], lead: str) -> str:
+    """실패 알림 첫 줄에 적는 팀장 멘션. lead가 비면 "팀장 미지정", 대응표에 없으면 "팀장(Slack 멘션 없음)"."""
+    if not lead:
+        return "팀장 미지정"
+    if users.get(lead):
+        return f"<@{users[lead]}>"
+    return "팀장(Slack 멘션 없음)"
+
+
 def failure_slack_text(mode: str, failures: list[dict], users: dict[str, str], lead: str) -> str:
     """한 실행에서 반영하지 못한 Task를 알리는 Slack 실패 알림 본문.
 
@@ -111,7 +121,7 @@ def failure_slack_text(mode: str, failures: list[dict], users: dict[str, str], l
     run_url()이 있으면 마지막 줄에 GitHub Actions 실행 링크를 적는다. 제목과 원인은 wiki_to_slack으로 바꿔 적는다.
 
     Args:
-        mode: 실행 모드(review: 검수, digest: F3 정리).
+        mode: 실행 모드(MODE_KO의 키: review, digest, alerts, report, decision). MODE_KO에 없으면 값을 그대로 적는다.
         failures: 실패한 Task 목록. 항목은 key, title, url, reason을 가진다. url이 비어 있으면 링크 없이 적는다.
         users: Jira accountId -> Slack 멤버 ID 대응표.
         lead: 팀장 accountId. 비어 있으면 "팀장 미지정", 대응표에 없으면 "팀장(Slack 멘션 없음)"을 적는다.
@@ -119,18 +129,43 @@ def failure_slack_text(mode: str, failures: list[dict], users: dict[str, str], l
     Returns:
         Slack 메시지 본문.
     """
-    if not lead:
-        mention = "팀장 미지정"
-    elif users.get(lead):
-        mention = f"<@{users[lead]}>"
-    else:
-        mention = "팀장(Slack 멘션 없음)"
-    mode_ko = "검수 모드" if mode == "review" else "정리 모드"
-    lines = [f"[jira-doc 실패] {mode_ko} ticket {len(failures)}건 처리 실패 {mention}"]
+    mode_ko = MODE_KO.get(mode, mode)
+    lines = [f"[jira-doc 실패] {mode_ko} ticket {len(failures)}건 처리 실패 {lead_mention(users, lead)}"]
     for f in failures:
         name = wiki_to_slack(f"{f['key']} {f.get('title') or ''}".strip())
         head = f"<{f['url']}|{name}>" if f.get("url") else name
         lines.append(f"• {head}: {wiki_to_slack(f['reason'])}")
+    if url := run_url():
+        lines.append(f"GitHub Actions 실행: <{url}|실행 로그>")
+    return "\n".join(lines)
+
+
+def run_failure_slack_text(mode: str, issue: str, error: dict | None, users: dict[str, str], lead: str) -> str:
+    """검수·정리 모드의 ticket 실패 알림 밖에서 실행이 실패했을 때 연동 채널로 보내는 Slack 본문.
+
+    첫 줄에 실행 모드와 팀장 멘션을 적고, ticket 키(있으면), 실패 단계와 원인을 글머리표로 적는다.
+    실패 기록이 없으면 원인 줄에 "기록 없음. 실행 로그 확인 필요"를 적는다.
+    run_url()이 있으면 마지막 줄에 GitHub Actions 실행 링크를 적는다. 원인은 wiki_to_slack으로 바꿔 적는다.
+
+    Args:
+        mode: 실패한 실행 모드. MODE_KO에 없으면 값을 그대로 적고, 빈 문자열이면 "?"를 적는다.
+        issue: 대상 ticket 키. 비어 있으면 ticket 줄을 적지 않는다.
+        error: out/_run_error.json의 내용(step, error). 없으면 None.
+        users: Jira accountId -> Slack 멤버 ID 대응표.
+        lead: 팀장 accountId. 비어 있으면 "팀장 미지정", 대응표에 없으면 "팀장(Slack 멘션 없음)"을 적는다.
+
+    Returns:
+        Slack 메시지 본문.
+    """
+    mode_ko = MODE_KO.get(mode, mode or "?")
+    lines = [f"[jira-doc 실패] {mode_ko} 실행 실패 {lead_mention(users, lead)}"]
+    if issue:
+        lines.append(f"• ticket: {wiki_to_slack(issue)}")
+    if error:
+        lines.append(f"• 단계: {wiki_to_slack(str(error.get('step') or '?'))}")
+        lines.append(f"• 원인: {wiki_to_slack(str(error.get('error') or '?'))}")
+    else:
+        lines.append("• 원인: 기록 없음. 실행 로그 확인 필요")
     if url := run_url():
         lines.append(f"GitHub Actions 실행: <{url}|실행 로그>")
     return "\n".join(lines)

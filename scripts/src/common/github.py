@@ -1,8 +1,15 @@
-"""GitHub Actions 실행 주소와 Actions Summary(실행 결과 요약 탭) 기록."""
+"""GitHub Actions 실행 주소, Actions Summary(실행 결과 요약 탭) 기록, 실행 실패 기록."""
 
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
+
+# 실패한 스텝이 out/에 남기는 실패 기록. 5단계 실패 알림(apply.py failure 모드)이 읽는다
+RUN_ERROR_FILE = "_run_error.json"
+# ticket 실패 알림을 보낸 표시. 5단계가 같은 실패를 다시 알리지 않는 데 쓴다
+FAILURE_NOTIFIED_FILE = "_failure_notified"
 
 
 def run_url() -> str:
@@ -13,6 +20,21 @@ def run_url() -> str:
         os.environ.get("GITHUB_RUN_ID", ""),
     )
     return f"{s}/{r}/actions/runs/{i}" if s and r and i else ""
+
+
+def write_run_error(out_dir: Path, step: str, exc: BaseException) -> None:
+    """실패한 스텝의 단계와 원인을 out_dir/_run_error.json에 JSON으로 쓴다.
+
+    out_dir가 없으면 만든다. 원인은 "예외 이름: 메시지" 꼴이고 메시지는 300자까지만 적는다.
+
+    Args:
+        out_dir: 실패 기록을 둘 폴더(out/).
+        step: 실패한 스텝 이름(예: "1. 입력 수집").
+        exc: 스텝을 실패시킨 예외.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    error = {"step": step, "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+    (out_dir / RUN_ERROR_FILE).write_text(json.dumps(error, ensure_ascii=False), encoding="utf-8")
 
 
 class Summary:

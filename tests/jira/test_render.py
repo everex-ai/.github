@@ -435,7 +435,10 @@ def test_weekly_message_sections_have_actions_and_a3_mentions_lead(ja, tmp_path,
         "*영업일 기준 5일 이상 활동 없음* (1건) — 담당자: 진행 상황 comment, 또는 멈춘 ticket이면 stop 전환 필요"
         in lines
     )
-    assert "*ready-to-done 영업일 기준 3일 이상 대기* (1건) — 팀장: done 전환, 또는 미루는 이유 comment 필요" in lines
+    assert (
+        "*ready-to-done 영업일 기준 3일 이상 대기* (1건) — 팀장: done 전환, 또는 보완이 필요하면 In Progress 전환 필요"
+        in lines
+    )
     # A3 항목: 담당자는 Jira 표시 이름(멘션 아님), 팀장은 멘션
     assert f"    • INNO-42 추론 지연 개선 — 담당 담당자A, 팀장 <@U-LEAD>, {READY_WAIT_DETAIL}" in lines
     assert "    • INNO-41 모델 경량화 — 담당 <@U-ASSIGNEE>, " + STALE_ALERTS["alerts"][0]["detail"] in lines
@@ -845,7 +848,7 @@ def test_ready_wait_alert_after_3_business_days(jp, tmp_path):
     alerts = scan_ready_wait(jp, tmp_path, "ready-to-done", changes)
     assert [(a["code"], a["check"]) for a in alerts] == [("READY_WAIT:2026-09-24", "A3")]
     assert alerts[0]["detail"] == "ready-to-done 진입 2026-09-24 뒤 영업일 기준 3일 경과(토요일과 일요일 제외)"
-    assert alerts[0]["message"].endswith("팀장의 done 전환 또는 보류 comment 필요")
+    assert alerts[0]["message"].endswith("팀장의 done 전환 또는 In Progress 전환 필요")
 
 
 def test_ready_wait_no_alert_after_2_business_days(jp, tmp_path):
@@ -1877,9 +1880,9 @@ def test_report_mode_sends_run_report_text_to_lead_channel(ja, jsl, jrr, tmp_pat
 
 
 def test_report_mode_sends_each_message(ja, jsl, jrr, tmp_path, monkeypatch):
-    """run_report가 메시지 목록을 돌려주면(12월 보고의 연간 묶음) 메시지마다 팀장 채널로 보낸다."""
+    """run_report가 메시지 목록을 돌려주면(12월 보고의 월간, 분기, 연간 세 메시지) 메시지마다 팀장 채널로 보낸다."""
     posted = []
-    monkeypatch.setattr(jrr, "run_report", lambda j, month, lead, summ: ["월간", "연간"])
+    monkeypatch.setattr(jrr, "run_report", lambda j, month, lead, summ: ["월간", "분기", "연간"])
     monkeypatch.setattr(ja, "Jira", lambda: None)
     monkeypatch.setattr(
         jsl, "slack_post", lambda text, env="SLACK_WEBHOOK_URL": posted.append((text, env)) or "전송 완료"
@@ -1887,9 +1890,9 @@ def test_report_mode_sends_each_message(ja, jsl, jrr, tmp_path, monkeypatch):
     summary = tmp_path / "summary.md"
     monkeypatch.setattr(sys, "argv", ["apply.py", "--mode", "report", "--month", "2026-12", "--summary", str(summary)])
     ja.main()
-    assert posted == [("월간", "SLACK_LEAD_WEBHOOK_URL"), ("연간", "SLACK_LEAD_WEBHOOK_URL")]
+    assert posted == [(t, "SLACK_LEAD_WEBHOOK_URL") for t in ("월간", "분기", "연간")]
     text = summary.read_text(encoding="utf-8")
-    assert "2026-12 정기 보고 1/2" in text and "2026-12 정기 보고 2/2" in text
+    assert all(f"2026-12 정기 보고 {i}/3" in text for i in (1, 2, 3))
 
 
 def test_report_mode_defaults_to_last_month(ja, jsl, jrr, tmp_path, monkeypatch):
@@ -2100,3 +2103,345 @@ def test_decision_same_transition_is_sent_once(ja, tmp_path, slack):
     summ = run_decision(ja, tmp_path, fake)
     assert len(slack) == 1
     assert "이미 알린 전환이라 다시 알리지 않음" in summ.rows[0]
+
+
+# ---------------------------------------------------------------------- 모든 실행 모드의 실패 알림
+@pytest.mark.parametrize(
+    "mode, mode_ko",
+    [
+        ("review", "검수 모드"),
+        ("digest", "정리 모드"),
+        ("alerts", "주간 점검 모드"),
+        ("report", "보고 모드"),
+        ("decision", "확인 결과 알림 모드"),
+    ],
+)
+def test_failure_slack_text_names_every_mode(ja, mode, mode_ko):
+    failures = [{"key": "INNO-9", "title": "제목", "url": "", "reason": "Jira 오류: x"}]
+    first = ja.failure_slack_text(mode, failures, {}, "").splitlines()[0]
+    assert first == f"[jira-doc 실패] {mode_ko} ticket 1건 처리 실패 팀장 미지정"
+
+
+@pytest.fixture
+def run_url_env(monkeypatch):
+    monkeypatch.setenv("GITHUB_SERVER_URL", "https://github.com")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "org/repo")
+    monkeypatch.setenv("GITHUB_RUN_ID", "5")
+
+
+def test_run_failure_slack_text_with_error_and_issue(jsl, run_url_env):
+    error = {"step": "1. 입력 수집", "error": "JiraError: <401> & 거부"}
+    assert jsl.run_failure_slack_text("review", "INNO-17", error, {"acc-lead": "U-LEAD"}, "acc-lead") == (
+        "[jira-doc 실패] 검수 모드 실행 실패 <@U-LEAD>\n"
+        "• ticket: INNO-17\n"
+        "• 단계: 1. 입력 수집\n"
+        "• 원인: JiraError: &lt;401&gt; &amp; 거부\n"
+        "GitHub Actions 실행: <https://github.com/org/repo/actions/runs/5|실행 로그>"
+    )
+
+
+def test_run_failure_slack_text_without_error_or_issue(jsl, monkeypatch):
+    monkeypatch.delenv("GITHUB_RUN_ID", raising=False)
+    assert jsl.run_failure_slack_text("alerts", "", None, {}, "") == (
+        "[jira-doc 실패] 주간 점검 모드 실행 실패 팀장 미지정\n• 원인: 기록 없음. 실행 로그 확인 필요"
+    )
+    text = jsl.run_failure_slack_text("report", "", None, {}, "acc-lead")
+    assert text.splitlines()[0] == "[jira-doc 실패] 보고 모드 실행 실패 팀장(Slack 멘션 없음)"
+    assert "ticket:" not in text
+    # 모드가 빈 문자열이면 Summary 비고와 같게 "?"를 적고 공백이 두 칸 생기지 않음
+    assert jsl.run_failure_slack_text("", "", None, {}, "").splitlines()[0] == "[jira-doc 실패] ? 실행 실패 팀장 미지정"
+
+
+def run_failure_main(ja, monkeypatch, work, *, failed_mode="report", issue=""):
+    """Jira 환경 변수 없이 apply.py main을 failure 모드로 실행하고 Summary 파일 내용을 돌려준다."""
+
+    def forbidden():
+        raise AssertionError("failure 모드는 Jira를 만들면 안 됨")
+
+    for name in ("JIRA_CLOUD_ID", "JIRA_EMAIL", "JIRA_API_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(ja, "Jira", forbidden)
+    monkeypatch.setenv("JIRA_LEAD_ACCOUNT_ID", "acc-lead")
+    summary = work / "summary.md"
+    argv = ["apply.py", "--ctx", str(work / "ctx"), "--out", str(work / "out"), "--mode", "failure"]
+    argv += ["--failed-mode", failed_mode, "--issue", issue, "--summary", str(summary)]
+    monkeypatch.setattr(sys, "argv", argv)
+    ja.main()
+    return summary.read_text(encoding="utf-8")
+
+
+def test_failure_mode_sends_run_error_to_integration_channel(ja, monkeypatch, tmp_path, slack):
+    out = tmp_path / "out"
+    out.mkdir()
+    error = {"step": "4. 반영", "error": "JiraError: boom"}
+    (out / "_run_error.json").write_text(json.dumps(error, ensure_ascii=False), encoding="utf-8")
+    summary = run_failure_main(ja, monkeypatch, tmp_path)
+    [text] = slack
+    assert text.startswith("[jira-doc 실패] 보고 모드 실행 실패 <@U-LEAD>\n")
+    assert "• 단계: 4. 반영" in text and "• 원인: JiraError: boom" in text
+    assert "| - | - | failure | 전송 완료 |" in summary
+    assert "<@" not in summary and "U-LEAD" not in summary  # Summary 사본에는 Slack 멤버 ID가 나가지 않음
+    assert "팀장(Slack 멘션 없음)" in summary and "JiraError: boom" in summary
+
+
+def test_failure_mode_without_run_error_says_no_record(ja, monkeypatch, tmp_path, slack):
+    run_failure_main(ja, monkeypatch, tmp_path, failed_mode="digest", issue="INNO-17")
+    [text] = slack
+    assert "• ticket: INNO-17" in text and "• 원인: 기록 없음. 실행 로그 확인 필요" in text
+
+
+def test_failure_mode_skips_when_ticket_failure_already_notified(ja, monkeypatch, tmp_path, slack):
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "_failure_notified").touch()
+    summary = run_failure_main(ja, monkeypatch, tmp_path, failed_mode="review", issue="INNO-17")
+    assert slack == []
+    assert "| - | - | failure | 건너뜀 | ticket 실패 알림을 이미 보냄 |" in summary
+
+
+def test_report_mode_error_leaves_run_error_and_reraises(ja, jrr, monkeypatch, tmp_path):
+    def broken(j, month, lead, summ):
+        raise ja.JiraError("boom")
+
+    monkeypatch.setattr(jrr, "run_report", broken)
+    monkeypatch.setattr(ja, "Jira", lambda: None)
+    out = tmp_path / "out"
+    argv = [
+        "apply.py",
+        "--mode",
+        "report",
+        "--month",
+        "2026-09",
+        "--out",
+        str(out),
+        "--summary",
+        str(tmp_path / "s.md"),
+    ]
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(ja.JiraError, match="boom"):
+        ja.main()
+    error = json.loads((out / "_run_error.json").read_text(encoding="utf-8"))
+    assert error == {"step": "4. 반영", "error": "JiraError: boom"}
+
+
+def test_decision_mode_without_issue_leaves_no_run_error(ja, monkeypatch, tmp_path):
+    out = tmp_path / "out"
+    argv = ["apply.py", "--mode", "decision", "--out", str(out), "--summary", str(tmp_path / "s.md")]
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(SystemExit):
+        ja.main()
+    assert not out.exists()  # 인자 검사의 SystemExit은 실패 기록을 남기지 않음
+
+
+def test_main_ticket_failure_marks_failure_notified(render, ja, monkeypatch, tmp_path, slack):
+    """ticket 실패 알림을 보내면 5단계가 같은 실패를 다시 알리지 않도록 out/_failure_notified를 만든다."""
+    ctx, out = tmp_path / "ctx", tmp_path / "out"
+    render.write_issue(ctx, "INNO-17", "Task", EXPECTED, {}, summary="export 오류")
+    render.write_out(out, "INNO-17", render.task_verdict("INNO-17", "review", "no_verdict"), "* 요약")
+    _, code, _ = run_main(render, ja, monkeypatch, tmp_path, "review", ["INNO-17"])
+    assert code == 1 and len(slack) == 1
+    assert (out / "_failure_notified").exists()
+
+
+def test_main_ticket_failure_not_marked_when_slack_send_fails(render, ja, jsl, monkeypatch, tmp_path):
+    """전송에 실패하면 표시 파일을 만들지 않아 5단계가 다시 알린다."""
+    monkeypatch.setattr(jsl, "slack_post", lambda text: "전송 실패: x")
+    ctx, out = tmp_path / "ctx", tmp_path / "out"
+    render.write_issue(ctx, "INNO-17", "Task", EXPECTED, {}, summary="export 오류")
+    render.write_out(out, "INNO-17", render.task_verdict("INNO-17", "review", "no_verdict"), "* 요약")
+    _, code, summary = run_main(render, ja, monkeypatch, tmp_path, "review", ["INNO-17"])
+    assert code == 1 and "전송 실패: x" in summary
+    assert not (out / "_failure_notified").exists()
+
+
+def test_main_without_failure_leaves_no_failure_notified(render, ja, monkeypatch, tmp_path):
+    ctx, out = tmp_path / "ctx", tmp_path / "out"
+    render.write_issue(ctx, "INNO-17", "Task", EXPECTED, {}, summary="제목")
+    v = render.task_verdict("INNO-17", "review", "pass") | {"items": [{**i, "done": True} for i in ITEMS], "extra": []}
+    render.write_out(out, "INNO-17", v, "* 요약")
+    _, code, _ = run_main(render, ja, monkeypatch, tmp_path, "review", ["INNO-17"])
+    assert code == 0
+    assert not (out / "_failure_notified").exists() and not (out / "_run_error.json").exists()
+
+
+def test_decision_with_empty_lead_warns_without_sending(ja, tmp_path, slack):
+    """팀장 accountId가 비면 전환한 사람을 확인할 수 없어 보내지 않고 Summary에 "경고"로 남긴다."""
+    fake = DecisionJira("Done", [("2026-10-15T10:00:00.000+0900", "ready-to-done", "Done", "acc-lead")])
+
+    def forbidden(key):
+        raise AssertionError("lead가 비면 changelog를 읽으면 안 됨")
+
+    fake.changelog = forbidden
+    summ = ja.Summary(str(tmp_path / "summary.md"))
+    ja.apply_decision(fake, "INNO-17", "", summ)
+    assert slack == [] and fake.prop == {}
+    assert summ.rows == [
+        "| INNO-17 | Task | decision | 경고 | 팀장 accountId(JIRA_LEAD_ACCOUNT_ID)가 비어 알리지 않음 |"
+    ]
+
+
+# ---------------------------------------------------------------------- 시나리오 L1 테스트(docs/jira-doc-agent/test-scenarios.md)
+@pytest.mark.parametrize("cid", ["T1", "T2"], ids=["TK-3 예상 산출물 비어 있음(T1)", "TK-1 진행 배경 비어 있음(T2)"])
+def test_task_pass_with_failed_t1_or_t2_turns_into_hold(render, ja, jv, tmp_path, slack, cid):
+    """CI agent 판정이 통과여도 스크립트 검사 T1이나 T2가 보완 필요이면 보류가 된다."""
+    ctx, out = tmp_path / "ctx", tmp_path / "out"
+    checks = {cid: {"result": "fail", "detail": "작성된 내용 없음"}}
+    render.write_issue(ctx, "INNO-17", "Task", EXPECTED, checks)
+    v = render.task_verdict("INNO-17", "review", "pass")
+    v |= {"items": [{**i, "done": True} for i in ITEMS], "extra": [], "requests": []}
+    render.write_out(out, "INNO-17", v, "* 요약")
+    j = render.FakeJira({"INNO-17": ""})
+    ja.apply_issue(j, ctx / "INNO-17", out, "review", False, "acc-lead", ja.Summary(str(tmp_path / "summary.md")))
+    body = j.comments[0][1]
+    assert "검수 결과: *보류*" in body
+    assert f"* 스크립트 검사에 보완 필요 항목이 있어 통과에서 보류로 바꿈: {jv.check_label(cid)}\n" in body
+    assert slack[0].startswith("<@U-LEAD> [INNO-17] 검수 결과: 보류. ")
+
+
+@pytest.mark.parametrize(
+    ("desc", "attachments", "cid", "detail"),
+    [
+        (bug_desc(BUG_INFO | {"발생 장비": ""}, PROBLEM, TOBE), 1, "B1", "기본 정보 중 비어 있는 항목 1개(발생 장비)"),
+        (bug_desc(BUG_INFO, PROBLEM, TOBE), 0, "B1", "첨부 파일 0개"),
+        (bug_desc(BUG_INFO, PROBLEM, "(정상 동작에 대한 설명)"), 1, "B2", "개선(To-Be) 내용 0줄"),
+    ],
+    ids=["BG-1 기본 정보 일부 비어 있음(B1)", "BG-2 첨부 파일 없음(B1)", "BG-4 개선(To-Be) 비어 있음(B2)"],
+)
+def test_bug_pass_with_failed_b1_or_b2_turns_into_hold(render, ja, jp, jv, tmp_path, desc, attachments, cid, detail):
+    """Bug에서 CI agent 판정이 통과여도 스크립트 검사 B1이나 B2가 보완 필요이면 보류가 된다."""
+    pre = BUG_PRE | jp.check_bug_template(desc, attachments)
+    assert pre[cid]["result"] == "fail"
+    j = run_type_review(render, ja, tmp_path, "Bug", pre, BUG_AGENT_CHECKS, BUG_FEEDBACK)
+    body = j.comments[0][1]
+    assert "검수 결과: *보류*" in body
+    assert f"* 스크립트 검사에 보완 필요 항목이 있어 통과에서 보류로 바꿈: {jv.check_label(cid)}\n" in body
+    assert detail in body
+
+
+@pytest.mark.parametrize(
+    ("content", "want"),
+    [
+        ("* " + "가" * 39, "fail"),
+        ("* " + "가" * 40, "pass"),
+        ("* 제기 이유\n* 결정할 것", "pass"),
+    ],
+    ids=["IS-2 1줄 39자", "IS-2 1줄 40자", "IS-2 2줄"],
+)
+def test_issue_content_i2_boundary_is_40_chars_for_one_line(jp, content, want):
+    """이슈 내용이 1줄이면 40자부터 I2를 통과하고, 2줄 이상이면 길이와 관계없이 통과한다."""
+    desc = f"h2. 이슈 유형\n\n* [x] 제안\n\nh2. 이슈 내용\n\n{content}\n"
+    assert jp.check_issue_template(desc)["I2"]["result"] == want
+
+
+@pytest.mark.parametrize(
+    ("verdict", "items", "tail"),
+    [
+        ("escalate", ITEMS, "팀장 확인 필요: [~accountid:acc-lead]"),
+        ("pass", [{**i, "done": True} for i in ITEMS], "[~accountid:acc-assignee]"),
+        ("fix", ITEMS, "[~accountid:acc-assignee]"),
+    ],
+    ids=["검토 요청은 팀장", "통과는 담당자", "보류는 담당자"],
+)
+def test_review_comment_ends_with_mention_by_verdict(render, ja, tmp_path, verdict, items, tail):
+    """AL-1: 검수 comment는 검토 요청이면 팀장, 통과와 보류이면 담당자 멘션으로 끝난다."""
+    j, _ = run_review(render, ja, tmp_path, verdict, items)
+    body = j.comments[0][1]
+    assert body.endswith(f"\n\n{tail}")
+    others = {"[~accountid:acc-lead]", "[~accountid:acc-assignee]"} - {tail.split(": ")[-1]}
+    assert not any(m in body for m in others)
+
+
+def test_sanitize_mentions_keeps_only_allowed_accounts(jcm):
+    """AL-1: sanitize_mentions는 담당자와 팀장 외 accountId 멘션을 지운다."""
+    text = "a [~accountid:acc-other] b [~accountid:acc-lead] c [~accountid:acc-assignee] d [~accountid:712020:xyz]"
+    assert jcm.sanitize_mentions(text, {"acc-lead", "acc-assignee"}) == (
+        "a  b [~accountid:acc-lead] c [~accountid:acc-assignee] d "
+    )
+
+
+def test_decision_send_failure_does_not_save_last_decision_at(ja, jsl, tmp_path, monkeypatch, slack):
+    """AL-4: 알림 전송이 실패하면 lastDecisionAt을 저장하지 않아 다음 실행에서 다시 보낸다."""
+    fake = DecisionJira("Done", [("2026-10-15T10:00:00.000+0900", "ready-to-done", "Done", "acc-lead")])
+    monkeypatch.setattr(jsl, "slack_post", lambda text: "전송 실패: x")
+    summ = run_decision(ja, tmp_path, fake)
+    assert "lastDecisionAt" not in fake.prop
+    assert "전송 실패: x" in summ.rows[0]
+    monkeypatch.setattr(jsl, "slack_post", lambda text: slack.append(text) or "전송 완료")
+    run_decision(ja, tmp_path, fake)
+    assert len(slack) == 1 and fake.prop["lastDecisionAt"] == "2026-10-15T10:00:00.000+0900"
+
+
+def test_failure_slack_text_marks_unassigned_lead_in_first_line(jsl):
+    """AL-5: 팀장 accountId가 비면 실패 알림 첫 줄에 "팀장 미지정"을 적는다."""
+    failures = [{"key": "INNO-9", "title": "제목", "url": "", "reason": "Jira 오류: x"}]
+    first = jsl.failure_slack_text("review", failures, {"acc-lead": "U-LEAD"}, "").splitlines()[0]
+    assert first == "[jira-doc 실패] 검수 모드 ticket 1건 처리 실패 팀장 미지정"
+
+
+def scan_alert_checks(jp, tmp_path, status, changes, created="2026-09-28T08:00:00.000+0900"):
+    """INNO-43의 주간 점검 데이터로 run_scan을 NOW(2026-09-29 화 09:00)에 실행하고 알림의 검사 ID 목록을 돌려준다."""
+    scan = {
+        "key": "INNO-43",
+        "type": "Task",
+        "status": status,
+        "created": created,
+        "humanComments": [],
+        "statusChanges": [{"created": at, "field": "status", "to": to} for at, to in changes],
+    }
+    p = tmp_path / "INNO-43.json"
+    p.write_text(json.dumps(scan), encoding="utf-8")
+    jp.run_scan(p, NOW)
+    return [a["check"] for a in json.loads((tmp_path / "INNO-43.alerts.json").read_text(encoding="utf-8"))["alerts"]]
+
+
+@pytest.mark.parametrize(
+    ("status", "stop_at", "want"),
+    [
+        ("Backlog", "2026-09-28T10:00:00.000+0900", []),
+        ("Backlog", "2026-09-28T09:00:00.000+0900", ["R4"]),
+        ("In Progress", "2026-09-25T10:00:00.000+0900", []),
+    ],
+    ids=["Backlog에서 23시간은 알림 없음", "Backlog에서 24시간은 R4 알림", "In Progress이면 알림 없음"],
+)
+def test_scan_r4_boundary_is_24_hours_in_backlog(jp, tmp_path, status, stop_at, want):
+    """AL-6: R4는 지금 상태가 Backlog이고 사유 없는 stop 뒤 24시간 이상일 때만 알린다."""
+    assert scan_alert_checks(jp, tmp_path, status, [(stop_at, "Backlog")]) == want
+
+
+@pytest.mark.parametrize(
+    ("started", "want"),
+    [("2026-09-23T10:00:00.000+0900", []), ("2026-09-22T10:00:00.000+0900", ["A1"])],
+    ids=["마지막 활동 뒤 4영업일은 알림 없음", "마지막 활동 뒤 5영업일은 A1 알림"],
+)
+def test_scan_a1_boundary_is_5_business_days(jp, tmp_path, started, want):
+    """AL-6: A1은 In Progress에서 마지막 활동 뒤 5영업일 이상일 때 알린다."""
+    changes = [(started, "In Progress")]
+    # ticket 생성 시각도 활동으로 세므로, 활동 시각이 In Progress 전환이 되게 생성 시각을 앞에 둔다
+    assert scan_alert_checks(jp, tmp_path, "In Progress", changes, created="2026-09-01T10:00:00.000+0900") == want
+
+
+def test_weekly_lines_limit_items_per_section_to_15(ja, tmp_path, slack):
+    """AL-6: 같은 검사 알림이 16건이면 15건만 적고 "외 1건" 줄을 적는다."""
+    extra = [
+        {
+            "key": f"INNO-{n}",
+            "summary": "라벨 재수집",
+            "url": f"https://example.atlassian.net/browse/INNO-{n}",
+            "assignee": {"accountId": "acc-assignee", "displayName": "담당자A"},
+            "alerts": [{"check": "R4", "code": "HOLD_REASON_MISSING:2026-09-08", "detail": "stop 사유 comment 필요"}],
+        }
+        for n in range(41, 56)
+    ]
+    run_weekly(ja, tmp_path, "acc-lead", extra)
+    lines = slack[-1].splitlines()
+    assert any("(16건)" in line for line in lines)
+    assert sum(" — 담당 " in line for line in lines) == 15
+    assert lines[-1] == "    • 외 1건" and sum("외 1건" in line for line in lines) == 1
+
+
+def test_weekly_without_alerts_sends_no_issue_message(ja, tmp_path, slack):
+    """AL-6: 알림 파일이 없으면 주간 메시지에 "점검 결과 이상 없음"을 보낸다."""
+    summ = ja.Summary(str(tmp_path / "summary.md"))
+    ja.slack_weekly(tmp_path / "ctx", summ, "acc-lead")
+    assert len(slack) == 1 and slack[0].splitlines()[1:] == ["점검 결과 이상 없음"]
+    assert "알림 없음" in summ.rows[0]

@@ -13,7 +13,7 @@ import re
 import subprocess
 import sys
 
-from src.constant.jira import SEARCH_LIMIT, TARGET_TYPES, TYPE_ALIAS
+from src.constant.jira import SEARCH_LIMIT, TARGET_TYPES, TEST_TITLE_PREFIXES, TYPE_ALIAS
 from src.jira.report.model import JiraReader, ReviewComment, Ticket
 from src.jira.report.parse import (
     VERDICT_KO,
@@ -118,6 +118,7 @@ def collect(j: JiraReader, jql: str) -> list[Ticket]:
     """JQL로 찾은 ticket마다 기록을 읽는다. Jira 읽기 메서드만 호출한다.
 
     ticket 필드(ISSUE_FIELDS)는 검색 결과로 함께 받아 ticket마다 Jira.issue를 부르지 않는다.
+    제목이 TEST_TITLE_PREFIXES 중 하나로 시작하는(앞 공백 무시) 시험 ticket은 읽지 않고 건너뛴다.
 
     Args:
         j: Jira 읽기 객체.
@@ -126,7 +127,12 @@ def collect(j: JiraReader, jql: str) -> list[Ticket]:
     Returns:
         ticket 기록 목록.
     """
-    return [load_ticket(j, issue) for issue in j.search(jql, ISSUE_FIELDS, limit=SEARCH_LIMIT)]
+    issues = j.search(jql, ISSUE_FIELDS, limit=SEARCH_LIMIT)
+    return [
+        load_ticket(j, issue)
+        for issue in issues
+        if not ((issue.get("fields") or {}).get("summary") or "").lstrip().startswith(TEST_TITLE_PREFIXES)
+    ]
 
 
 def fetch_subtasks(j: JiraReader, project: str, since: dt.date, until: dt.date) -> dict[str, list[dt.datetime]]:

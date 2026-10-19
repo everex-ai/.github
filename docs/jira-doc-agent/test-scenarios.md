@@ -2,7 +2,7 @@
 
 이 문서는 jira-doc이 의도대로, 목적에 맞게 동작하는지 확인하는 시나리오를 담는다.
 시나리오는 work type별 41개, 공통 7개, 알림 정합성 10개다.
-문서와 코드가 다르게 적힌 곳 19개도 함께 모았다.
+문서와 코드가 다르게 적혔던 곳 19개와 처리 결과도 함께 적었다.
 
 - 알림 정합성: 문서에 적힌 알림의 의도와 코드 동작이 맞는지 여부
 - work type별 시나리오는 담당자가 ticket을 작성하는 흐름 순서로 배치했다.
@@ -128,11 +128,9 @@ work type별 시나리오 표는 여섯 열이다.
     - 근거: `docs/jira-doc-agent/README.md:125-128`
 - 정리 모드 시나리오는 "정리:" 뒤에 TL;DR이나 결과 산출물 구역의 출력을 적는다.
 - 검수가 끝나지 않는 시나리오는 처리 결과(실패, 건너뜀)를 적는다.
-- 수단 열의 L1은 아래 두 가지로 나뉜다.
-  - 기존: 이미 있는 테스트
-    - 테스트 이름은 표 아래에 적었다.
-  - 추가할 테스트: 아직 없는 테스트다.
-    - 개발자가 코드 변경 요청에서 작성한다.
+- 수단 열이 L1인 시나리오는 표 아래에 테스트 이름을 적었다.
+  - 시나리오 문서를 처음 쓸 때 없던 테스트는 2026-10-19에 추가했다.
+    - 근거: 브랜치 `feat/jira-doc-alert-fixes`
 
 ## 실행 수단
 
@@ -205,10 +203,9 @@ L2는 Jira와 Slack에 게시하고 비용이 들어 실행자가 실행한다.
 
 ### 시험 ticket이 운영 알림과 보고에 주는 영향
 
-- 지금 코드는 시험 ticket을 정기 보고에서 빼지 않는다.
-  - 보고의 검색 조건에 제목 조건이 없다(`scripts/src/jira/report/fetch.py:95-115`).
-  - 그래서 시험한 달의 정기 보고에 시험 ticket이 집계된다.
-  - 팀장 결정 필요: 제목 머리말로 빼는 규칙을 추가할지 정한다.
+- 정기 보고는 시험 ticket을 집계에서 뺀다.
+  - 제목이 `[jira-doc 테스트]`, `[jira-doc 시험]`, `[automation 테스트]`로 시작하면 뺀다.
+  - 근거: `scripts/src/jira/report/fetch.py`의 `collect`, `scripts/src/constant/jira.py`의 `TEST_TITLE_PREFIXES`
 - 주간 점검의 cron 실행은 시험 ticket도 연동 채널로 알린다.
   - cron 실행 시각: 매주 수요일(`.github/workflows/jira-doc.yml:14`)
   - 실행자는 시험 기간에 팀원에게 시험 ticket 알림임을 미리 알린다.
@@ -280,10 +277,8 @@ Task는 예상 산출물마다 결과가 있고 모두 달성해야 통과다.
   - 다시 request 전환하면 A2 기준 시각이 새로 정해진다.
     - 근거: `scripts/src/jira/precheck/history.py:152-167`
 - L1 테스트
-  - TK-1, TK-3: 추가할 테스트
-    - CI agent가 통과를 내고 T1이나 T2가 보완 필요이면 보류가 되는지 확인한다.
-    - 지금 테스트는 R4가 보완 필요인 경우만 확인한다(`tests/jira/test_render.py:1385`).
-  - TK-17: 기존 `test_t3_mismatch_detail`(`tests/jira/test_render.py:871`)
+  - TK-1, TK-3: `test_task_pass_with_failed_t1_or_t2_turns_into_hold`(`tests/jira/test_render.py:2285`)
+  - TK-17: 기존 `test_t3_mismatch_detail`(`tests/jira/test_render.py:874`)
 
 ## Bug 시나리오
 
@@ -319,10 +314,9 @@ Bug는 원인·해결 근거 링크와 To-Be 동작 확인 comment가 있어야 
   - 실행자는 검사 표의 B3, B4와 검수 결과가 서로 맞는지 확인한다.
 - 실행자는 BG-13을 TK-18과 같은 순서로 만든다.
 - L1 테스트
-  - BG-1, BG-2: 기존 `test_bug_template_b1_fails`(`tests/jira/test_render.py:747`)
-  - BG-4: 기존 `test_bug_template_b2_fails_with_placeholder_only`(`tests/jira/test_render.py:753`)
-  - BG-1, BG-2, BG-4: 추가할 테스트
-    - CI agent가 통과를 내고 B1이나 B2가 보완 필요이면 보류가 되는지 확인한다.
+  - BG-1, BG-2: 기존 `test_bug_template_b1_fails`(`tests/jira/test_render.py:750`)
+  - BG-4: 기존 `test_bug_template_b2_fails_with_placeholder_only`(`tests/jira/test_render.py:756`)
+  - BG-1, BG-2, BG-4: `test_bug_pass_with_failed_b1_or_b2_turns_into_hold`(`tests/jira/test_render.py:2310`)
 
 ## Issue 시나리오
 
@@ -353,9 +347,8 @@ Issue는 대응 결과(수용, 반려, 이관)와 이유, 근거가 있어야 �
 - IS-10은 CI agent의 판정을 확인하는 시나리오다.
   - I3도 apply.py가 다시 정하지 않는다(`docs/jira-doc-agent/README.md:311-316`).
 - L1 테스트
-  - IS-1: 기존 `test_issue_type_counts_struck_item_as_selected`(`tests/jira/test_render.py:1563`)
-  - IS-2: 추가할 테스트
-    - 1줄 39자와 40자의 결과가 갈리는지 확인한다.
+  - IS-1: 기존 `test_issue_type_counts_struck_item_as_selected`(`tests/jira/test_render.py:1566`)
+  - IS-2: `test_issue_content_i2_boundary_is_40_chars_for_one_line`(`tests/jira/test_render.py:2330`)
 
 ## work type 공통 시나리오
 
@@ -382,19 +375,19 @@ CM-1–CM-3은 같은 ticket에서 차례로 실행한다.
 - CM-6은 L1으로만 확인한다.
   - `JIRA_DOC_GATE`는 repo variable이라 운영 실행에도 적용된다(`.github/workflows/jira-doc.yml:51`).
 - L1 테스트
-  - CM-5: 기존 `test_failure_reasons`(`tests/jira/test_render.py:1040`)
-  - CM-5: 기존 `test_main_failure_sends_one_slack_and_exits_one`(`:1127`)
-  - CM-6: 기존 `test_issue_gate_doc_review_fail_turns_pass_into_hold`(`:1528`)
-  - CM-7: 추가할 테스트
-    - 대상이 아닌 work type과 sub-task를 건너뛰는지 확인한다.
+  - CM-5: 기존 `test_failure_reasons`(`tests/jira/test_render.py:1043`)
+  - CM-5: 기존 `test_main_failure_sends_one_slack_and_exits_one`(`:1130`)
+  - CM-6: 기존 `test_issue_gate_doc_review_fail_turns_pass_into_hold`(`:1531`)
+  - CM-7: `test_collect_issue_skips_non_target_type_and_subtask`(`tests/jira/test_jira_collect.py:120`)
 
 ## 문서·코드 대조 항목
 
-문서 문장 19곳이 코드 동작이나 실제 줄 번호와 다르다.
-모든 항목은 2026-10-19에 원본 줄을 출력해 확인했다.
+문서 문장 19곳이 코드 동작이나 실제 줄 번호와 달랐다.
+2026-10-19에 모두 고쳤다. 처리 결과는 표의 마지막 열에 있다.
 
+- 처리: 브랜치 `feat/jira-doc-alert-fixes`
+- 표의 문서 위치와 코드 위치는 고치기 전(commit `1c37c14`) 기준이다.
 - 확인 명령: 문서 위치와 코드 위치의 줄을 `sed -n '<줄>p' <파일>`로 출력했다.
-- 고칠지와 어떻게 고칠지는 이 문서에서 정하지 않는다.
 - 표의 위치는 아래처럼 줄여 적었다.
   - README.md, alerts.md, metrics.md: `docs/jira-doc-agent/`
   - `issue.py`, `slack.py`, `verdict.py`: `scripts/src/jira/`
@@ -406,36 +399,42 @@ CM-1–CM-3은 같은 ticket에서 차례로 실행한다.
   - `jira-doc.yml`: `.github/workflows/`
   - `test_render.py`: `tests/jira/`
 
-| ID | 문서 위치 | 문서 내용 | 코드 동작(위치) |
-|---|---|---|---|
-| DC-1 | README.md:181-186, :430-545 | 실행 모드 표와 흐름도에 확인 결과 알림 모드가 없음 | 확인 결과 알림 모드가 있음(`jira-doc.yml:17`, `:49`) |
-| DC-2 | README.md:183 | 검수 모드가 "상태 전환"을 함 | 상태를 바꾸지 않음(README.md:245, `check.py`의 `STATE_NOTE`) |
-| DC-3 | README.md:819-821 | 상태 전환 실패가 검수 comment에 남음 | 상태 전환이 없음(DC-2와 같은 위치) |
-| DC-4 | README.md:825 | 실패한 ticket에는 Jira에 아무것도 남기지 않음 | comment 게시 뒤 기록 저장에서 Jira 오류가 나면 부분 반영 뒤 실패 처리(`issue.py:350-363`, `apply.py:109-119`) |
-| DC-5 | README.md:134-139 | jira-doc 기록 값은 네 가지 | `lastMode`, `docFails`, `lastDecisionAt`도 있음(`issue.py:353-361`, `:457`) |
-| DC-6 | README.md:404 | 관찰 모드의 검수 모드에서 게시 | 문서화 리뷰 항목이 없으면 게시하지 않음(`issue.py:331`) |
-| DC-7 | README.md:764 | 대응표 사용처에 팀장 확인 결과 알림이 없음 | 그 알림도 대응표를 읽음(`issue.py:445`) |
-| DC-8 | alerts.md:21, README.md:765 | 팀장 채널 secret이 없으면 Summary 탭에 남김 | 본문 없이 결과 행만 남음(`issue.py:506`, `apply.py:95-98`) |
-| DC-9 | alerts.md:391 | A3는 `end` 전환까지 다시 올라옴 | ready-to-done에서 나가면 풀림(`run.py:127`) |
-| DC-10 | `constant/slack.py:15`, `run.py:139` | A3 조치로 "미루는 이유 comment", "보류 comment"를 안내 | comment로는 A3가 풀리지 않음(`run.py:127`) |
-| DC-11 | alerts.md:396 | 대응표에 없으면 이름이나 "팀장"으로 표시 | "담당자 미지정", "팀장 미지정", "팀장(Slack 멘션 없음)"도 사용함(`slack.py:82-88`, `:122-127`) |
-| DC-12 | alerts.md "중복 방지와 멘션 규칙" 절 | 주간 점검 메시지의 건수 상한이 없음 | 절마다 15건 상한(`constant/slack.py:27`) |
-| DC-13 | alerts.md:59, README.md:781 | 팀장 계정의 전환인지 늘 확인 | 팀장 accountId가 비면 확인하지 않음(`issue.py:436`) |
-| DC-14 | `apply.py:94` 주석, `test_render.py:1879` docstring | 12월 보고의 연간 묶음은 두 번째 메시지 | 세 번째 메시지(`message.py:360-364`) |
-| DC-15 | alerts.md:62-63, README.md:32 | cron 줄이 `jira-doc.yml:13`, `:14` | 실제는 `:14`, `:15` |
-| DC-16 | README.md:232, :685, :692, :702, :853 | 워크플로 줄 번호 | 1–11줄 밀림. 예: README.md:685의 `:92`는 실제 `:103` |
-| DC-17 | metrics.md:58 | 관찰 모드의 품질 검사는 T4–T8 5개 | T4–T9 6개(`check.py:71`) |
-| DC-18 | alerts.md:53 | 팀장 확인 결과 알림은 F4가 보냄 | F4는 실행만 시작하고 apply.py가 보냄(`issue.py:454`) |
-| DC-19 | `apply.py:24-25` docstring | 담당자는 팀장 전환 뒤 확인 결과 알림으로 결과를 받음 | 통과와 보류 검수 comment가 담당자를 바로 멘션함(`issue.py:322-323`) |
+| ID | 문서 위치 | 문서 내용 | 코드 동작(위치) | 처리 결과 |
+|---|---|---|---|---|
+| DC-1 | README.md:181-186, :430-545 | 실행 모드 표와 흐름도에 확인 결과 알림 모드가 없음 | 확인 결과 알림 모드가 있음(`jira-doc.yml:17`, `:49`) | README 실행 모드 표에 행 추가, 흐름도 추가 |
+| DC-2 | README.md:183 | 검수 모드가 "상태 전환"을 함 | 상태를 바꾸지 않음(README.md:245, `check.py`의 `STATE_NOTE`) | README 표에서 상태 전환을 뺌 |
+| DC-3 | README.md:819-821 | 상태 전환 실패가 검수 comment에 남음 | 상태 전환이 없음(DC-2와 같은 위치) | README 문장을 뺌 |
+| DC-4 | README.md:825 | 실패한 ticket에는 Jira에 아무것도 남기지 않음 | comment 게시 뒤 기록 저장에서 Jira 오류가 나면 부분 반영 뒤 실패 처리(`issue.py:350-363`, `apply.py:109-119`) | README에 예외를 적음 |
+| DC-5 | README.md:134-139 | jira-doc 기록 값은 네 가지 | `lastMode`, `docFails`, `lastDecisionAt`도 있음(`issue.py:353-361`, `:457`) | README에 일곱 값을 적음 |
+| DC-6 | README.md:404 | 관찰 모드의 검수 모드에서 게시 | 문서화 리뷰 항목이 없으면 게시하지 않음(`issue.py:331`) | README에 조건을 적음 |
+| DC-7 | README.md:764 | 대응표 사용처에 팀장 확인 결과 알림이 없음 | 그 알림도 대응표를 읽음(`issue.py:445`) | README 표에 넣음 |
+| DC-8 | alerts.md:21, README.md:765 | 팀장 채널 secret이 없으면 Summary 탭에 남김 | 본문 없이 결과 행만 남음(`issue.py:506`, `apply.py:95-98`) | README, alerts.md에 결과 행만 남는다고 적음 |
+| DC-9 | alerts.md:391 | A3는 `end` 전환까지 다시 올라옴 | ready-to-done에서 나가면 풀림(`run.py:127`) | alerts.md에 해소 조건을 적음 |
+| DC-10 | `constant/slack.py:15`, `run.py:139` | A3 조치로 "미루는 이유 comment", "보류 comment"를 안내 | comment로는 A3가 풀리지 않음(`run.py:127`) | 코드 문구를 In Progress 전환으로 고침 |
+| DC-11 | alerts.md:396 | 대응표에 없으면 이름이나 "팀장"으로 표시 | "담당자 미지정", "팀장 미지정", "팀장(Slack 멘션 없음)"도 사용함(`slack.py:82-88`, `:122-127`) | alerts.md에 표시 문구를 모두 적음 |
+| DC-12 | alerts.md "중복 방지와 멘션 규칙" 절 | 주간 점검 메시지의 건수 상한이 없음 | 절마다 15건 상한(`constant/slack.py:27`) | alerts.md에 15건 상한을 적음 |
+| DC-13 | alerts.md:59, README.md:781 | 팀장 계정의 전환인지 늘 확인 | 팀장 accountId가 비면 확인하지 않음(`issue.py:436`) | 코드를 고침: 팀장 accountId가 비면 보내지 않고 경고 |
+| DC-14 | `apply.py:94` 주석, `test_render.py:1879` docstring | 12월 보고의 연간 묶음은 두 번째 메시지 | 세 번째 메시지(`message.py:360-364`) | 주석과 테스트를 세 메시지로 고침 |
+| DC-15 | alerts.md:62-63, README.md:32 | cron 줄이 `jira-doc.yml:13`, `:14` | 실제는 `:14`, `:15` | 줄 번호를 고침 |
+| DC-16 | README.md:232, :685, :692, :702, :853 | 워크플로 줄 번호 | 1–11줄 밀림. 예: README.md:685의 `:92`는 실제 `:103` | 줄 번호를 고침 |
+| DC-17 | metrics.md:58 | 관찰 모드의 품질 검사는 T4–T8 5개 | T4–T9 6개(`check.py:71`) | metrics.md를 T4–T9 6개로 고침 |
+| DC-18 | alerts.md:53 | 팀장 확인 결과 알림은 F4가 보냄 | F4는 실행만 시작하고 apply.py가 보냄(`issue.py:454`) | alerts.md에 apply.py가 보낸다고 적음 |
+| DC-19 | `apply.py:24-25` docstring | 담당자는 팀장 전환 뒤 확인 결과 알림으로 결과를 받음 | 통과와 보류 검수 comment가 담당자를 바로 멘션함(`issue.py:322-323`) | docstring을 담당자 즉시 멘션으로 고침 |
 
 ## 알림 정합성 시나리오
 
-알림 다섯 개에서 문서의 의도와 코드의 동작이 다르다.
-그중 세 개는 고칠 방향을 팀장이 정해야 해서 "팀장 결정 필요"를 붙였다.
+처음 설계할 때 알림 다섯 개에서 문서의 의도와 코드의 동작이 달랐다.
+2026-10-19에 모두 맞췄다.
 
-- 의도와 동작이 다른 알림: AL-1, AL-4, AL-5, AL-6, AL-7
-- 팀장 결정 필요: AL-1, AL-5, AL-7
-- 의도의 출처: `docs/jira-doc-agent/alerts.md`의 "주기별 알림" 절(`:36-70`)
+- 코드 동작을 고친 알림: AL-4, AL-5, AL-6
+- 설명만 고친 알림: AL-1, AL-7
+
+- 의도와 동작이 달랐던 알림: AL-1, AL-4, AL-5, AL-6, AL-7
+- 결정(2026-10-19)
+  - AL-1: 통과와 보류 검수 comment는 담당자를 바로 멘션한다.
+  - AL-5: 모든 실행 모드의 실패를 연동 채널로 알린다.
+  - AL-7: 만료 알림 경로는 바꾸지 않고 팀장이 만료 전에 갱신한다.
+- 의도의 출처: `docs/jira-doc-agent/alerts.md`의 "주기별 알림" 절
 - 차이의 세부는 "문서·코드 대조 항목" 절의 DC 번호로 가리킨다.
 
 | ID | 알림 | 중점 확인 | 수단 |
@@ -444,58 +443,55 @@ CM-1–CM-3은 같은 ticket에서 차례로 실행한다.
 | AL-2 | 문서화 리뷰 comment | 관찰 모드에서만 게시, 팀장 멘션 | L1, L2 |
 | AL-3 | 검수 뒤 Slack 알림 | 팀장만 멘션, 검수 결과별 이유 줄 | L1, L2 |
 | AL-4 | 팀장 확인 결과 알림 | 한 번만 알림, 팀장 아닌 전환 건너뜀 | L1, L2 |
-| AL-5 | 실패 알림 | 실행 모드별 발송 여부 | L1 |
+| AL-5 | 실패 알림 | 실행 모드별 발송, 중복 발송 없음 | L1, L2 |
 | AL-6 | 주간 점검 메시지 | R4, A1, A3 경계값과 해소 조건 | L1, L2 |
 | AL-7 | 토큰(인증 키) 만료 알림 | 30일 경계, 1단계 실패 때 | L1 |
-| AL-8 | 정기 보고 메시지 | 묶음 수, 줄 수와 줄 길이 상한, 멘션 없음 | L1, L2 |
+| AL-8 | 정기 보고 메시지 | 묶음 수, 줄 수와 줄 길이 상한, 멘션 없음, 시험 ticket 제외 | L1, L2 |
 | AL-9 | F2 stop 사유 요청 comment | 문구, 담당자 멘션 | L2 |
 | AL-10 | Summary 탭 사본 | Slack 멤버 ID가 남지 않음 | L2 |
 
 ### AL-1 검수 comment
 
-- 의도가 두 곳에 다르게 적혀 있다(DC-19).
-  - alerts.md는 통과와 보류는 담당자가 받는다고 적는다(`docs/jira-doc-agent/alerts.md:41`).
-  - 코드는 alerts.md와 같다(`scripts/src/jira/issue.py:320-323`).
-  - 그래서 담당자는 팀장 전환 전에 Jira 알림을 받는다.
-- 팀장 결정 필요: 통과와 보류에서 담당자를 바로 멘션할지 정한다.
-- L1: 추가할 테스트
-  - 검수 결과별 멘션 대상을 확인한다.
-  - `sanitize_mentions`가 담당자와 팀장 외 멘션을 지우는지 확인한다(`scripts/src/jira/comment.py:159`).
+- 의도: 통과와 보류는 담당자, 검토 요청은 팀장을 멘션한다(`docs/jira-doc-agent/alerts.md`의 "주기별 알림" 표).
+  - 담당자는 팀장 전환 전에 검수 결과를 Jira 알림으로 받는다.
+  - 처음에는 `scripts/apply.py` docstring이 다르게 적었다(DC-19).
+- 코드는 의도와 같다(`scripts/src/jira/issue.py:320-323`).
+- L1: `test_review_comment_ends_with_mention_by_verdict`(`tests/jira/test_render.py:2345`)
+- L1: `test_sanitize_mentions_keeps_only_allowed_accounts`(`:2354`)
 
 ### AL-2 문서화 리뷰 comment
 
-- 의도: 관찰 모드의 검수 모드에서 팀장에게 게시한다(`docs/jira-doc-agent/alerts.md:42`).
-  - 게시 조건의 차이는 DC-6에 있다.
-- L1: 기존 `test_bug_observe_doc_review_goes_to_lead_comment_only`(`tests/jira/test_render.py:1513`)
+- 의도: 관찰 모드의 검수 모드에서 팀장에게 게시한다(`docs/jira-doc-agent/alerts.md`의 "주기별 알림" 표).
+  - 문서화 리뷰 항목이 없으면 게시하지 않는다(DC-6).
+- L1: `test_bug_observe_doc_review_goes_to_lead_comment_only`(`tests/jira/test_render.py:1516`)
 - L2: 실행자는 TK, BG, IS 실행마다 comment 첫 줄과 팀장 멘션을 확인한다.
 
 ### AL-3 검수 뒤 Slack 알림
 
-- 의도: 검수 결과와 관계없이 팀장에게 보낸다(`docs/jira-doc-agent/alerts.md:43`).
-- 코드는 의도와 같다(`scripts/src/jira/issue.py:366-383`).
-  - 대응표에 팀장이 없으면 멘션 대신 "팀장"으로 적는다(`:370`).
-- L1: 기존 `test_hold_does_not_transition_and_mentions_lead_only`(`tests/jira/test_render.py:258`)
-- L1: 기존 `test_slack_reasons_show_late_r4`(`tests/jira/test_render.py:1424`)
+- 의도: 검수 결과와 관계없이 팀장에게 보낸다(`docs/jira-doc-agent/alerts.md`의 "주기별 알림" 표).
+- 코드는 의도와 같다(`scripts/src/jira/issue.py:365-384`).
+  - 대응표에 팀장이 없으면 멘션 대신 "팀장"으로 적는다.
+- L1: `test_hold_does_not_transition_and_mentions_lead_only`(`tests/jira/test_render.py:258`)
+- L1: `test_slack_reasons_show_late_r4`(`:1427`)
 - L2: 실행자는 연동 채널에서 아래 네 가지를 확인한다.
   - 첫 줄: `[<ticket 키>] 검수 결과: <결과>. 상태 변경 없음`
   - 검수 결과별 이유 줄
   - 요청 묶음은 보류에만 있음
-    - 요청 묶음: 요청 문장을 모은 줄들(`scripts/src/jira/slack.py:201-245`)
+    - 요청 묶음: 요청 문장을 모은 줄들(`scripts/src/jira/slack.py`의 `review_slack_text`)
   - 검수 comment 링크
 
 ### AL-4 팀장 확인 결과 알림
 
-- 의도: 팀장이 Done이나 In Progress로 전환하면 담당자에게 알린다(`docs/jira-doc-agent/alerts.md:53-61`).
-  - 팀장 accountId의 확인 조건 차이는 DC-13에 있다.
-- 한 번만 알리는 기록 `lastDecisionAt`은 전송에 성공했을 때만 남는다(`scripts/src/jira/issue.py:456-458`).
+- 의도: 팀장이 Done이나 In Progress로 전환하면 담당자에게 알린다.
+  - 근거: `docs/jira-doc-agent/alerts.md`의 "주기별 알림" 표
+- 코드는 팀장 accountId가 비면 보내지 않고 Summary 탭에 경고를 남긴다(`scripts/src/jira/issue.py:429-431`).
+  - 처음에는 누가 전환해도 보냈다(DC-13).
+- 한 번만 알리는 기록 `lastDecisionAt`은 전송에 성공했을 때만 남는다(`scripts/src/jira/issue.py:461`).
   - 그래서 전송에 실패하면 다음 실행에서 다시 보낸다.
-- L1: 기존 테스트(`tests/jira/test_render.py:2027-2095`)
-  - `test_decision_hold_notifies_assignee`, `test_decision_pass_notifies_assignee`
-  - `test_decision_skips`, `test_decision_mode_requires_issue`
-  - `test_decision_same_transition_is_sent_once`
-- L1: 추가할 테스트
-  - 팀장 accountId가 빈 경우
-  - 전송 실패 뒤 다시 실행한 경우
+- L1: `test_decision_hold_notifies_assignee`(`tests/jira/test_render.py:2030`)
+- L1: `test_decision_same_transition_is_sent_once`(`:2098`)
+- L1: `test_decision_with_empty_lead_warns_without_sending`(`:2267`)
+- L1: `test_decision_send_failure_does_not_save_last_decision_at`(`:2362`)
 - L2: 실행자는 아래 순서로 확인한다.
   1. 시험 ticket을 request 전환하고 검수를 기다린다.
   2. 팀장이 Done으로 전환한다.
@@ -506,66 +502,82 @@ CM-1–CM-3은 같은 ticket에서 차례로 실행한다.
 
 ### AL-5 실패 알림
 
-- 의도: 실패하면 팀장에게 알린다(`docs/jira-doc-agent/alerts.md:45`).
-- 코드는 검수 모드와 정리 모드의 실패만 알린다(`scripts/apply.py:102-143`).
-  - 주간 점검, 보고, 확인 결과 알림 모드에는 실패 알림 경로가 없다(`scripts/apply.py:75-100`).
-  - 워크플로 1단계가 실패하면 4단계가 실행되지 않아 알림이 없다(`.github/workflows/jira-doc.yml:158`).
-- 팀장 결정 필요: 다른 실행 모드의 실패도 알릴지 정한다.
-- L1: 기존 `test_main_failure_sends_one_slack_and_exits_one`(`tests/jira/test_render.py:1127`)
-- L1: 추가할 테스트
-  - 팀장 accountId가 비면 "팀장 미지정"으로 적는지 확인한다(`scripts/src/jira/slack.py:122-127`).
+- 의도: 실패하면 팀장에게 알린다(`docs/jira-doc-agent/alerts.md`의 "주기별 알림" 표).
+- 실패 알림은 두 가지다.
+  - ticket 실패 알림: 검수·정리 모드에서 반영하지 못한 ticket을 알린다(`scripts/apply.py`의 `main`).
+  - 실행 실패 알림: 모든 실행 모드에서 단계가 실패하면 5단계가 알린다(`scripts/apply.py`의 `failure_notice`).
+    - 처음에는 주간 점검, 보고, 확인 결과 알림 모드의 실패를 알리지 않았다.
+      - 근거: 고치기 전 `scripts/apply.py:75-100`(commit `1c37c14`)
+- ticket 실패 알림을 보냈으면 실행 실패 알림은 보내지 않는다.
+  - 표시 파일 `out/_failure_notified`는 전송에 성공했을 때만 남는다.
+- 세부: `docs/jira-doc-agent/README.md`의 "실행 실패 알림(5단계)" 절
+- L1: `test_main_failure_sends_one_slack_and_exits_one`(`tests/jira/test_render.py:1130`)
+- L1: `test_failure_mode_sends_run_error_to_integration_channel`(`:2173`)
+- L1: `test_failure_mode_skips_when_ticket_failure_already_notified`(`:2193`)
+- L1: `test_main_ticket_failure_not_marked_when_slack_send_fails`(`:2246`)
+- L1: `test_failure_slack_text_marks_unassigned_lead_in_first_line`(`:2374`)
+- L2: 실행자는 브랜치나 main에서 없는 ticket으로 실패를 일으킨다.
+  - 예: `gh workflow run jira-doc.yml -f mode=decision -f issueKey=INNO-99999`
+  - 연동 채널에 `[jira-doc 실패] 확인 결과 알림 모드 실행 실패` 한 건이 오는지 확인한다.
 
 ### AL-6 주간 점검 메시지
 
-- 의도: R4, A1은 담당자, A3는 팀장에게 매주 알린다(`docs/jira-doc-agent/alerts.md:46`).
+- 의도: R4, A1은 담당자, A3는 팀장에게 매주 알린다(`docs/jira-doc-agent/alerts.md`의 "주기별 알림" 표).
 - 코드의 조건은 아래와 같다.
   - R4: 지금 상태가 Backlog이고 stop 뒤 24시간 이상(`scripts/src/jira/precheck/run.py:99`)
   - A1: In Progress이고 마지막 활동 뒤 5영업일 이상(`:116`)
   - A3: ready-to-done이고 진입 뒤 3영업일 이상(`:127-132`)
-  - 알림이 없으면 "점검 결과 이상 없음"을 보낸다(`scripts/src/jira/issue.py:482-483`).
-- A3의 해소 조건과 건수 상한의 차이는 DC-9, DC-10, DC-12에 있다.
+  - 알림이 없으면 "점검 결과 이상 없음"을 보낸다(`scripts/src/jira/issue.py:487`).
+- A3 조치 문구는 실제 해소 조건으로 고쳤다(DC-10).
+  - 해소 조건: done 전환이나 In Progress 전환
 - L1: 기존 테스트
-  - `test_ready_wait_alert_after_3_business_days`(`tests/jira/test_render.py:838`)
-  - `test_ready_wait_no_alert_after_2_business_days`(`:851`)
-  - `test_stale_alert_message_and_stop_detail`(`:793`)
-- L1: 추가할 테스트
-  - R4 24시간 경계와 Backlog가 아닐 때
-  - A1 4영업일과 5영업일 경계
-  - 15건을 넘을 때, 알림이 없을 때
+  - `test_ready_wait_alert_after_3_business_days`(`tests/jira/test_render.py:841`)
+  - `test_ready_wait_no_alert_after_2_business_days`(`:854`)
+  - `test_stale_alert_message_and_stop_detail`(`:796`)
+- L1: 2026-10-19 추가 테스트
+  - `test_scan_r4_boundary_is_24_hours_in_backlog`(`:2406`)
+  - `test_scan_a1_boundary_is_5_business_days`(`:2416`)
+  - `test_weekly_lines_limit_items_per_section_to_15`(`:2423`)
+  - `test_weekly_without_alerts_sends_no_issue_message`(`:2442`)
 - L2: 실행자는 아래 순서로 확인한다.
   1. R4용 ticket을 stop 전환 뒤 사유 없이 24시간 넘게 Backlog에 둔다.
   2. A3용 ticket을 request 전환 뒤 3영업일 넘게 둔다.
   3. 주간 점검 모드를 수동 실행하고 두 ticket이 올라오는지 확인한다.
-  4. A3용 ticket에 comment만 남기고 다음 주에도 올라오는지 확인한다.
+  4. A3용 ticket을 In Progress로 전환하고 다음 주에 빠지는지 확인한다.
 
 ### AL-7 토큰(인증 키) 만료 알림
 
-- 의도: 만료 30일 전부터 매주 팀장 채널로 알린다(`docs/jira-doc-agent/alerts.md:355-363`).
-- 코드는 주간 점검 모드의 4단계에서 보낸다(`scripts/apply.py:75-79`).
-  - 1단계가 실패하면 4단계가 없는 것은 AL-5와 같다.
-  - 그래서 `JIRA_API_TOKEN`이 만료되면 그 만료 알림은 나갈 수 없다.
-- 팀장 채널 secret이 없을 때의 차이는 DC-8에 있다.
-- 팀장 결정 필요: `JIRA_API_TOKEN` 만료를 다른 경로로 알릴지 정한다.
-- L1: 기존 `test_token_expiry_sends_only_30_days_or_less`(`tests/jira/test_render.py:1723`)
-- L1: 기존 `test_slack_token_expiry_posts_to_lead_channel`(`:1785`)
+- 의도: 만료 30일 전부터 매주 팀장 채널로 알린다.
+  - 근거: `docs/jira-doc-agent/alerts.md`의 "토큰(인증 키) 만료 알림" 절
+- 이 알림은 주간 점검 모드의 1단계(Jira 수집)가 성공해야 나간다.
+  - 1단계가 실패하면 4단계가 실행되지 않는다(`.github/workflows/jira-doc.yml:158`).
+  - 그래서 `JIRA_API_TOKEN`이 이미 만료됐으면 만료 알림 대신 실행 실패 알림(AL-5)이 나간다.
+- 결정: 만료 알림 경로는 바꾸지 않는다.
+  - 팀장이 만료 30일 전 알림을 받고 갱신한다.
+- 팀장 채널 secret이 없을 때의 동작은 DC-8에 있다.
+- L1: `test_token_expiry_sends_only_30_days_or_less`(`tests/jira/test_render.py:1726`)
+- L1: `test_slack_token_expiry_posts_to_lead_channel`(`:1788`)
 
 ### AL-8 정기 보고 메시지
 
-- 의도: 묶음마다 팀장 채널로 메시지 하나를 보낸다(`docs/jira-doc-agent/alerts.md:96-106`).
-  - 메시지마다 40줄 이내, 줄마다 50자 이내다(`:105`).
+- 의도: 묶음마다 팀장 채널로 메시지 하나를 보낸다(`docs/jira-doc-agent/alerts.md`의 "정기 보고 메시지" 절).
+  - 메시지마다 40줄 이내, 줄마다 50자 이내다.
+  - 시험 ticket은 집계에서 뺀다.
 - 코드: 월간은 매달, 분기는 3·6·9·12월, 연간은 12월에 붙는다(`scripts/src/jira/report/message.py:360-364`).
-  - 12월 보고의 메시지 수 차이는 DC-14에 있다.
-- L1: 기존 `tests/jira/test_report.py`의 묶음 수와 길이 테스트
+  - 12월 보고는 메시지 3건이다(DC-14).
+- L1: `tests/jira/test_report.py`의 묶음 수와 길이 테스트
+- L1: `test_collect_skips_test_tickets`(`tests/jira/test_report.py:778`)
 - L2: 실행자는 보고 모드를 `month=2026-09`로 수동 실행하고 아래를 확인한다.
   - 팀장 채널에 월간, 분기 메시지 2건이 옴
   - 메시지마다 40줄, 줄마다 50자 이내
   - Slack 멘션(`<@`)이 없음
-- 2026-09는 새 시험 ticket을 만들기 전의 달이다.
-  - 그래서 이 실행에는 새 시험 ticket이 집계되지 않는다.
+- L2: 실행자는 시험 ticket을 만든 달로 보고 모드를 실행한다.
+  - 시험 ticket이 집계에서 빠지는지 확인한다.
 
 ### AL-9 F2 stop 사유 요청 comment
 
-- 의도: stop 전환 때 담당자를 멘션한 안내 comment를 단다(`docs/jira-doc-agent/README.md:87-94`).
+- 의도: stop 전환 때 담당자를 멘션한 안내 comment를 단다.
+  - 근거: `docs/jira-doc-agent/README.md`의 "용어" 절 F2 항목
   - 이 comment는 repo가 아니라 Jira Automation F2 설정에서 만든다.
 - L2: 실행자는 CM-1에서 stop 전환 뒤 아래를 확인한다.
   - 안내 문구 두 줄이 README의 문구와 같음
@@ -573,11 +585,12 @@ CM-1–CM-3은 같은 ticket에서 차례로 실행한다.
 
 ### AL-10 Summary 탭 사본
 
-- 의도: Summary 탭의 Slack 사본에는 멘션 대신 이름을 적는다(`docs/jira-doc-agent/alerts.md:399-405`).
+- 의도: Summary 탭의 Slack 사본에는 멘션 대신 이름을 적는다.
+  - 근거: `docs/jira-doc-agent/alerts.md`의 "중복 방지와 멘션 규칙" 절
   - public repo의 실행 화면은 GitHub에 로그인한 누구나 볼 수 있다.
-  - 근거: `docs/jira-doc-agent/alerts.md:400-404`의 GitHub 문서 원문
+  - 근거: 같은 절의 GitHub 문서 원문
 - L2: 실행자는 Summary 탭에 `<@U`가 없는지 확인한다.
-  - 대상: 주간 점검 모드와 검수 모드 실행
+  - 대상: 주간 점검 모드, 검수 모드, 실행 실패 알림 실행
 
 ## 결과 기록 양식
 
@@ -609,7 +622,7 @@ L2는 기준 구성 시나리오부터 실행하고, 기다리는 시간이 긴 
 추정: 시험 ticket은 약 45개, 실행은 약 50회다.
 
 - 실행 순서는 아래와 같다.
-  1. 개발자: 추가할 테스트를 코드 변경 요청으로 작성하고 L1을 실행한다.
+  1. 개발자: L1(`pytest tests/jira`)을 실행해 모두 통과하는지 확인한다.
   2. 실행자: AL-6의 R4용, A3용 ticket을 먼저 만들어 둔다.
   3. 실행자: 기준 구성 시나리오 TK-11, BG-9, IS-7을 실행한다.
      - 기준 구성이 통과하지 않으면 다른 시나리오를 실행하지 않는다.

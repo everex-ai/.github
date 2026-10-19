@@ -136,7 +136,7 @@ def run_scan(p: Path, now: dt.datetime) -> None:
                         "code": f"READY_WAIT:{day}",
                         "check": "A3",
                         "detail": f"ready-to-done 진입 {day} 뒤 영업일 기준 {waited}일 경과(토요일과 일요일 제외)",
-                        "message": f"ready-to-done 진입 뒤 영업일 기준 {waited}일 동안 done 전환 없음. 팀장의 done 전환 또는 보류 comment 필요",
+                        "message": f"ready-to-done 진입 뒤 영업일 기준 {waited}일 동안 done 전환 없음. 팀장의 done 전환 또는 In Progress 전환 필요",
                     }
                 )
 

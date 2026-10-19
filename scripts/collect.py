@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+from src.common.github import write_run_error  # noqa: E402
 from src.jira import collect as jira_collect  # noqa: E402
 from src.jira.client import Jira  # noqa: E402
 
@@ -29,21 +30,25 @@ def main() -> None:
     if args.mode != "alerts" and not args.issue.strip():  # ticket 키 없는 실행은 막는다. Jira를 부르기 전에 끝낸다
         sys.exit(f"{args.mode} 모드에는 --issue가 필요하다")
 
-    j = Jira()
-    site = j.site_url()
-    org = os.environ.get("GH_ORG", "")
-    project = os.environ.get("JIRA_PROJECT_KEY", "")
-    if jira_collect.CTX.exists():
-        shutil.rmtree(jira_collect.CTX)
-    jira_collect.CTX.mkdir()
+    try:
+        j = Jira()
+        site = j.site_url()
+        org = os.environ.get("GH_ORG", "")
+        project = os.environ.get("JIRA_PROJECT_KEY", "")
+        if jira_collect.CTX.exists():
+            shutil.rmtree(jira_collect.CTX)
+        jira_collect.CTX.mkdir()
 
-    if args.mode == "alerts":  # 주간 점검: 누락 검사용 요약만 모은다
-        if not project:
-            sys.exit("alerts 모드에는 JIRA_PROJECT_KEY가 필요하다")
-        jira_collect.collect_scan(j, project, site)
-        print(f"[collect] alerts: 점검 대상 {len(list((jira_collect.CTX / '_scan').glob('*.json')))}건")
-        return
-    jira_collect.collect_issue(j, args.issue.strip(), site, org, args.mode)
+        if args.mode == "alerts":  # 주간 점검: 누락 검사용 요약만 모은다
+            if not project:
+                sys.exit("alerts 모드에는 JIRA_PROJECT_KEY가 필요하다")
+            jira_collect.collect_scan(j, project, site)
+            print(f"[collect] alerts: 점검 대상 {len(list((jira_collect.CTX / '_scan').glob('*.json')))}건")
+            return
+        jira_collect.collect_issue(j, args.issue.strip(), site, org, args.mode)
+    except Exception as e:  # 5단계 실패 알림이 읽도록 원인을 남기고 다시 올린다. SystemExit은 잡지 않는다
+        write_run_error(Path("out"), "1. 입력 수집", e)
+        raise
 
 
 if __name__ == "__main__":

@@ -55,7 +55,8 @@
   - 보고 모드: 매월 1일에 정기 보고 메시지를 팀장 채널로 보내는 모드
     - 팀장 채널: 팀장만 받는 Slack 채널(`docs/jira-doc-agent/alerts.md`의 "용어" 절)
 - 관찰 모드와 게이트 모드: 변수 `JIRA_DOC_GATE`가 `false`이면 관찰 모드, `true`이면 게이트 모드다(`docs/jira-doc-agent/README.md`의 "용어" 절).
-  - 관찰 모드: Task 기록의 품질 검사 5개(T4–T8)의 결과를 판정에 반영하지 않고, 팀장에게 공유하는 문서화 리뷰 comment로만 게시한다.
+  - 관찰 모드: Task 문서화 리뷰 6개(T4–T9)의 결과를 판정에 반영하지 않는다.
+    - 팀장에게 공유하는 문서화 리뷰 comment로만 게시한다.
   - 게이트 모드: 그 결과를 검수 comment에 넣고, ❌ 보완 필요로 판정한 검사가 있으면 통과를 보류로 바꾼다.
 - ready-to-done 체류 시간: task가 ready-to-done 상태에 머문 시간
 
