@@ -14,8 +14,9 @@ class FakeJira:
 
     tldr_field = "customfield_10650"
 
-    def __init__(self, descriptions: dict[str, str]) -> None:
+    def __init__(self, descriptions: dict[str, str], lead_name: str = "Kai") -> None:
         self.descriptions = descriptions
+        self.lead_name = lead_name
         self.comments: list[tuple[str, str]] = []
         self.fields: dict[str, dict] = {}
         self.props_set: list[tuple[str, dict]] = []
@@ -31,6 +32,17 @@ class FakeJira:
             Jira issue 응답 모양의 dict.
         """
         return {"fields": {"description": self.descriptions.get(key, "")}}
+
+    def user_name(self, account_id: str) -> str:
+        """팀장 표시 이름을 돌려준다.
+
+        Args:
+            account_id: 사용자 accountId.
+
+        Returns:
+            account_id가 비어 있으면 빈 문자열, 아니면 lead_name.
+        """
+        return self.lead_name if account_id else ""
 
     def set_fields(self, key: str, fields: dict) -> None:
         """필드 값을 모아 둔다.

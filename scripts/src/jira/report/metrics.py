@@ -549,7 +549,7 @@ def business_days(start: dt.datetime, end: dt.datetime) -> int:
 
 
 def lead_wait(tickets: Iterable[Ticket], end: dt.datetime) -> tuple[int, int]:
-    """팀장 확인 대기 지표: end 시각에 ready-to-done인 ticket 수와 진입 뒤 가장 오래 머문 영업일 수.
+    """ready-to-done ticket 지표: end 시각에 ready-to-done인 ticket 수와 진입 뒤 가장 오래 머문 영업일 수.
 
     진입은 end 전 마지막 ready-to-done 진입이다. 진입 기록이 없으면 만든 시각부터 센다. end 뒤에 만든 ticket은 뺀다.
 
@@ -570,7 +570,7 @@ def lead_wait(tickets: Iterable[Ticket], end: dt.datetime) -> tuple[int, int]:
 
 
 def lead_confirm_minutes(tickets: Iterable[Ticket], sp: Span, lead: str) -> list[float]:
-    """팀장 확인 시간: 기간 안에 팀장 계정이 ready-to-done에서 전환한 경우마다 머문 시간(분).
+    """request 전환 뒤 상태 변경까지 지표: 기간 안에 팀장 계정이 ready-to-done에서 전환한 경우마다 머문 시간(분).
 
     머문 시간은 그 전환 전 마지막 ready-to-done 진입부터 그 전환까지다. 진입 기록이 없는 전환과 팀장 외 계정의
     전환은 뺀다. 자동 보류 전환도 뺀다. jira-doc이 팀장 계정으로 전환해 전환한 사람으로는 구분할 수 없다.

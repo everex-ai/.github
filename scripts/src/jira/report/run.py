@@ -29,6 +29,7 @@ def run_report(
     업데이트 판정은 월간 묶음에서만 쓰므로 sub-task와 PR은 대상 달에 만들어진 것만 한 번씩 검색한다.
     PR 검색 결과가 PR_LIMIT건에 닿으면 월간 메시지에 그 사실을 적는다.
     PR 검색 기간은 build_jql처럼 하루 앞선 날부터이고, 기간 판정은 시각으로 다시 한다.
+    메시지의 팀장 이름은 j.user_name(lead)로 읽고, 읽지 못하면 "팀장"을 적는다.
 
     Args:
         j: Jira 읽기 객체(scripts/src/jira/client.py의 Jira).
@@ -54,6 +55,13 @@ def run_report(
     since, until = cur[0].date(), (cur[1] - dt.timedelta(days=1)).date()
     prs = (pr_search or fetch.search_prs)(os.environ.get("GH_ORG", ""), since - dt.timedelta(days=1), until)
     attach_updates(tickets, fetch_subtasks(j, project, since, cur[1].date()), pr_times(prs or [], project))
-    report = Report(tickets, month, lead, pr_ok=prs is not None, pr_capped=prs is not None and len(prs) >= PR_LIMIT)
+    report = Report(
+        tickets,
+        month,
+        lead,
+        pr_ok=prs is not None,
+        pr_capped=prs is not None and len(prs) >= PR_LIMIT,
+        lead_name=j.user_name(lead),
+    )
     summ.extra += report.summary_lines()
     return report.messages()

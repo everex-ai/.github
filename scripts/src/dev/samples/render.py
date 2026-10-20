@@ -31,8 +31,10 @@ from src.dev.samples.data import (
     ISSUE_SUMMARY,
     LATE_REASON,
     PASS_ITEMS,
+    PASS_SLACK,
     PASS_SUMMARY,
     REQUEST_ITEMS,
+    REQUEST_SLACK,
     REQUEST_SUMMARY,
     STOP_CHANGES,
     TASK_CHECKS,
@@ -41,6 +43,7 @@ from src.dev.samples.data import (
     TASK_FEEDBACK,
     TASK_ITEMS,
     TASK_REQUESTS,
+    TASK_SLACK,
     TASK_SUMMARY,
     TASK_TITLE,
 )
@@ -140,6 +143,7 @@ def task_verdict(key: str, mode: str, verdict: str | None) -> dict:
     }
     if mode == "review":
         v["feedback"] = TASK_FEEDBACK
+        v["slack"] = TASK_SLACK
     return v
 
 
@@ -221,7 +225,7 @@ def render(out_dir: Path) -> list[Path]:
         write_issue(ctx, "INNO-21", "Task", expected, task_checks, summary=TASK_TITLE)
         reasons = [it["reason"] for it in REQUEST_ITEMS if it.get("reason")]
         request = task_verdict("INNO-21", "review", "escalate")
-        request |= {"items": REQUEST_ITEMS, "extra": [], "requests": reasons}
+        request |= {"items": REQUEST_ITEMS, "extra": [], "requests": reasons, "slack": REQUEST_SLACK}
         write_out(out, "INNO-21", request, REQUEST_SUMMARY)
         run_issue(work, "INNO-21", "review", gate=False)
         save("slack-review-request.txt", sent[-1])
@@ -230,7 +234,12 @@ def render(out_dir: Path) -> list[Path]:
         pass_stops = jp.stop_events(STOP_CHANGES, [LATE_REASON], FIXED_NOW)
         pass_checks = precheck_checks(jp, "Task", pass_stops)
         write_issue(ctx, "INNO-22", "Task", expected, pass_checks, summary=TASK_TITLE, stops=pass_stops)
-        passed = task_verdict("INNO-22", "review", "pass") | {"items": PASS_ITEMS, "extra": [], "requests": []}
+        passed = task_verdict("INNO-22", "review", "pass") | {
+            "items": PASS_ITEMS,
+            "extra": [],
+            "requests": [],
+            "slack": PASS_SLACK,
+        }
         write_out(out, "INNO-22", passed, PASS_SUMMARY)
         j = run_issue(work, "INNO-22", "review", gate=False)
         save("review-comment-task-pass.wiki", j.comments[0][1])

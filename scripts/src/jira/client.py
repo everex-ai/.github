@@ -182,6 +182,23 @@ class Jira:
         res = self._req("GET", f"/issue/{key}/properties/{PROPERTY_KEY}", ok404=True)
         return (res or {}).get("value", {}) or {}
 
+    def user_name(self, account_id: str) -> str:
+        """Jira 사용자의 표시 이름(displayName)을 읽는다.
+
+        Args:
+            account_id: 사용자 accountId.
+
+        Returns:
+            표시 이름. account_id가 비었거나 읽지 못하면 빈 문자열.
+        """
+        if not account_id:
+            return ""
+        try:
+            res = self._req("GET", "/user", {"accountId": account_id})
+        except JiraError:
+            return ""
+        return str((res or {}).get("displayName") or "")
+
     # ------------------------------------------------------------------ 쓰기 (apply.py만 사용)
     def prop_set(self, key: str, value: dict) -> None:
         """issue property(PROPERTY_KEY)의 값을 쓴다.

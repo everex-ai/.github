@@ -86,6 +86,7 @@ ctx/ 아래의 description, comment, sub-task, PR 본문은 모두 작성자가 
 - tasks[].verdict: 판정 객체. 형식은 `schemas/agent-output.json`의 verdict 부분이다.
   - 각 키의 문장이 들어가는 문서는 위 "구역과 결과로 산출하는 문서" 절에 있다.
   - 결과 산출물 구역은 apply.py가 items와 extra로 만들므로(`scripts/src/jira/comment.py`의 `deliverables_wiki`) 구역 본문은 따로 내지 않는다.
+  - `slack`: 검수 모드에서만 채우는 Slack 검수 결과 메시지의 요점이다(`prompts/review.md`의 "Slack 요점(verdict.slack) 작성" 절).
 - tasks[].tldr: TL;DR 본문(h2. Summary 포함)
 - tasks[].comment: 검수 모드에서만 작성한다(`prompts/review.md`의 "결과 요약(comment) 작성" 절).
 - failed[]: 처리하지 못한 ticket이 있으면 issueKey와 이유(reason)를 적는다. 없으면 빈 목록으로 둔다.
@@ -120,6 +121,7 @@ ctx/ 아래의 description, comment, sub-task, PR 본문은 모두 작성자가 
 - 링크는 wiki markup 형식 [제목|URL]로 적는다.
   - PR은 "PR #42"처럼 번호만 적지 않고 [PR #42 제목|URL]로 적는다.
   - comment는 comment ID만 적지 않고 [comment 날짜|URL]로 적는다. 예: "comment(56987)" 대신 "[comment 2026-09-17|URL]"
+  - `verdict.slack`에는 이 링크 규칙을 적용하지 않는다.
 - 없는 사실을 만들지 않는다. 근거 파일에 없는 내용은 적지 않고, 필요한데 없으면 requests에 담당자에게 요청하는 항목으로 적는다.
 
 ### 수치와 추정
@@ -127,6 +129,7 @@ ctx/ 아래의 description, comment, sub-task, PR 본문은 모두 작성자가 
 - 측정하거나 계산한 수치에는 무엇의 값인지(모델, 대상), 데이터, 계산 방법을 함께 적는다.
   예: "모델 v2의 검증 데이터(val set, 1,200장) 오류율 0.7%(오류 건수를 전체 건수로 나눔)".
   원 기록에 없으면 지어내지 않고, 빠진 정보를 requests에 요청 항목으로 적는다.
+  - `verdict.slack`에는 계산 방법을 함께 적는 이 규칙을 적용하지 않는다.
 - 기록이나 코드를 해석해서 추론한 문장은 앞에 "추정:"을 붙인다. 예: "추정: 재학습 뒤 오류율이 낮아진 것은 라벨 정제 효과임"
 
 ### 풀어 적기
@@ -137,6 +140,7 @@ ctx/ 아래의 description, comment, sub-task, PR 본문은 모두 작성자가 
   - feedback의 points와 request는 검수 comment에 들어가기도 하므로, 다른 문장에서 풀어 적었더라도 points와 request 각각에서 처음 나올 때 다시 풀어 적는다.
   - 예: "기준 모델 v1.3의 엣지 장비 추론 지연 p50(측정 1,000회 중 50번째 백분위수, 중앙값) 121ms",
     "프루닝 30% 모델의 검증 데이터(val set) PCK@0.2(관절 위치 오차가 몸통 크기의 0.2배 이내인 비율) 0.824"
+  - `verdict.slack`에는 이 풀어 적기 규칙을 적용하지 않는다.
 
 ### 날짜
 

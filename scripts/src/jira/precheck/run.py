@@ -101,7 +101,7 @@ def run_scan(p: Path, now: dt.datetime) -> None:
                 {
                     "code": f"HOLD_REASON_MISSING:{st['at'][:10]}",
                     "check": "R4",
-                    "detail": f"{st['at'][:10]} stop 뒤 {int(st['hoursOpen'] // 24)}일 경과(지난 시간을 24시간 단위로 셈, 나머지 버림)",
+                    "detail": f"stop 뒤 {int(st['hoursOpen'] // 24)}일",
                     "message": f"{st['at'][:10]}에 stop 전환으로 Backlog에 보낸 뒤 사유 comment 없음. 무엇을 기다리는지와 언제 다시 진행할지 comment 필요",
                 }
             )
@@ -118,7 +118,7 @@ def run_scan(p: Path, now: dt.datetime) -> None:
                 {
                     "code": f"STALE:{(last_activity.date() if last_activity else now.date()).isoformat()}",
                     "check": "A1",
-                    "detail": f"마지막 활동 {last_activity.date().isoformat() if last_activity else '기록 없음'} 뒤 영업일 기준 {idle}일 경과(토요일과 일요일 제외)",
+                    "detail": f"활동 없이 {idle}영업일",
                     "message": f"마지막 활동(사람 comment, In Progress 전환, ticket 생성 중 가장 늦은 것) 뒤 영업일(토요일과 일요일을 뺀 날) 기준 {idle}일 동안 활동 없음. 진행 상황 comment, 또는 멈춘 ticket이면 stop 전환으로 Backlog에 보내는 것 필요",
                 }
             )
@@ -135,7 +135,7 @@ def run_scan(p: Path, now: dt.datetime) -> None:
                     {
                         "code": f"READY_WAIT:{day}",
                         "check": "A3",
-                        "detail": f"ready-to-done 진입 {day} 뒤 영업일 기준 {waited}일 경과(토요일과 일요일 제외)",
+                        "detail": f"대기 {waited}영업일",
                         "message": f"ready-to-done 진입 뒤 영업일 기준 {waited}일 동안 done 전환 없음. 팀장의 done 전환 또는 In Progress 전환 필요",
                     }
                 )

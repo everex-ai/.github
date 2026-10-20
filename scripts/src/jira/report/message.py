@@ -8,6 +8,7 @@ from __future__ import annotations
 import datetime as dt
 from collections.abc import Callable, Iterable
 
+from src.constant.slack import LEAD_NAME_DEFAULT
 from src.constant.time import KST
 from src.jira.report import fetch
 from src.jira.report.fetch import PR_LIMIT
@@ -47,6 +48,7 @@ from src.jira.report.text import (
     _ratio,
     _seconds,
     _sub,
+    _sub2,
     _times,
     _usd,
     top_ticket_lines,
@@ -57,17 +59,18 @@ TOP_YEAR = 3  # 연간 묶음에서 분기별 만족률을 적는 연간 ❌ 상
 MAX_LINES = 40  # 메시지 하나의 줄 수 상한. 넘으면 팀원별 줄을 "외 n명"으로 줄인다
 KR_MAX = 5  # 분기 묶음에 적는 KR 행 수 상한. 넘으면 "외 n개"로 줄인다
 CANDIDATE_IDS = 2  # 후보 표시에 적는 조건 B 검사 ID 수. 넘으면 "외 n"으로 줄인다
-DEF_LINE = "지표 정의: docs/jira-doc-agent/alerts.md"  # 메시지 끝 줄
+DEF_LINE = "지표 정의: docs/jira-doc-agent/alerts.md"  # 메시지 끝 줄. 앞에 빈 줄을 하나 둔다
 NEW_STATUS_LINES = 2  # 새 ticket, 업데이트 없음의 상태별 수 줄 수 상한. 넘으면 뒤 상태를 "외 n종"으로 줄인다
 
 
 class Report:
     """정기 보고 하나의 계산 결과와 묶음별 메시지 조립.
 
-    메시지마다 제목, 대상 기간, 팀장 업무, 팀 전체, 팀원별, Claude 활용 요약 절, 지표 정의 줄 순서로 적는다.
-    메시지는 MAX_LINES줄 이내다. 넘으면 팀원별 줄을 줄인다.
+    메시지마다 굵은 제목, 대상 기간, "{팀장 이름} 검토 항목", 팀 전체, 팀원별, Claude 활용 요약 절, 빈 줄, 지표 정의 줄
+    순서로 적는다. 절 제목은 "• *제목*" 줄이고 그 아래 줄은 한 단계 들여 쓴다.
+    메시지는 빈 줄을 포함해 MAX_LINES줄 이내다. 넘으면 팀원별 줄을 줄인다.
     자동 검수 소요 시간(feedback_minutes)은 Claude 활용 요약 절의 첫 줄에 적는다.
-    팀장 확인 대기는 대상 기간 끝과 실행 시각(now, 없으면 지금 시각) 중 이른 시각까지 센다.
+    ready-to-done ticket 수는 대상 기간 끝과 실행 시각(now, 없으면 지금 시각) 중 이른 시각까지 센다.
     """
 
     def __init__(
@@ -78,8 +81,10 @@ class Report:
         pr_ok: bool = True,
         pr_capped: bool = False,
         now: dt.datetime | None = None,
+        lead_name: str = "",
     ):
         self.tickets, self.month, self.lead, self.pr_ok, self.pr_capped = tickets, month, lead, pr_ok, pr_capped
+        self.lead_name = lead_name or LEAD_NAME_DEFAULT
         self.now = now or dt.datetime.now(KST)
         self.year = month[:4]
         self.cur = months_span(month, month)
@@ -89,6 +94,14 @@ class Report:
         self.cur_usage, self.prev_usage = usage(tickets, self.cur), usage(tickets, self.prev)
         self.high = usage_judgement(self.cur_usage, self.prev_usage)
         self.cases = agreement_cases(tickets, lead)
+
+    def lead_title(self) -> str:
+        """팀장 절 제목 줄 "• *{팀장 이름} 검토 항목*".
+
+        Returns:
+            Slack 본문 줄. 팀장 이름은 Report 생성 때 받은 값이고, 비었으면 "팀장"이다.
+        """
+        return f"• *{_esc(self.lead_name)} 검토 항목*"
 
     def quarters(self) -> list[tuple[str, Span]]:
         """대상 해의 네 분기.
@@ -105,15 +118,16 @@ class Report:
         """메시지 하나를 조립한다. 팀원별 절은 sections의 셋째 자리에 넣는다.
 
         팀원별 절은 남은 줄 수(budget) 안에서 줄인다(_fit_members). 다른 절은 줄 수 상한이 있는 줄만 두어
-        메시지가 MAX_LINES줄을 넘지 않는다. 월간 묶음의 최악 경우 팀원별 절 밖의 줄이 35줄이라 팀원별 절에 5줄이
-        남는다(절 제목, 순서 줄, 담당자 한 명의 두 줄, "외 n명" 줄).
-        35줄: 제목과 대상 기간 2줄, 팀장 업무 5줄, 팀 전체 13줄(업데이트 없음 2줄, PR 검색 1줄, 새 ticket 하위 2줄,
-        검색 상한 1줄 포함), Claude 활용 요약 14줄(비용 기록 없음 1줄, Top3 7줄 포함), 지표 정의 1줄.
+        메시지가 MAX_LINES줄을 넘지 않는다. 월간 묶음의 최악 경우 팀원별 절 밖의 줄이 36줄이라 팀원별 절에 4줄이
+        남는다(절 제목, 순서 줄, "외 n명" 줄 포함).
+        36줄: 제목과 대상 기간 2줄, 팀장 검토 항목 5줄, 팀 전체 13줄(업데이트 없음 2줄, PR 검색 1줄, 새 ticket 하위 2줄,
+        검색 상한 1줄 포함), Claude 활용 요약 14줄(비용 기록 없음 1줄, Top3 7줄 포함), 지표 정의 앞 빈 줄 1줄과
+        지표 정의 1줄.
 
         Args:
-            title: 제목 줄.
+            title: 제목 줄(굵게 적기 전의 "[2026-10 jira-doc 월간 보고]").
             sp: 대상 기간.
-            sections: 팀장 업무, 팀 전체, Claude 활용 요약 절의 줄.
+            sections: 팀장 검토 항목, 팀 전체, Claude 활용 요약 절의 줄.
             member_head: 팀원별 절 "순서:" 줄의 지표 순서 문구.
             groups: 담당자마다의 줄.
 
@@ -121,10 +135,10 @@ class Report:
             mrkdwn 문자열.
         """
         lead, team, use = sections
-        head = [title, f"대상 기간: {span_text(sp)}"]
-        budget = MAX_LINES - len(head) - len(lead) - len(team) - len(use) - 1
+        head = [f"*{title}*", f"• 대상 기간: {span_text(sp)}"]
+        budget = MAX_LINES - len(head) - len(lead) - len(team) - len(use) - 2
         members = _fit_members(member_head, groups, budget)
-        return "\n".join([*head, *lead, *team, *members, *use, DEF_LINE])
+        return "\n".join([*head, *lead, *team, *members, *use, "", DEF_LINE])
 
     def overview_lines(self, sp: Span) -> list[str]:
         """월간 묶음 팀 전체 절의 ticket 현황 줄.
@@ -139,18 +153,18 @@ class Report:
         idle_head = f"업데이트 없음 {ov.idle_total}개"
         idle = _capped_wrap(_status_counts(ov.idle), NEW_STATUS_LINES, f"{idle_head}: ") or [idle_head]
         lines = [
-            f"• 기존 ticket {ov.existing}개",
-            _sub(f"업데이트 {ov.updated}개(그중 done 전환 {ov.updated_done}개)"),
-            *(_sub(x) for x in idle),
+            _sub(f"기존 ticket {ov.existing}개"),
+            _sub2(f"업데이트 {ov.updated}개(그중 done 전환 {ov.updated_done}개)"),
+            *(_sub2(x) for x in idle),
         ]
         if not self.pr_ok:
-            lines.append("• PR 검색 실패: PR 추가는 업데이트에서 뺌")
+            lines.append(_sub("PR 검색 실패: PR 추가는 업데이트에서 뺌"))
         if self.pr_capped:
-            lines.append(f"• PR 검색이 상한 {PR_LIMIT}건에 닿음")
-        lines.append(f"• 새 ticket {ov.new_total}개")
-        lines += [_sub(x) for x in _capped_wrap(_status_counts(ov.new), NEW_STATUS_LINES)]
+            lines.append(_sub(f"PR 검색이 상한 {PR_LIMIT}건에 닿음"))
+        lines.append(_sub(f"새 ticket {ov.new_total}개"))
+        lines += [_sub2(x) for x in _capped_wrap(_status_counts(ov.new), NEW_STATUS_LINES)]
         if len(self.tickets) >= fetch.SEARCH_LIMIT:
-            lines.append(f"• 검색 결과 상한 {fetch.SEARCH_LIMIT}개에 닿음: 빠진 ticket 있을 수 있음")
+            lines.append(_sub(f"검색 결과 상한 {fetch.SEARCH_LIMIT}개에 닿음: 빠진 ticket 있을 수 있음"))
         return lines
 
     def claude_lines(
@@ -180,18 +194,18 @@ class Report:
         if monthly and self.high[0] is True:
             notes.append("사용량 많음")
         lines = [
-            "*Claude 활용 요약*",
-            f"• 자동 검수 소요 시간: {_seconds(feedback_minutes(self.tickets, sp))}",
-            f"• API 환산 금액: {_usd(cur.total_cost)}({', '.join(notes)})",
+            "• *Claude 활용 요약*",
+            _sub(f"자동 검수 소요 시간: {_seconds(feedback_minutes(self.tickets, sp))}"),
+            _sub(f"API 환산 금액: {_usd(cur.total_cost)}({', '.join(notes)})"),
         ]
         if cur.missing_cost:
-            lines.append(_sub(f"비용 기록 없는 실행 {cur.missing_cost}건은 0 USD로 셈"))
+            lines.append(_sub2(f"비용 기록 없는 실행 {cur.missing_cost}건은 0 USD로 셈"))
         lines += cost_sub
         tk = cur.tokens
         lines += [
-            f"• 토큰: input {_count(tk['input'])}, output {_count(tk['output'])}",
-            _sub(f"cache 쓰기(지시·기록 저장) {_count(tk['cacheWrite'])}"),
-            _sub(f"cache 읽기(저장분 재사용) {_count(tk['cacheRead'])}"),
+            _sub(f"토큰: input {_count(tk['input'])}, output {_count(tk['output'])}"),
+            _sub2(f"cache 쓰기 {_count(tk['cacheWrite'])}"),
+            _sub2(f"cache 읽기 {_count(tk['cacheRead'])}"),
             *top_ticket_lines(self.tickets, sp),
         ]
         return lines
@@ -225,18 +239,18 @@ class Report:
         a = agreement_summary(self.cases, sp)
         wait_n, wait_days = lead_wait(self.tickets, min(sp[1], self.now))
         lead = [
-            "*팀장 업무*",
-            f"• 판정 일치율: {_ratio(a['match'], a['judged'])}",
-            _sub(f"최근 {RECENT_N}건: {_ratio(a['recent_match'], a['recent_n'])}"),
-            f"• 팀장 확인 대기: {wait_n}건" + (f"(최장 {wait_days}영업일)" if wait_n else ""),
-            f"• 팀장 확인 시간: {_median(lead_confirm_minutes(self.tickets, sp, self.lead))}",
+            self.lead_title(),
+            _sub(f"판정 일치율: {_ratio(a['match'], a['judged'])}"),
+            _sub2(f"최근 {RECENT_N}건: {_ratio(a['recent_match'], a['recent_n'])}"),
+            _sub(f"ready-to-done ticket: {wait_n}건" + (f"(최장 {wait_days}영업일)" if wait_n else "")),
+            _sub(f"request 전환 뒤 상태 변경까지: {_median(lead_confirm_minutes(self.tickets, sp, self.lead))}"),
         ]
         team = [
-            "*팀 전체*",
+            "• *팀 전체*",
             *self.overview_lines(sp),
-            f"• 첫 검수 통과율: {_ratio(*pass_count(first_reviews(self.tickets, sp)))}",
-            f"• 최대 검수 반복 횟수: {_times(*max_request_count(self.tickets, sp))}",
-            f"• stop 사유 기록률: {_ratio(*r4_count(self.tickets, sp))}",
+            _sub(f"첫 검수 통과율: {_ratio(*pass_count(first_reviews(self.tickets, sp)))}"),
+            _sub(f"최대 검수 반복 횟수: {_times(*max_request_count(self.tickets, sp))}"),
+            _sub(f"stop 사유 기록률: {_ratio(*r4_count(self.tickets, sp))}"),
         ]
         cands = candidates(self.tickets, sp)
         prev_cands = candidates(self.tickets, self.prev)
@@ -250,8 +264,8 @@ class Report:
                 sub.append(self.candidate_mark(cands[r.aid]))
             if r.aid in follow:
                 sub.append(f"지난달 후보: {follow[r.aid]}")
-            main = f"• {_name(r.name)}: {_frac(*r.first)} / {_times(r.max_request[0])} / {_frac(*r.stop)}"
-            groups.append([main, _sub(", ".join(sub))])
+            main = _sub(f"{_name(r.name)}: {_frac(*r.first)} / {_times(r.max_request[0])} / {_frac(*r.stop)}")
+            groups.append([main, _sub2(", ".join(sub))])
         title = f"[{self.month} jira-doc 월간 보고]"
         head = "첫 검수 통과율 / 최대 검수 반복 횟수 / stop 사유 기록률"
         use = self.claude_lines(sp, self.prev, "전월", monthly=True)
@@ -266,29 +280,29 @@ class Report:
         sp = self.quarter
         a = agreement_summary(self.cases, sp)
         lead = [
-            "*팀장 업무*",
-            f"• 판정 일치율: {_ratio(a['match'], a['judged'])}",
-            _sub(f"최근 {RECENT_N}건: {_ratio(a['recent_match'], a['recent_n'])}"),
-            f"• 검토 요청 비율: {_ratio(a['escalate'], a['total'])}",
-            f"• 팀장 확인 시간: {_median(lead_confirm_minutes(self.tickets, sp, self.lead))}",
+            self.lead_title(),
+            _sub(f"판정 일치율: {_ratio(a['match'], a['judged'])}"),
+            _sub2(f"최근 {RECENT_N}건: {_ratio(a['recent_match'], a['recent_n'])}"),
+            _sub(f"검토 요청 비율: {_ratio(a['escalate'], a['total'])}"),
+            _sub(f"request 전환 뒤 상태 변경까지: {_median(lead_confirm_minutes(self.tickets, sp, self.lead))}"),
         ]
         rows = kr_rows(self.tickets, sp)
-        team = ["*팀 전체*", "• KR별 하위 Task" + ("" if rows else ": -")]
+        team = ["• *팀 전체*", _sub("KR별 하위 Task" + ("" if rows else ": -"))]
         for r in rows[:KR_MAX]:
             rate = f"달성률 {_frac(r.achieved, r.expected, '개')}"
             miss = f"(달성 요약 줄 없음 {r.no_line}개)" if r.no_line else ""
-            team.append(_sub(f"{r.key or _esc(r.name)}: done {r.done}개, {rate}{miss}"))
+            team.append(_sub2(f"{r.key or _esc(r.name)}: done {r.done}개, {rate}{miss}"))
         if len(rows) > KR_MAX:
-            team.append(_sub(f"외 {len(rows) - KR_MAX}개"))
+            team.append(_sub2(f"외 {len(rows) - KR_MAX}개"))
         top = sorted(fail_counts(self.tickets, sp).items(), key=_rank)[:TOP_QUARTER]
         top_text = ", ".join(f"{cid} {n}" for cid, n in top) or "-"
         team += [
-            f"• ❌ 상위 {TOP_QUARTER}개: {top_text}",
-            f"• 첫 검수 통과율: {_ratio(*pass_count(first_reviews(self.tickets, sp)))}",
-            f"• 최대 검수 반복 횟수: {_times(*max_request_count(self.tickets, sp))}",
+            _sub(f"❌ 상위 {TOP_QUARTER}개: {top_text}"),
+            _sub(f"첫 검수 통과율: {_ratio(*pass_count(first_reviews(self.tickets, sp)))}"),
+            _sub(f"최대 검수 반복 횟수: {_times(*max_request_count(self.tickets, sp))}"),
         ]
         groups = [
-            [f"• {_name(r.name)}: {_frac(*r.first)} / {_times(r.max_request[0])} / {_frac(*r.stop)}"]
+            [_sub(f"{_name(r.name)}: {_frac(*r.first)} / {_times(r.max_request[0])} / {_frac(*r.stop)}")]
             for r in member_rows(self.tickets, sp)
         ]
         first = quarter_first(self.month)
@@ -318,24 +332,24 @@ class Report:
 
         a = agreement_summary(self.cases, sp)
         lead = [
-            "*팀장 업무*",
-            f"• 판정 일치율: {_ratio(a['match'], a['judged'])}",
-            _sub(f"분기별: {per_quarter(agree)}"),
+            self.lead_title(),
+            _sub(f"판정 일치율: {_ratio(a['match'], a['judged'])}"),
+            _sub2(f"분기별: {per_quarter(agree)}"),
         ]
         team = [
-            "*팀 전체*",
-            f"• 첫 검수 통과율: {_ratio(*pass_count(first_reviews(self.tickets, sp)))}",
-            _sub(f"분기별: {per_quarter(lambda qs: _frac(*pass_count(first_reviews(self.tickets, qs))))}"),
+            "• *팀 전체*",
+            _sub(f"첫 검수 통과율: {_ratio(*pass_count(first_reviews(self.tickets, sp)))}"),
+            _sub2(f"분기별: {per_quarter(lambda qs: _frac(*pass_count(first_reviews(self.tickets, qs))))}"),
         ]
         top = [cid for cid, _ in sorted(fail_counts(self.tickets, sp).items(), key=_rank)[:TOP_YEAR]]
-        team.append(f"• ❌ 상위 {TOP_YEAR}개의 분기별 만족률" + ("" if top else ": -"))
+        team.append(_sub(f"❌ 상위 {TOP_YEAR}개의 분기별 만족률" + ("" if top else ": -")))
         sat = {name: check_satisfaction(self.tickets, qs) for name, qs in quarters}
         for cid in top:
             team.append(
-                _sub(f"{cid}: " + ", ".join(f"{name} {_frac(*sat[name].get(cid, (0, 0)))}" for name, _ in quarters))
+                _sub2(f"{cid}: " + ", ".join(f"{name} {_frac(*sat[name].get(cid, (0, 0)))}" for name, _ in quarters))
             )
         groups = [
-            [f"• {_name(r.name)}: {_frac(*r.first)} / {_times(r.max_request[0])}"]
+            [_sub(f"{_name(r.name)}: {_frac(*r.first)} / {_times(r.max_request[0])}")]
             for r in member_rows(self.tickets, sp)
         ]
 
@@ -345,7 +359,7 @@ class Report:
 
         prev_year = f"{int(self.year) - 1:04d}"
         prev = months_span(f"{prev_year}-01", f"{prev_year}-12")
-        use = self.claude_lines(sp, prev, "전년", cost_sub=[_sub(f"분기별: {per_quarter(cost)}")])
+        use = self.claude_lines(sp, prev, "전년", cost_sub=[_sub2(f"분기별: {per_quarter(cost)}")])
         title = f"[{self.year} jira-doc 연간 보고]"
         return self.assemble(title, sp, [lead, team, use], "첫 검수 통과율 / 최대 검수 반복 횟수", groups)
 
@@ -397,8 +411,8 @@ class Report:
             f"- stop 사유 기록률: {_ratio(*r4_count(self.tickets, sp))}",
             f"- 자동 검수 소요 시간: {_seconds(fb)}",
             f"- 판정 일치율: {_ratio(a['match'], a['judged'])}",
-            f"- 팀장 확인 대기: {wait_n}건(최장 {wait_days}영업일)",
-            f"- 팀장 확인 시간: {_median(lead_confirm_minutes(self.tickets, sp, self.lead))}",
+            f"- ready-to-done ticket: {wait_n}건(최장 {wait_days}영업일)",
+            f"- request 전환 뒤 상태 변경까지: {_median(lead_confirm_minutes(self.tickets, sp, self.lead))}",
         ]
         if int(self.month[5:]) % 3 == 0:
             q = agreement_summary(self.cases, self.quarter)

@@ -15,6 +15,7 @@ VERDICT_KEYS = (
     "extra",
     "requests",
     "feedback",
+    "slack",
 )  # 구조화 출력의 verdict 객체에서 덮어쓰는 키
 CHECK_RESULTS = ("pass", "fail", "n/a")
 FAILURE_TEXT_LIMIT = 300  # 실패한 실행의 result 문구를 옮기는 길이
@@ -75,7 +76,7 @@ def build_verdict(d: Path, key: str, mode: str, agent: dict | None) -> dict:
     """판정 없음 기본값을 만들고, 구조화 출력의 verdict 객체에 있는 키만 덮어쓴다.
 
     기본값은 issueKey(폴더 이름), mode, verdict(검수 모드 "no_verdict", 정리 모드 null), checks(precheck.json의 스크립트 검사 결과),
-    items(예상 산출물마다 done null), extra, requests, feedback(빈 목록)이다. 구조화 출력의 issueKey, mode는 무시한다.
+    items(예상 산출물마다 done null), extra, requests, feedback, slack(빈 목록)이다. 구조화 출력의 issueKey, mode는 무시한다.
 
     Args:
         d: ctx/<KEY>/ 폴더.
@@ -101,6 +102,7 @@ def build_verdict(d: Path, key: str, mode: str, agent: dict | None) -> dict:
         "extra": [],
         "requests": [],
         "feedback": [],
+        "slack": [],
     }
     given = (agent or {}).get("verdict")
     if isinstance(given, dict):
