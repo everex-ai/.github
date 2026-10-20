@@ -31,10 +31,6 @@ class JiraReader(Protocol):
         """jira-doc 기록(issue property ai-doc-agent)을 돌려준다."""
         ...
 
-    def user_name(self, account_id: str) -> str:
-        """Jira 사용자의 표시 이름을 돌려준다. 읽지 못하면 빈 문자열."""
-        ...
-
 
 class SummaryLike(Protocol):
     """Summary 탭 기록 객체(scripts/src/common/github.py의 Summary). 이 모듈은 extra만 사용한다."""

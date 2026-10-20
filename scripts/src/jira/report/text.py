@@ -69,8 +69,8 @@ def _usd(x: float) -> str:
 
 
 def _sub(text: str, depth: int = 1) -> str:
-    """Slack 본문의 절 아래 줄. depth 단계만큼 SLACK_INDENT로 들여 쓰고 1단계는 "◦", 2단계 이상은 "▪"를 붙인다."""
-    return f"{SLACK_INDENT * depth}{'◦' if depth == 1 else '▪'} {text}"
+    """Slack 본문의 절 아래 줄. depth 단계만큼 SLACK_INDENT로 들여 쓰고 1단계는 "◦", 2단계 이상은 "‣"를 붙인다."""
+    return f"{SLACK_INDENT * depth}{'◦' if depth == 1 else '‣'} {text}"
 
 
 def _sub2(text: str) -> str:

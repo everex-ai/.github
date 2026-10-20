@@ -801,6 +801,7 @@ precheck.py는 스크립트 검사 10개와 docFacts를 계산한다(`scripts/sr
 | `JIRA_DOC_GATE` | variable | `false`(관찰 모드). 게이트 모드에서는 `true` |
 | `JIRA_PROJECT_KEY` | variable | `INNO` |
 | `JIRA_LEAD_ACCOUNT_ID` | variable | 팀장의 Jira accountId |
+| `JIRA_LEAD_NAME` | variable | Slack 메시지에 적는 팀장 이름(예: `Kai`). 비면 "팀장"으로 적음(`docs/jira-doc-agent/alerts.md`의 "Slack 알림 메시지 구조" 절) |
 | `JIRA_TLDR_FIELD_ID` | variable | `customfield_10650` |
 | `JIRA_SITE_URL` | variable (선택) | `https://<site>.atlassian.net`. 비우면 Jira serverInfo API로 알아냄(`scripts/src/jira/client.py`의 `site_url`) |
 | `TOKEN_EXPIRY` | variable | 토큰(인증 키)별 만료일 JSON. 예: `{"JIRA_API_TOKEN":"2027-09-15"}`. 등록과 갱신은 `docs/jira-doc-agent/alerts.md`의 "토큰(인증 키) 만료 알림" 절 |

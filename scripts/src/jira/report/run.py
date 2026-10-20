@@ -12,6 +12,7 @@ from src.jira.report.fetch import PR_LIMIT, attach_updates, build_jql, collect, 
 from src.jira.report.message import Report
 from src.jira.report.model import JiraReader, SummaryLike
 from src.jira.report.period import add_months, months_span, quarter_first
+from src.jira.slack import lead_name
 
 
 def run_report(
@@ -29,7 +30,7 @@ def run_report(
     업데이트 판정은 월간 묶음에서만 쓰므로 sub-task와 PR은 대상 달에 만들어진 것만 한 번씩 검색한다.
     PR 검색 결과가 PR_LIMIT건에 닿으면 월간 메시지에 그 사실을 적는다.
     PR 검색 기간은 build_jql처럼 하루 앞선 날부터이고, 기간 판정은 시각으로 다시 한다.
-    메시지의 팀장 이름은 j.user_name(lead)로 읽고, 읽지 못하면 "팀장"을 적는다.
+    메시지의 팀장 이름은 lead_name()으로 환경 변수 JIRA_LEAD_NAME에서 읽고, 비어 있으면 "팀장"을 적는다.
 
     Args:
         j: Jira 읽기 객체(scripts/src/jira/client.py의 Jira).
@@ -61,7 +62,7 @@ def run_report(
         lead,
         pr_ok=prs is not None,
         pr_capped=prs is not None and len(prs) >= PR_LIMIT,
-        lead_name=j.user_name(lead),
+        lead_name=lead_name(),
     )
     summ.extra += report.summary_lines()
     return report.messages()

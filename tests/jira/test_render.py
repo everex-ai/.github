@@ -23,6 +23,12 @@ if str(ROOT / "scripts") not in sys.path:
     sys.path.append(str(ROOT / "scripts"))  # scripts/src 패키지를 불러오기 위함
 
 
+@pytest.fixture(autouse=True)
+def lead_name_kai(monkeypatch):
+    """메시지의 팀장 이름(환경 변수 JIRA_LEAD_NAME)을 "Kai"로 둔다. 이름 테스트는 이 값을 바꾼다."""
+    monkeypatch.setenv("JIRA_LEAD_NAME", "Kai")
+
+
 @pytest.fixture(scope="module")
 def render():
     """scripts/src/dev/samples/render.py (모듈 이름 src.dev.samples.render)."""
@@ -2112,12 +2118,8 @@ def test_jira_error_while_recording_failed_run_stays_in_summary(render, ja, tmp_
 class DecisionJira:
     """decision 모드 테스트용 가짜 Jira. 지금 상태, changelog, comment, jira-doc 기록을 받는다."""
 
-    def __init__(self, status, changes, comments=(), prop=None, lead_name="Kai"):
+    def __init__(self, status, changes, comments=(), prop=None):
         self.status, self.changes, self._comments, self.prop = status, changes, list(comments), prop or {}
-        self.lead_name = lead_name
-
-    def user_name(self, account_id):
-        return self.lead_name if account_id else ""
 
     def site_url(self):
         return "https://example.atlassian.net"
@@ -2184,20 +2186,22 @@ def test_decision_pass_notifies_assignee(ja, tmp_path, slack):
     ]
 
 
-def test_decision_message_uses_lead_name_from_jira(ja, tmp_path, slack):
-    """대괄호 안의 팀장 이름은 가짜 Jira가 돌려준 표시 이름이다."""
-    fake = DecisionJira(
-        "Done", [("2026-10-15T10:00:00.000+0900", "ready-to-done", "Done", "acc-lead")], lead_name="Liam"
-    )
+def test_decision_message_uses_lead_name_from_env(ja, tmp_path, slack, monkeypatch):
+    """대괄호 안의 팀장 이름은 환경 변수 JIRA_LEAD_NAME이고, 앞뒤 공백은 뗀다."""
+    monkeypatch.setenv("JIRA_LEAD_NAME", "  Liam ")
+    fake = DecisionJira("Done", [("2026-10-15T10:00:00.000+0900", "ready-to-done", "Done", "acc-lead")])
     run_decision(ja, tmp_path, fake)
     assert slack[0].splitlines()[0].startswith("<@U-ASSIGNEE> [Liam 확인: 통과] ")
 
 
-def test_decision_message_without_lead_name_uses_default(ja, tmp_path, slack):
-    """팀장 이름을 읽지 못하면(빈 문자열) 대괄호 안에 "팀장"을 적는다."""
-    fake = DecisionJira(
-        "In Progress", [("2026-10-15T10:00:00.000+0900", "ready-to-done", "In Progress", "acc-lead")], lead_name=""
-    )
+@pytest.mark.parametrize("value", [None, "", "   "])
+def test_decision_message_without_lead_name_uses_default(ja, tmp_path, slack, monkeypatch, value):
+    """JIRA_LEAD_NAME이 없거나 비었거나 공백뿐이면 대괄호 안에 "팀장"을 적는다."""
+    if value is None:
+        monkeypatch.delenv("JIRA_LEAD_NAME")
+    else:
+        monkeypatch.setenv("JIRA_LEAD_NAME", value)
+    fake = DecisionJira("In Progress", [("2026-10-15T10:00:00.000+0900", "ready-to-done", "In Progress", "acc-lead")])
     run_decision(ja, tmp_path, fake)
     assert slack[0].splitlines()[0].startswith("<@U-ASSIGNEE> [팀장 확인: 보류] ")
 

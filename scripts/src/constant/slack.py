@@ -12,7 +12,7 @@ SLACK_MISSED_REASONED = "미달성 {n}건, 담당자 사유 있음"
 SLACK_MISSED_HOLD = "예상 산출물 미달성 {n}건"
 SLACK_T3_CHANGED = "예상 산출물 번호가 CI agent 출력과 다름"
 SLACK_LATE_STOP = "stop 사유 뒤늦게 작성"
-LEAD_NAME_DEFAULT = "팀장"  # Jira에서 팀장 표시 이름을 읽지 못했을 때 메시지에 적는 이름
+LEAD_NAME_DEFAULT = "팀장"  # 환경 변수 JIRA_LEAD_NAME이 비었을 때 메시지에 적는 팀장 이름
 # (검사 ID, 절 제목, 절 제목 뒤의 조치 문구). 절은 이 순서로 나가고, 조치 문구가 비면 절 제목 뒤에 적지 않는다
 ALERT_SECTIONS = [
     ("R4", "stop 사유 미기재", ""),

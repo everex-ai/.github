@@ -1,7 +1,7 @@
 """scripts/src/jira/report/(정기 보고 메시지)의 계산과 Slack 본문.
 
 검수 comment와 문서화 리뷰 comment는 scripts/src/jira/comment.py의 review_comment, doc_review_comment, agent_comment로 만들어
-실제 형식과 같게 한다. Jira는 읽기 메서드(search, changelog, comments, prop_get, user_name)만 가진 가짜 객체로 대신하고
+실제 형식과 같게 한다. Jira는 읽기 메서드(search, changelog, comments, prop_get)만 가진 가짜 객체로 대신하고
 실제 API를 호출하지 않는다. PR 검색(gh search prs)은 가짜 함수로 바꿔 gh를 실행하지 않는다.
 """
 
@@ -26,6 +26,12 @@ KR33 = {"key": "INNO-33", "fields": {"summary": "검수 자동화", "issuetype":
 EPIC = {"key": "INNO-40", "fields": {"summary": "기타 묶음", "issuetype": {"name": "Epic"}}}
 TOKENS = {"input": 100, "output": 50, "cacheWrite": 10, "cacheRead": 1000}
 HOLD_NOTE = "상태를 in-progress로 되돌림"
+
+
+@pytest.fixture(autouse=True)
+def lead_name_kai(monkeypatch):
+    """메시지의 팀장 이름(환경 변수 JIRA_LEAD_NAME)을 "Kai"로 둔다. 이름 테스트는 이 값을 바꾼다."""
+    monkeypatch.setenv("JIRA_LEAD_NAME", "Kai")
 
 
 @pytest.fixture(scope="module")
@@ -192,10 +198,9 @@ def ticket(
 class FakeJira:
     """scripts/src/jira/report/가 부르는 Jira 읽기 메서드만 흉내 낸다. 쓰기 메서드와 issue를 부르면 AttributeError가 난다."""
 
-    def __init__(self, tickets: dict[str, dict], subtasks: list[dict] = (), lead_name: str = "Kai"):
+    def __init__(self, tickets: dict[str, dict], subtasks: list[dict] = ()):
         self.tickets = tickets
         self.subtasks = list(subtasks)
-        self.lead_name = lead_name
         self.jql: list[str] = []
         self.searches: list[tuple[str, list[str]]] = []
 
@@ -219,9 +224,6 @@ class FakeJira:
     def prop_get(self, key: str) -> dict:
         return {"lastVerdict": "pass", "runs": self.tickets[key]["runs"]}
 
-    def user_name(self, account_id: str) -> str:
-        return self.lead_name if account_id else ""
-
 
 class Summ:
     """scripts/src/common/github.py Summary의 extra와 row만 흉내 낸다."""
@@ -234,7 +236,7 @@ class Summ:
         self.rows.append((key, itype, mode, result, note))
 
 
-MARK_RE = re.compile(r"^\s*(?:• |◦ |▪ |\d+\. )?")
+MARK_RE = re.compile(r"^\s*(?:• |◦ |‣ |\d+\. )?")
 
 
 def assert_line_length(body: str, limit: int = 50) -> None:
@@ -702,7 +704,7 @@ DEF_LINE = "지표 정의: docs/jira-doc-agent/alerts.md"
 def assert_shape(msg: str, title: str, span: str, sections: list[str] = SECTIONS) -> None:
     """메시지 하나의 공통 규칙.
 
-    굵은 제목, "• 대상 기간", 절 제목 글머리표와 순서, 절 아래 줄의 들여쓰기와 기호(4칸 ◦, 8칸 이상 ▪),
+    굵은 제목, "• 대상 기간", 절 제목 글머리표와 순서, 절 아래 줄의 들여쓰기와 기호(4칸 ◦, 8칸 이상 ‣),
     지표 정의 앞 빈 줄, 빈 줄을 포함해 40줄 이내, 줄마다 50자 이내.
     """
     lines = msg.splitlines()
@@ -712,7 +714,7 @@ def assert_shape(msg: str, title: str, span: str, sections: list[str] = SECTIONS
     assert lines.count("") == 1  # 빈 줄은 지표 정의 앞의 하나뿐
     for line in lines[2:-2]:
         if not line.startswith("• *"):
-            assert line.startswith(("    ◦ ", "        ▪ ", "            ▪ ")), line
+            assert line.startswith(("    ◦ ", "        ‣ ", "            ‣ ")), line
     assert len(lines) <= 40
     assert_line_length(msg)
 
@@ -737,14 +739,14 @@ def test_bundles_by_month_and_empty_data(rp_period, rp_message, rp_run, m):
     assert "PR 검색 실패" not in body
     assert block(msgs[0], "• *Kai 검토 항목*", 4) == [
         "    ◦ 판정 일치율: -",
-        "        ▪ 최근 20건: -",
+        "        ‣ 최근 20건: -",
         "    ◦ ready-to-done ticket: 0건",
         "    ◦ request 전환 뒤 상태 변경까지: -",
     ]
     assert block(msgs[0], "• *팀 전체*", 7) == [
         "    ◦ 기존 ticket 0개",
-        "        ▪ 업데이트 0개(그중 done 전환 0개)",
-        "        ▪ 업데이트 없음 0개",
+        "        ‣ 업데이트 0개(그중 done 전환 0개)",
+        "        ‣ 업데이트 없음 0개",
         "    ◦ 새 ticket 0개",
         "    ◦ 첫 검수 통과율: -",
         "    ◦ 최대 검수 반복 횟수: -",
@@ -756,12 +758,12 @@ def test_bundles_by_month_and_empty_data(rp_period, rp_message, rp_run, m):
             "    ◦ 자동 검수 소요 시간: -",
             "    ◦ API 환산 금액: 0.00 USD(직전 기록 없음)",
             "    ◦ 토큰: input 0, output 0",
-            "        ▪ cache 쓰기 0",
-            "        ▪ cache 읽기 0",
+            "        ‣ cache 쓰기 0",
+            "        ‣ cache 읽기 0",
             "    ◦ Claude 사용 ticket Top3: -",
         ]
         if i == 2:  # 연간 묶음
-            want.insert(2, "        ▪ 분기별: Q1 -, Q2 -, Q3 -, Q4 -")
+            want.insert(2, "        ‣ 분기별: Q1 -, Q2 -, Q3 -, Q4 -")
         assert block(msg, "• *Claude 활용 요약*", len(want)) == want
     # 읽기 시작 달: 전월, 분기 묶음이 붙는 달은 전 분기 첫 달, 연간 묶음이 붙는 달은 전년 1월(JQL은 하루 앞선 날)
     since = {1: "2025-11-30", 3: "2025-09-30", 6: "2025-12-31", 9: "2026-03-31", 11: "2026-09-30", 12: "2024-12-31"}
@@ -991,13 +993,13 @@ def test_idle_status_names(rp_period, rp_fetch, rp_message):
     names = ["QA", "ready-to-done", "To Do", "In Progress", "In Progress"]
     tickets = load(rp_fetch, {f"INNO-{i}": ticket(created=old, status=n) for i, n in enumerate(names)})
     lines = rp_message.Report(tickets, "2026-12", LEAD_ID).overview_lines(month(rp_period, "2026-12"))
-    assert lines[2:4] == ["        ▪ 업데이트 없음 5개: To Do 1, In Progress 2", "        ▪ ready-to-done 1, QA 1"]
+    assert lines[2:4] == ["        ‣ 업데이트 없음 5개: To Do 1, In Progress 2", "        ‣ ready-to-done 1, QA 1"]
     many = [f"상태{i:02d}" for i in range(12)]
     tickets = load(rp_fetch, {f"INNO-{i}": ticket(created=old, status=n) for i, n in enumerate(many)})
     lines = rp_message.Report(tickets, "2026-12", LEAD_ID).overview_lines(month(rp_period, "2026-12"))
     assert lines[2:5] == [
-        "        ▪ 업데이트 없음 12개: 상태00 1, 상태01 1, 상태02 1, 상태03 1",
-        "        ▪ 상태04 1, 상태05 1, 상태06 1, 상태07 1, 상태08 1, 외 3종",
+        "        ‣ 업데이트 없음 12개: 상태00 1, 상태01 1, 상태02 1, 상태03 1",
+        "        ‣ 상태04 1, 상태05 1, 상태06 1, 상태07 1, 상태08 1, 외 3종",
         "    ◦ 새 ticket 0개",
     ]
 
@@ -1034,8 +1036,8 @@ def test_pr_search_failure(rp_fetch, rp_message, rp_run, sample, monkeypatch, no
     assert seen == [("everex-ai", rp_message.dt.date(2026, 11, 30), rp_message.dt.date(2026, 12, 31))]
     assert block(msgs[0], "• *팀 전체*", 4) == [
         "    ◦ 기존 ticket 10개",
-        "        ▪ 업데이트 6개(그중 done 전환 2개)",  # PR 추가만 있는 INNO-113이 빠짐
-        "        ▪ 업데이트 없음 4개: In Progress 3, ready-to-done 1",
+        "        ‣ 업데이트 6개(그중 done 전환 2개)",  # PR 추가만 있는 INNO-113이 빠짐
+        "        ‣ 업데이트 없음 4개: In Progress 3, ready-to-done 1",
         "    ◦ PR 검색 실패: PR 추가는 업데이트에서 뺌",
     ]
     assert all("PR 검색 실패" not in m for m in msgs[1:])
@@ -1090,8 +1092,8 @@ def test_new_ticket_statuses_and_worst_case_lines(rp_run):
     assert "    ◦ 새 ticket 0개" in monthly
     monthly = rp_run.run_report(FakeJira(five), "2026-12", LEAD_ID, Summ())[0]
     assert block(monthly, "    ◦ 새 ticket 5개", 2) == [
-        "        ▪ To Do 1, In Progress 1, ready-to-done 1, done 1",
-        "        ▪ Backlog 1",
+        "        ‣ To Do 1, In Progress 1, ready-to-done 1, done 1",
+        "        ‣ Backlog 1",
     ]
     assert_line_length(monthly)
 
@@ -1130,17 +1132,17 @@ def test_worst_case_stays_within_40_lines(rp_fetch, rp_text, rp_run, ja, monkeyp
     monthly = msgs[0]
     assert "    ◦ PR 검색이 상한 1000건에 닿음" in monthly
     assert "    ◦ 검색 결과 상한 1개에 닿음: 빠진 ticket 있을 수 있음" in monthly
-    assert block(monthly, "        ▪ 업데이트 0개(그중 done 전환 0개)", 3) == [
-        "        ▪ 업데이트 없음 9개: To Do 1, In Progress 1",
-        "        ▪ ready-to-done 1, Blocked 1, Design 1, Hold 1, 외 3종",
+    assert block(monthly, "        ‣ 업데이트 0개(그중 done 전환 0개)", 3) == [
+        "        ‣ 업데이트 없음 9개: To Do 1, In Progress 1",
+        "        ‣ ready-to-done 1, Blocked 1, Design 1, Hold 1, 외 3종",
         "    ◦ PR 검색이 상한 1000건에 닿음",
     ]
     new = block(monthly, "    ◦ 새 ticket 12개", 3)
-    assert re.search(r", 외 \d+종$", new[1]) and not new[2].startswith("        ▪")  # 하위 줄 두 줄 이내
-    assert "        ▪ 비용 기록 없는 실행 3건은 0 USD로 셈" in monthly
+    assert re.search(r", 외 \d+종$", new[1]) and not new[2].startswith("        ‣")  # 하위 줄 두 줄 이내
+    assert "        ‣ 비용 기록 없는 실행 3건은 0 USD로 셈" in monthly
     # 제목에 남길 자리가 4자 미만이면 사유만 적음
-    assert block(monthly, "        ▪ (1) INNO-90 Task - 4.00 USD", 1) == [
-        "            ▪ 첫 검수 1회, 반려 cycle 재검수 2회, 재실행·실패 1회, 정리 모드 1회"
+    assert block(monthly, "        ‣ (1) INNO-90 Task - 4.00 USD", 1) == [
+        "            ‣ 첫 검수 1회, 반려 cycle 재검수 2회, 재실행·실패 1회, 정리 모드 1회"
     ]
     # 지표 정의 앞 빈 줄이 늘어 팀원별 절에 남는 줄이 4줄이다. 담당자 한 명(두 줄)은 들어가지 않아 "외 20명"만 남음
     assert block(monthly, "• *팀원별*", 2) == [
@@ -1173,39 +1175,39 @@ def test_monthly_message(rp_run, sample):
     assert monthly.splitlines()[2:] == [
         "• *Kai 검토 항목*",
         "    ◦ 판정 일치율: 3/3건, 100.0%",
-        "        ▪ 최근 20건: 5/6건, 83.3%",
+        "        ‣ 최근 20건: 5/6건, 83.3%",
         "    ◦ ready-to-done ticket: 1건(최장 29영업일)",  # INNO-109: 11-20(금) 진입
         "    ◦ request 전환 뒤 상태 변경까지: 중앙값 2.5시간(4건)",  # 60, 120, 180, 360분. INNO-101의 담당자 전환은 뺌
         "• *팀 전체*",
         "    ◦ 기존 ticket 10개",
-        "        ▪ 업데이트 7개(그중 done 전환 2개)",
-        "        ▪ 업데이트 없음 3개: In Progress 2, ready-to-done 1",
+        "        ‣ 업데이트 7개(그중 done 전환 2개)",
+        "        ‣ 업데이트 없음 3개: In Progress 2, ready-to-done 1",
         "    ◦ 새 ticket 2개",
-        "        ▪ To Do 1, In Progress 1",
+        "        ‣ To Do 1, In Progress 1",
         "    ◦ 첫 검수 통과율: 1/3건, 33.3%",
         "    ◦ 최대 검수 반복 횟수: 3회(INNO-101)",
         "    ◦ stop 사유 기록률: 2/4건, 50.0%",
         "• *팀원별*",
         "    ◦ 순서: 첫 검수 통과율 / 최대 검수 반복 횟수 / stop 사유 기록률",
         "    ◦ 김담당: 0/1 / 3회 / 2/3",
-        "        ▪ 업데이트 없음 1개, 후보(A, B: T2)",
+        "        ‣ 업데이트 없음 1개, 후보(A, B: T2)",
         "    ◦ 이담당: 1/1 / 1회 / -",
-        "        ▪ 업데이트 없음 0개, 지난달 후보: 개선",
+        "        ‣ 업데이트 없음 0개, 지난달 후보: 개선",
         "    ◦ 박담당: 0/1 / 1회 / 0/1",
-        "        ▪ 업데이트 없음 2개",
+        "        ‣ 업데이트 없음 2개",
         "• *Claude 활용 요약*",
         "    ◦ 자동 검수 소요 시간: 평균 1740초(600–2700초, 5건)",  # 20, 30, 40, 10, 45분
         "    ◦ API 환산 금액: 5.80 USD(전월 대비 +81%, 사용량 많음)",  # 전월 3.20 USD
         "    ◦ 토큰: input 700, output 350",
-        "        ▪ cache 쓰기 70",
-        "        ▪ cache 읽기 7.0천",
+        "        ‣ cache 쓰기 70",
+        "        ‣ cache 읽기 7.0천",
         "    ◦ Claude 사용 ticket Top3",
-        "        ▪ (1) INNO-101 Task 김담당 3.00 USD",
-        "            ▪ PoseNet-S 경량화로 엣지 기기… | 첫 검수 1회, 반려 cycle 재검수 2회",
-        "        ▪ (2) INNO-102 Task 이담당 1.70 USD",
-        "            ▪ 검색 결과 &amp; 정렬 개선 | 첫 검수 1회, 재실행·실패 1회, 정리 모드 1회",
-        "        ▪ (3) INNO-103 Bug 박담당 1.10 USD",
-        "            ▪ 로그인 실패 버그 | 재실행·실패 1회",
+        "        ‣ (1) INNO-101 Task 김담당 3.00 USD",
+        "            ‣ PoseNet-S 경량화로 엣지 기기… | 첫 검수 1회, 반려 cycle 재검수 2회",
+        "        ‣ (2) INNO-102 Task 이담당 1.70 USD",
+        "            ‣ 검색 결과 &amp; 정렬 개선 | 첫 검수 1회, 재실행·실패 1회, 정리 모드 1회",
+        "        ‣ (3) INNO-103 Bug 박담당 1.10 USD",
+        "            ‣ 로그인 실패 버그 | 재실행·실패 1회",
         "",
         DEF_LINE,
     ]
@@ -1218,13 +1220,13 @@ def test_quarterly_and_yearly_messages(rp_run, sample):
     assert quarter.splitlines()[2:] == [
         "• *Kai 검토 항목*",
         "    ◦ 판정 일치율: 5/6건, 83.3%",
-        "        ▪ 최근 20건: 5/6건, 83.3%",
+        "        ‣ 최근 20건: 5/6건, 83.3%",
         "    ◦ 검토 요청 비율: 1/9건, 11.1%",
         "    ◦ request 전환 뒤 상태 변경까지: 중앙값 2시간(7건)",
         "• *팀 전체*",
         "    ◦ KR별 하위 Task",
-        "        ▪ INNO-23: done 2개, 달성률 4/5개",
-        "        ▪ INNO-33: done 2개, 달성률 4/6개",
+        "        ‣ INNO-23: done 2개, 달성률 4/5개",
+        "        ‣ INNO-33: done 2개, 달성률 4/6개",
         "    ◦ ❌ 상위 5개: T2 3, R3 2, R4 2, T4 2, B3 1",  # ❌ 횟수가 같으면 검사 ID 순
         "    ◦ 첫 검수 통과율: 1/6건, 16.7%",
         "    ◦ 최대 검수 반복 횟수: 3회(INNO-101)",
@@ -1237,15 +1239,15 @@ def test_quarterly_and_yearly_messages(rp_run, sample):
         "    ◦ 자동 검수 소요 시간: 평균 1473초(360–2700초, 9건)",
         "    ◦ API 환산 금액: 10.70 USD(직전 기록 없음)",  # 전 분기(Q3) 실행 없음. 사용량 많음은 월간에만
         "    ◦ 토큰: input 1.9천, output 950",
-        "        ▪ cache 쓰기 190",
-        "        ▪ cache 읽기 1.9만",
+        "        ‣ cache 쓰기 190",
+        "        ‣ cache 읽기 1.9만",
         "    ◦ Claude 사용 ticket Top3",
-        "        ▪ (1) INNO-101 Task 김담당 3.00 USD",
-        "            ▪ PoseNet-S 경량화로 엣지 기기… | 첫 검수 1회, 반려 cycle 재검수 2회",
-        "        ▪ (2) INNO-106 Task 이담당 2.00 USD",
-        "            ▪ 첫 검수 1회, 반려 cycle 재검수 1회",  # 제목 없음
-        "        ▪ (3) INNO-102 Task 이담당 1.70 USD",
-        "            ▪ 검색 결과 &amp; 정렬 개선 | 첫 검수 1회, 재실행·실패 1회, 정리 모드 1회",
+        "        ‣ (1) INNO-101 Task 김담당 3.00 USD",
+        "            ‣ PoseNet-S 경량화로 엣지 기기… | 첫 검수 1회, 반려 cycle 재검수 2회",
+        "        ‣ (2) INNO-106 Task 이담당 2.00 USD",
+        "            ‣ 첫 검수 1회, 반려 cycle 재검수 1회",  # 제목 없음
+        "        ‣ (3) INNO-102 Task 이담당 1.70 USD",
+        "            ‣ 검색 결과 &amp; 정렬 개선 | 첫 검수 1회, 재실행·실패 1회, 정리 모드 1회",
         "",
         DEF_LINE,
     ]
@@ -1253,14 +1255,14 @@ def test_quarterly_and_yearly_messages(rp_run, sample):
     assert year.splitlines()[2:] == [
         "• *Kai 검토 항목*",
         "    ◦ 판정 일치율: 5/6건, 83.3%",
-        "        ▪ 분기별: Q1 -, Q2 -, Q3 -, Q4 5/6",
+        "        ‣ 분기별: Q1 -, Q2 -, Q3 -, Q4 5/6",
         "• *팀 전체*",
         "    ◦ 첫 검수 통과율: 1/6건, 16.7%",
-        "        ▪ 분기별: Q1 -, Q2 -, Q3 -, Q4 1/6",
+        "        ‣ 분기별: Q1 -, Q2 -, Q3 -, Q4 1/6",
         "    ◦ ❌ 상위 3개의 분기별 만족률",
-        "        ▪ T2: Q1 -, Q2 -, Q3 -, Q4 4/7",
-        "        ▪ R3: Q1 -, Q2 -, Q3 -, Q4 0/2",
-        "        ▪ R4: Q1 -, Q2 -, Q3 -, Q4 2/4",
+        "        ‣ T2: Q1 -, Q2 -, Q3 -, Q4 4/7",
+        "        ‣ R3: Q1 -, Q2 -, Q3 -, Q4 0/2",
+        "        ‣ R4: Q1 -, Q2 -, Q3 -, Q4 2/4",
         "• *팀원별*",
         "    ◦ 순서: 첫 검수 통과율 / 최대 검수 반복 횟수",
         "    ◦ 김담당: 0/1 / 3회",
@@ -1269,17 +1271,17 @@ def test_quarterly_and_yearly_messages(rp_run, sample):
         "• *Claude 활용 요약*",
         "    ◦ 자동 검수 소요 시간: 평균 1473초(360–2700초, 9건)",
         "    ◦ API 환산 금액: 10.70 USD(직전 기록 없음)",
-        "        ▪ 분기별: Q1 -, Q2 -, Q3 -, Q4 10.70",
+        "        ‣ 분기별: Q1 -, Q2 -, Q3 -, Q4 10.70",
         "    ◦ 토큰: input 1.9천, output 950",
-        "        ▪ cache 쓰기 190",
-        "        ▪ cache 읽기 1.9만",
+        "        ‣ cache 쓰기 190",
+        "        ‣ cache 읽기 1.9만",
         "    ◦ Claude 사용 ticket Top3",
-        "        ▪ (1) INNO-101 Task 김담당 3.00 USD",
-        "            ▪ PoseNet-S 경량화로 엣지 기기… | 첫 검수 1회, 반려 cycle 재검수 2회",
-        "        ▪ (2) INNO-106 Task 이담당 2.00 USD",
-        "            ▪ 첫 검수 1회, 반려 cycle 재검수 1회",  # 제목 없음
-        "        ▪ (3) INNO-102 Task 이담당 1.70 USD",
-        "            ▪ 검색 결과 &amp; 정렬 개선 | 첫 검수 1회, 재실행·실패 1회, 정리 모드 1회",
+        "        ‣ (1) INNO-101 Task 김담당 3.00 USD",
+        "            ‣ PoseNet-S 경량화로 엣지 기기… | 첫 검수 1회, 반려 cycle 재검수 2회",
+        "        ‣ (2) INNO-106 Task 이담당 2.00 USD",
+        "            ‣ 첫 검수 1회, 반려 cycle 재검수 1회",  # 제목 없음
+        "        ‣ (3) INNO-102 Task 이담당 1.70 USD",
+        "            ‣ 검색 결과 &amp; 정렬 개선 | 첫 검수 1회, 재실행·실패 1회, 정리 모드 1회",
         "",
         DEF_LINE,
     ]
@@ -1346,7 +1348,7 @@ def test_quarterly_and_yearly_compare_previous_period(rp_fetch, rp_message):
     assert "    ◦ API 환산 금액: 3.00 USD(전 분기 대비 +50%)" in quarter.splitlines()
     assert block(year, "• *Claude 활용 요약*", 3)[1:] == [
         "    ◦ API 환산 금액: 5.00 USD(전년 대비 +400%)",
-        "        ▪ 분기별: Q1 -, Q2 -, Q3 2.00, Q4 3.00",
+        "        ‣ 분기별: Q1 -, Q2 -, Q3 2.00, Q4 3.00",
     ]
 
 
@@ -1369,12 +1371,12 @@ def test_top_ticket_lines(rp_period, rp_fetch, rp_text):
     )
     assert rp_text.top_ticket_lines(tickets, sp) == [
         "    ◦ Claude 사용 ticket Top3",
-        "        ▪ (1) INNO-10 Task 김담당 1.00 USD",
-        "            ▪ " + "가" * 20 + "… | 첫 검수 1회, 반려 cycle 재검수 1회",
-        "        ▪ (2) INNO-9 Bug - 0.50 USD",
-        "            ▪ 짧은 제목 | 첫 검수 1회",
-        "        ▪ (3) INNO-11 Task 이담당 0.50 USD",
-        "            ▪ " + "나" * 20 + " | 첫 검수 1회",
+        "        ‣ (1) INNO-10 Task 김담당 1.00 USD",
+        "            ‣ " + "가" * 20 + "… | 첫 검수 1회, 반려 cycle 재검수 1회",
+        "        ‣ (2) INNO-9 Bug - 0.50 USD",
+        "            ‣ 짧은 제목 | 첫 검수 1회",
+        "        ‣ (3) INNO-11 Task 이담당 0.50 USD",
+        "            ‣ " + "나" * 20 + " | 첫 검수 1회",
     ]
     three = [
         run("2026-12-01T10:00", 1, 0.3, verdict="failed"),
@@ -1391,10 +1393,10 @@ def test_top_ticket_lines(rp_period, rp_fetch, rp_text):
     )
     lines = rp_text.top_ticket_lines(tickets, sp)
     assert lines[1:] == [
-        "        ▪ (1) INNO-2 Task - 1.50 USD",
-        "            ▪ 첫 검수 1회, 반려 cycle 재검수 2회, 재실행·실패 1회, 정리 모드 1회",
-        "        ▪ (2) INNO-1 Task - 0.90 USD",
-        "            ▪ " + "다" * 18 + "… | 첫 검수 1회, 재실행·실패 1회, 정리 모드 1회",
+        "        ‣ (1) INNO-2 Task - 1.50 USD",
+        "            ‣ 첫 검수 1회, 반려 cycle 재검수 2회, 재실행·실패 1회, 정리 모드 1회",
+        "        ‣ (2) INNO-1 Task - 0.90 USD",
+        "            ‣ " + "다" * 18 + "… | 첫 검수 1회, 재실행·실패 1회, 정리 모드 1회",
     ]
     assert_line_length("\n".join(lines))
     assert rp_text.top_ticket_lines(tickets, month(rp_period, "2026-11")) == ["    ◦ Claude 사용 ticket Top3: -"]
@@ -1404,7 +1406,7 @@ def test_top_ticket_lines(rp_period, rp_fetch, rp_text):
     many += [run(f"2026-12-02T10:{i % 60:02d}", 1, 0.01, verdict="failed") for i in range(100)]  # 재실행·실패
     many += [run(f"2026-12-03T10:{i % 60:02d}", None, 0.01, mode="digest", verdict="digest") for i in range(100)]
     lines = rp_text.top_ticket_lines(load(rp_fetch, {"INNO-1": ticket(title="마" * 25, runs=many)}), sp)
-    assert lines[2] == "            ▪ 첫 검수 100회, 반려 cycle 재검수 100회, 재실행·실패 100회, 외 1종"
+    assert lines[2] == "            ‣ 첫 검수 100회, 반려 cycle 재검수 100회, 재실행·실패 100회, 외 1종"
     assert_line_length("\n".join(lines))
 
 
@@ -1451,18 +1453,24 @@ def test_sample_body(rp_run, sample):
         assert_line_length(msg)
 
 
-def test_lead_title_has_lead_name_from_jira(rp_run, sample):
-    """첫 절 제목은 가짜 Jira가 돌려준 팀장 표시 이름을 쓰고, 이름이 비면 "팀장 검토 항목"이다. 월간, 분기, 연간 모두 같다."""
+def test_lead_title_has_lead_name_from_env(rp_run, sample, monkeypatch):
+    """첫 절 제목은 환경 변수 JIRA_LEAD_NAME의 팀장 이름을 쓰고, 이름이 없거나 공백뿐이면 "팀장 검토 항목"이다. 월간, 분기, 연간 모두 같다."""
     named = report(rp_run, sample)
     assert len(named) == 3
     for msg in named:
         assert "• *Kai 검토 항목*" in msg.splitlines()
-    liam = rp_run.run_report(FakeJira(sample, SUBTASKS, lead_name="Liam"), "2026-12", LEAD_ID, Summ())
+    monkeypatch.setenv("JIRA_LEAD_NAME", " Liam ")
+    liam = rp_run.run_report(FakeJira(sample, SUBTASKS), "2026-12", LEAD_ID, Summ())
     for msg in liam:
         assert "• *Liam 검토 항목*" in msg.splitlines()
         assert "Kai" not in msg
-    blank = rp_run.run_report(FakeJira(sample, SUBTASKS, lead_name=""), "2026-12", LEAD_ID, Summ())
+    monkeypatch.setenv("JIRA_LEAD_NAME", "   ")
+    blank = rp_run.run_report(FakeJira(sample, SUBTASKS), "2026-12", LEAD_ID, Summ())
     for msg in blank:
+        assert "• *팀장 검토 항목*" in msg.splitlines()
+    monkeypatch.delenv("JIRA_LEAD_NAME")
+    unset = rp_run.run_report(FakeJira(sample, SUBTASKS), "2026-12", LEAD_ID, Summ())
+    for msg in unset:
         assert "• *팀장 검토 항목*" in msg.splitlines()
     assert_shape(
         blank[0], "[2026-12 jira-doc 월간 보고]", "2026-12-01–2026-12-31", ["• *팀장 검토 항목*", *SECTIONS[1:]]
@@ -1477,28 +1485,3 @@ def test_report_messages_have_no_removed_wording(rp_run, sample):
         assert old not in body
     for new in ("ready-to-done ticket", "request 전환 뒤 상태 변경까지"):
         assert new in body
-
-
-def test_jira_user_name(ja, monkeypatch):
-    """Jira.user_name은 GET /user 응답의 displayName을 돌려주고, accountId가 비었거나 JiraError면 빈 문자열이다."""
-    client = importlib.import_module("src.jira.client")
-    jira = object.__new__(client.Jira)
-    calls = []
-
-    def req(method, path, params=None, body=None, ok404=False):
-        calls.append((method, path, params))
-        return {"accountId": params["accountId"], "displayName": "Kai"}
-
-    monkeypatch.setattr(jira, "_req", req)
-    assert jira.user_name("acc-lead") == "Kai"
-    assert calls == [("GET", "/user", {"accountId": "acc-lead"})]
-    assert jira.user_name("") == ""
-    assert calls == [("GET", "/user", {"accountId": "acc-lead"})]  # 빈 accountId는 호출하지 않음
-
-    def broken(*args, **kwargs):
-        raise client.JiraError("GET /user -> 403")
-
-    monkeypatch.setattr(jira, "_req", broken)
-    assert jira.user_name("acc-lead") == ""
-    monkeypatch.setattr(jira, "_req", lambda *a, **k: {"accountId": "acc-lead"})  # displayName 없음
-    assert jira.user_name("acc-lead") == ""

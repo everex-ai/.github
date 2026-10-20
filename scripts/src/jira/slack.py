@@ -322,6 +322,15 @@ def weekly_lines(scan: Path, users: dict, lead: str = "") -> tuple[list[str], li
     return lines, mentions
 
 
+def lead_name() -> str:
+    """메시지에 적을 팀장 이름을 환경 변수 JIRA_LEAD_NAME에서 읽는다. 호출할 때마다 읽는다.
+
+    Returns:
+        앞뒤 공백을 뗀 JIRA_LEAD_NAME. 없거나 공백뿐이면 LEAD_NAME_DEFAULT.
+    """
+    return os.environ.get("JIRA_LEAD_NAME", "").strip() or LEAD_NAME_DEFAULT
+
+
 def decision_slack_text(
     key: str, title: str, url: str, mention: str, decision: str, status: str, lead_name: str = ""
 ) -> str:

@@ -111,10 +111,12 @@ jira-doc의 알림은 즉시, 주간, 월간, 분기, 연간의 다섯 주기로
   - 계산 방법
   - 받는 사람이 이미 아는 할 일 안내
 - 용어의 뜻과 계산 방법은 이 문서에 둔다.
-- 팀장 이름: 팀장의 Jira 표시 이름
-  - 스크립트가 variable `JIRA_LEAD_ACCOUNT_ID`의 accountId로 읽는다.
-    - 근거: `scripts/src/jira/client.py`의 `user_name`
-  - 읽지 못하면 스크립트가 "팀장"으로 적는다.
+- 팀장 이름: variable `JIRA_LEAD_NAME`의 값
+  - 스크립트가 실행할 때 환경 변수로 읽는다.
+  - Jira에서 사용자 이름을 읽으면 2026-10-20 시험에서 실패했다.
+    - 추정: `JIRA_API_TOKEN` 범위에 `read:jira-user`가 없기 때문이다.
+    - 토큰 범위: `docs/jira-doc-agent/README.md`의 secret 표
+  - 값이 비면 스크립트가 "팀장"으로 적는다.
     - 근거: `scripts/src/constant/slack.py`의 `LEAD_NAME_DEFAULT`
   - 스크립트는 팀장 이름 자리에 Slack 멘션을 넣지 않는다.
     - 멘션하면 팀장에게 알림이 가기 때문이다.
@@ -222,7 +224,8 @@ jira-doc의 알림은 즉시, 주간, 월간, 분기, 연간의 다섯 주기로
 - 스크립트가 대상 기간과 절 제목을 글머리표(•) 줄로 적는다.
   - 근거: `scripts/src/jira/report/message.py`의 `Report.assemble`
   - 스크립트가 절 제목을 굵게 적는다(`Report.assemble`).
-  - 절 안의 줄은 한 단계(◦), 그 하위 줄은 두 단계(▪) 들여쓴다.
+  - 절 안의 줄은 한 단계(◦), 그 하위 줄은 두 단계(‣) 들여쓴다.
+    - "▪"는 Slack이 이모지로 바꿔 보여 주어 쓰지 않는다.
     - 근거: `scripts/src/jira/report/text.py`의 `_sub`
 - 스크립트가 메시지 끝 줄(지표 정의) 앞에 빈 줄을 하나 둔다.
   - 40줄 상한에는 이 빈 줄도 센다(`Report.assemble`의 `MAX_LINES`).

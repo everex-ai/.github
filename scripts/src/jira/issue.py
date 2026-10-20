@@ -48,6 +48,7 @@ from src.jira.comment import (
 from src.jira.runs import add_run, request_count, usage_total
 from src.jira.slack import (
     decision_slack_text,
+    lead_name,
     load_slack_users,
     review_slack_reasons,
     review_slack_text,
@@ -424,7 +425,7 @@ def apply_decision(j: Jira, key: str, lead: str, summ: Summary) -> None:
     ready-to-done에서 나간 마지막 전환이 done 또는 In Progress이고, 지금 상태가 그 도착 상태이며, 전환한 사람이
     팀장일 때만 보낸다. 그 밖에는 보내지 않고 Summary 탭에 이유를 남긴다.
     같은 전환을 두 번 알리지 않도록 알린 전환 시각을 jira-doc 기록의 lastDecisionAt에 남기고, 같으면 건너뛴다.
-    메시지의 팀장 이름은 j.user_name(lead)로 읽고, 읽지 못하면 "팀장"을 적는다.
+    메시지의 팀장 이름은 lead_name()으로 환경 변수 JIRA_LEAD_NAME에서 읽고, 비어 있으면 "팀장"을 적는다.
 
     Args:
         j: Jira 클라이언트.
@@ -463,7 +464,7 @@ def apply_decision(j: Jira, key: str, lead: str, summ: Summary) -> None:
         slack_mention(f.get("assignee"), users),
         decision,
         status,
-        j.user_name(lead),
+        lead_name(),
     )
     sent = slack.slack_post(text)
     note = f"팀장 확인 결과 {decision}, 담당자에게 Slack 알림"
