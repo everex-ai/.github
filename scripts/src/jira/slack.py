@@ -11,21 +11,25 @@ from pathlib import Path
 
 from src.common.github import run_url
 from src.common.io import load_json
-from src.constant.check import SENTENCE_DETAIL_CHECKS, VERDICT_KO
+from src.constant.check import CHECK_NAMES, VERDICT_KO
 from src.constant.slack import (
     ALERT_LIMIT,
     ALERT_SECTIONS,
     LEAD_ALERTS,
+    LEAD_NAME_DEFAULT,
     MODE_KO,
-    SLACK_CLOSING,
+    SLACK_AGENT_POINTS,
+    SLACK_CHECK_FIX,
     SLACK_INDENT,
+    SLACK_LATE_STOP,
+    SLACK_MAX_POINTS,
     TOKEN_EXPIRY_DAYS,
     TOKEN_RENEWAL,
 )
 from src.constant.user import SLACK_USERS
 from src.jira.comment import deliverables_summary
-from src.jira.verdict import check_label, last_check, owner_fails, owner_reason
-from src.jira.wiki import LIST_MARK_RE, WIKI_COLOR_RE, WIKI_LINK_PARTS_RE
+from src.jira.verdict import last_check, owner_fails
+from src.jira.wiki import WIKI_COLOR_RE, WIKI_LINK_PARTS_RE
 
 
 def slack_post(text: str, webhook_env: str = "SLACK_WEBHOOK_URL") -> str:
@@ -171,6 +175,23 @@ def run_failure_slack_text(mode: str, issue: str, error: dict | None, users: dic
     return "\n".join(lines)
 
 
+def slack_point(text: str) -> str:
+    """CI agent가 verdict.slack에 적은 요점을 Slack 한 줄로 바꾼다.
+
+    Slack이 제어 문자로 읽는 &, <, >를 먼저 &amp;, &lt;, &gt;로 바꾼 뒤, wiki 링크 [제목|URL]은 제목 글자만 남기고
+    색 표식 {color:…}와 {color}를 뗀다. 줄바꿈은 공백으로 바꾼다.
+
+    Args:
+        text: verdict.slack의 항목 하나.
+
+    Returns:
+        Slack 한 줄 문장. 비어 있으면 빈 문자열.
+    """
+    escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    plain = WIKI_COLOR_RE.sub("", WIKI_LINK_PARTS_RE.sub(r"\1", escaped))
+    return " ".join(plain.split())
+
+
 def review_slack_reasons(
     v: str,
     itype: str,
@@ -178,17 +199,17 @@ def review_slack_reasons(
     items: list[dict],
     extra: list[dict],
     checks: list[dict],
-    changes: list[str],
-    summary: str,
+    change_points: list[str],
+    agent_points: list[str],
 ) -> list[str]:
-    """Slack 검수 알림의 이유 묶음에 적을 항목.
+    """검수 결과 메시지에 적을 요점.
 
-    보류: 사유 없는 미달성 항목, 실패한 담당자 검사(OWNER_FIXABLE_CHECKS), 검수 결과를 바꾼 이유.
-    담당자 검사는 "<검사 이름>: <detail>"로 적고, detail이 그 자체로 이유 문장인 검사(SENTENCE_DETAIL_CHECKS)는
-    detail만 적는다.
-    검토 요청: 담당자가 남긴 미달성 사유, 검수 결과를 바꾼 이유. 통과: 달성 요약 줄(Task)과 결과 요약 줄.
-    위 항목이 비면 결과 요약 줄을 적는다. 검토 요청과 통과에서 R4의 사유가 늦게 기록되었으면(late) 끝에 R4 줄을
-    붙여 팀장이 확인하게 한다.
+    아래 순서로 모으고, 같은 문구는 한 번만 적으며, 모두 SLACK_MAX_POINTS줄 이내다.
+    1. 스크립트가 검수 결과를 바꾼 이유의 짧은 꼴(change_points).
+    2. Task이고 예상 산출물이 있으면 달성 요약 줄(deliverables_summary).
+    3. CI agent가 적은 요점(agent_points). 남은 줄 수와 SLACK_AGENT_POINTS 중 작은 수까지 적는다.
+       비어 있고 검수 결과가 보류이면 실패한 담당자 검사마다 "<검사 이름> 보완 필요"를 대신 적는다.
+    4. R4 결과가 늦게 기록(late)이면 SLACK_LATE_STOP. CI agent는 이 문구를 적지 않으므로 1, 2보다 먼저 자리를 남긴다.
 
     Args:
         v: 최종 검수 결과 코드값(pass, fix, escalate).
@@ -197,40 +218,23 @@ def review_slack_reasons(
         items: verdict.json의 items.
         extra: verdict.json의 extra(초과 달성 목록).
         checks: 검수 comment의 검사 표에 들어가는 검사 결과 목록.
-        changes: 검수 결과를 바꾼 이유 목록(상태 처리 문구는 빼고).
-        summary: 결과 요약(comment.wiki에서 판정 줄과 검사 표를 뗀 것, wiki markup).
+        change_points: 검수 결과를 바꾼 이유의 Slack용 짧은 꼴.
+        agent_points: verdict.json의 slack. 문자열이 아닌 항목은 건너뛴다.
 
     Returns:
-        이유 항목 목록(Slack 꼴, 글머리표 없이).
+        요점 목록(Slack 꼴, 글머리표 없이). 최대 SLACK_MAX_POINTS줄.
     """
-    texts = {str(e["id"]): e["text"] for e in expected}
-    missed = [it for it in items if not it.get("done")]
-    names = [
-        f'예상 산출물 {it["id"]}번 "{wiki_to_slack(texts.get(str(it["id"]), it.get("result", "")))}"' for it in missed
-    ]
-    summary_lines = [wiki_to_slack(LIST_MARK_RE.sub("", s.strip())) for s in summary.splitlines() if s.strip()]
-    out: list[str] = []
-    if v == "fix":
-        out += [f"사유 없는 미달성: {n}" for n, it in zip(names, missed) if not owner_reason(it)]
-        out += [
-            wiki_to_slack(c.get("detail") or "")
-            if c["id"] in SENTENCE_DETAIL_CHECKS
-            else f"{check_label(c['id'])}: {wiki_to_slack(c.get('detail') or '')}"
-            for c in owner_fails(checks)
-        ]
-        out += [wiki_to_slack(c) for c in changes]
-    elif v == "escalate":
-        out += [f"{n}: {wiki_to_slack(owner_reason(it))}" for n, it in zip(names, missed) if owner_reason(it)]
-        out += [wiki_to_slack(c) for c in changes]
-    else:
-        if itype == "Task" and expected:
-            out.append(deliverables_summary(expected, items, extra))
-        out += summary_lines
-    out = out or summary_lines
-    r4 = last_check(checks, "R4")
-    if v in ("pass", "escalate") and r4.get("late"):
-        out.append(f"{check_label('R4')}: {wiki_to_slack(r4.get('detail') or '')}")
-    return out
+    head = list(change_points)
+    if itype == "Task" and expected:
+        head.append(deliverables_summary(expected, items, extra))
+    tail = [SLACK_LATE_STOP] if last_check(checks, "R4").get("late") else []
+    head = list(dict.fromkeys(head))[: SLACK_MAX_POINTS - len(tail)]  # 늦은 stop 사유 자리는 남긴다
+    points = [p for p in (slack_point(a) for a in agent_points if isinstance(a, str)) if p]
+    if not points and v == "fix":  # 미달성 수는 달성 요약 줄에 있으므로 실패한 담당자 검사만 적는다
+        points = [SLACK_CHECK_FIX.format(name=CHECK_NAMES.get(c["id"], c["id"])) for c in owner_fails(checks)]
+    room = min(SLACK_AGENT_POINTS, SLACK_MAX_POINTS - len(head) - len(tail))
+    points = [p for p in dict.fromkeys(points) if p not in head and p not in tail][:room]
+    return head + points + tail
 
 
 def review_slack_text(
@@ -239,51 +243,41 @@ def review_slack_text(
     title: str,
     url: str,
     mention: str,
-    state_line: str,
     reasons: list[str],
-    requests: list[str],
     comment_link: str,
 ) -> str:
     """검수 모드의 Slack 알림 본문.
 
-    첫 줄에 받는 사람 멘션, task 키, 검수 결과, 상태 처리를 적고, 둘째 줄에 task 링크를 적는다.
-    보류에만 요청 묶음을 붙이고, 검토 요청과 통과에는 팀장이 직접 전환하도록 맺음 줄을 붙인다.
-    이유와 요청 항목은 묶음 제목 아래로 SLACK_INDENT만큼 들여 쓴다.
-    task 제목과 요청 문장은 wiki_to_slack으로 바꿔 적는다(&, <, > escape 포함).
+    첫 줄에 받는 사람 멘션, 검수 결과, ticket 링크(키와 제목)를 적고, 요점마다 "• " 줄을 적는다.
+    comment_link가 있으면 마지막 줄에 검수 comment 링크를 적는다.
+    ticket 제목은 wiki_to_slack으로 바꿔 적는다(&, <, > escape 포함).
 
     Args:
         v: 최종 검수 결과 코드값(pass, fix, escalate).
-        key: task 키.
-        title: task 제목(issue.json의 summary).
-        url: task 링크. 비어 있으면 링크 줄을 적지 않는다.
+        key: ticket 키.
+        title: ticket 제목(issue.json의 summary).
+        url: ticket 링크. 비어 있으면 첫 줄에 링크 없이 "키 제목"을 적는다.
         mention: 받는 사람(Slack 멘션 또는 이름).
-        state_line: 상태 처리를 적은 짧은 문구.
-        reasons: 이유 묶음 항목(review_slack_reasons의 결과).
-        requests: 담당자 요청 목록(wiki markup). 보류에만 적는다.
-        comment_link: 검수 comment 링크. 비어 있으면 근거 줄을 적지 않는다.
+        reasons: 요점 목록(review_slack_reasons의 결과).
+        comment_link: 검수 comment 링크. 비어 있으면 마지막 줄을 적지 않는다.
 
     Returns:
         Slack 메시지 본문.
     """
-    label = VERDICT_KO[v]
-    lines = [f"{mention} [{key}] 검수 결과: {label}. {state_line}"]
-    if url:
-        lines.append(f"<{url}|{wiki_to_slack(f'{key} {title}'.strip())}>")
-    if reasons:
-        lines += [f"{label} 이유"] + [f"{SLACK_INDENT}• {r}" for r in reasons]
-    if v == "fix" and requests:
-        lines += ["요청"] + [f"{SLACK_INDENT}{i}. {wiki_to_slack(r)}" for i, r in enumerate(requests, 1)]
-    if v in SLACK_CLOSING:
-        lines.append(SLACK_CLOSING[v])
+    name = wiki_to_slack(f"{key} {title}".strip())
+    head = f"<{url}|{name}>" if url else name
+    lines = [f"{mention} [{VERDICT_KO[v]}] {head}"]
+    lines += [f"• {r}" for r in reasons]
     if comment_link:
-        lines.append(f"근거: <{comment_link}|검수 comment>")
+        lines.append(f"<{comment_link}|검수 comment>")
     return "\n".join(lines)
 
 
 def weekly_lines(scan: Path, users: dict, lead: str = "") -> tuple[list[str], list[str]]:
     """주간 점검 Slack 메시지의 절 줄과 머리줄 멘션 목록을 만든다.
 
-    절 제목은 "*{이름}* ({n}건) — {조치 문구}"이고, 절은 ALERT_SECTIONS의 순서로 나간다.
+    절 제목은 "*{이름}* {n}건"이고, 조치 문구가 있으면 " — {조치 문구}"를 붙인다. 절은 ALERT_SECTIONS의 순서로 나간다.
+    ticket 줄은 "• <URL|키 제목> 담당자 · 경과"이고, URL이 없으면 링크 없이 "키 제목"을 적는다.
     R4, A1 항목은 담당자를 멘션하고, A3 항목은 담당자의 Jira 표시 이름과 팀장 멘션을 적는다.
     멘션 목록에는 Slack 멤버 ID로 바꾼 멘션만 중복 없이 넣는다.
 
@@ -311,7 +305,7 @@ def weekly_lines(scan: Path, users: dict, lead: str = "") -> tuple[list[str], li
         items = rows[cid]
         if not items:
             continue
-        lines += ["", f"*{title}* ({len(items)}건) — {action}"]
+        lines += ["", f"*{title}* {len(items)}건" + (f" — {action}" if action else "")]
         for it in items[:ALERT_LIMIT]:
             if cid in LEAD_ALERTS:  # 팀장이 할 조치: 담당자는 이름만 적고 팀장을 멘션한다
                 who = f"{(it.get('assignee') or {}).get('displayName') or '담당자 미지정'}, {lead_text}"
@@ -320,32 +314,49 @@ def weekly_lines(scan: Path, users: dict, lead: str = "") -> tuple[list[str], li
                 who = mention = slack_mention(it.get("assignee"), users)
             if mention.startswith("<@") and mention not in mentions:
                 mentions.append(mention)
-            lines.append(f"{SLACK_INDENT}• {it['key']} {it.get('summary') or ''} — 담당 {who}, {it['detail']}")
-            if it.get("url"):
-                lines.append(f"{SLACK_INDENT}  {it['url']}")
+            name = wiki_to_slack(f"{it['key']} {it.get('summary') or ''}".strip())
+            head = f"<{it['url']}|{name}>" if it.get("url") else name
+            lines.append(f"{SLACK_INDENT}• {head} {who} · {it['detail']}")
         if len(items) > ALERT_LIMIT:
             lines.append(f"{SLACK_INDENT}• 외 {len(items) - ALERT_LIMIT}건")
     return lines, mentions
 
 
-def decision_slack_text(key: str, title: str, url: str, mention: str, decision: str, status: str) -> str:
+def lead_name() -> str:
+    """메시지에 적을 팀장 이름을 환경 변수 JIRA_LEAD_NAME에서 읽는다. 호출할 때마다 읽는다.
+
+    Returns:
+        앞뒤 공백을 뗀 JIRA_LEAD_NAME. 없거나 공백뿐이면 LEAD_NAME_DEFAULT.
+    """
+    return os.environ.get("JIRA_LEAD_NAME", "").strip() or LEAD_NAME_DEFAULT
+
+
+def decision_slack_text(
+    key: str, title: str, url: str, mention: str, decision: str, status: str, lead_name: str = ""
+) -> str:
     """팀장 확인 결과 알림 본문. 담당자에게 팀장이 바꾼 상태 변경 결과만 알린다.
+
+    첫 줄에 받는 사람 멘션, 팀장 확인 결과, ticket 링크(키와 제목)를 적고, 둘째 줄에 이동한 상태를 적는다.
+    ticket 제목과 팀장 이름은 wiki_to_slack으로 바꿔 적는다(&, <, > escape 포함).
+    상태가 Done이면 "Done으로", 그 밖에는 "<상태>로"를 적는다.
 
     Args:
         key: ticket 키.
         title: ticket 제목.
-        url: ticket 링크. 비어 있으면 링크 줄을 적지 않는다.
+        url: ticket 링크. 비어 있으면 첫 줄에 링크 없이 "키 제목"을 적는다.
         mention: 받는 사람(담당자의 Slack 멘션 또는 이름).
         decision: 팀장 확인 결과(통과, 보류).
         status: 전환 뒤 Jira 상태 이름(Done, In Progress).
+        lead_name: 팀장 표시 이름. 비어 있으면 LEAD_NAME_DEFAULT를 적는다.
 
     Returns:
         Slack 메시지 본문.
     """
-    lines = [f"{mention} [{key}] 팀장 확인 결과: {decision}", f"상태 변경: ready-to-done → {status}"]
-    if url:
-        lines.append(f"<{url}|{wiki_to_slack(f'{key} {title}'.strip())}>")
-    return "\n".join(lines)
+    name = wiki_to_slack(f"{key} {title}".strip())
+    head = f"<{url}|{name}>" if url else name
+    lead = wiki_to_slack(lead_name or LEAD_NAME_DEFAULT)
+    josa = "으로" if status.strip().lower() == "done" else "로"  # "Done으로", "In Progress로"
+    return "\n".join([f"{mention} [{lead} 확인: {decision}] {head}", f"• {status}{josa} 이동"])
 
 
 def token_expiry_text(raw: str, today: dt.date) -> tuple[str, str]:

@@ -17,7 +17,6 @@ OWNER_FIXABLE_CHECKS = (
     "I2",
     "I3",
 )  # 담당자가 고칠 수 있는 검사. 실패하면 보류
-SENTENCE_DETAIL_CHECKS = ("R4",)  # detail이 이유 문장이라 Slack 보류 이유에 검사 이름 없이 적는 검사
 NOT_A_REASON = "근거 부족으로 확인 불가"  # CI agent가 why에 넣는 문구. 담당자가 남긴 사유로 세지 않는다
 DECISION_KO = {
     "done": "통과",
@@ -91,7 +90,4 @@ REVIEW_OUTPUT_FILES_KO = {
     "comment.wiki": "검수 comment의 결과 요약",
 }  # 검수 모드에서 save_output.py가 verdict.json과 함께 쓰는 출력 파일과 실패 알림에 나가는 뜻
 NO_VERDICT_KO = "CI agent 판정 없음"  # save_output.py의 판정 없음 기본값(verdict "no_verdict", items의 done null)이 그대로 남았을 때의 실패 이유
-STATE_NOTE = (
-    "상태를 바꾸지 않고 팀장 확인을 요청함",
-    "상태 변경 없음",
-)  # 어떤 검수 결과에서도 Jira 상태를 바꾸지 않는다. (검수 comment와 Actions 요약 문구, Slack 첫 줄 문구)
+STATE_NOTE = "상태를 바꾸지 않고 팀장 확인을 요청함"  # 어떤 검수 결과에서도 Jira 상태를 바꾸지 않는다. (검수 comment와 Actions 요약 문구)

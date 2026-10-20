@@ -12,7 +12,6 @@ WIKI_LINK_RE = re.compile(r"\[([^|\]]+)\|[^\]]*\]")  # [제목|URL]
 # [제목|URL]에서 제목과 URL을 함께 잡는다 (Slack 링크로 바꿀 때)
 WIKI_LINK_PARTS_RE = re.compile(r"\[([^|\]]+)\|([^\]]*)\]")
 WIKI_COLOR_RE = re.compile(r"\{color(?::[^}]*)?\}")  # {color:#6b778c}, {color}
-LIST_MARK_RE = re.compile(r"^[*#-]+\s+")  # wiki 목록 표식("* ", "# ", "#* ")
 CELL_BREAK = " \\\\ "  # Jira wiki 표 칸 안의 줄바꿈
 
 

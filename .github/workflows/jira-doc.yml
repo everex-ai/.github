@@ -51,6 +51,7 @@ jobs:
       GATE: ${{ vars.JIRA_DOC_GATE || 'false' }}
       JIRA_PROJECT_KEY: ${{ vars.JIRA_PROJECT_KEY }}
       JIRA_LEAD_ACCOUNT_ID: ${{ vars.JIRA_LEAD_ACCOUNT_ID }}
+      JIRA_LEAD_NAME: ${{ vars.JIRA_LEAD_NAME }}
       JIRA_TLDR_FIELD_ID: ${{ vars.JIRA_TLDR_FIELD_ID }}
       JIRA_SITE_URL: ${{ vars.JIRA_SITE_URL }}
       GH_ORG: ${{ github.repository_owner }}

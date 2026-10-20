@@ -69,8 +69,13 @@ def _usd(x: float) -> str:
 
 
 def _sub(text: str, depth: int = 1) -> str:
-    """Slack 본문의 하위 줄. depth 단계만큼 SLACK_INDENT로 들여 쓰고 "◦"를 붙인다."""
-    return f"{SLACK_INDENT * depth}◦ {text}"
+    """Slack 본문의 절 아래 줄. depth 단계만큼 SLACK_INDENT로 들여 쓰고 1단계는 "◦", 2단계 이상은 "‣"를 붙인다."""
+    return f"{SLACK_INDENT * depth}{'◦' if depth == 1 else '‣'} {text}"
+
+
+def _sub2(text: str) -> str:
+    """Slack 본문의 절 아래 2단계 줄(_sub의 depth 2)."""
+    return _sub(text, 2)
 
 
 def _esc(text: str) -> str:
@@ -158,7 +163,7 @@ def top_ticket_lines(tickets: Iterable[Ticket], sp: Span) -> list[str]:
         sp: 기간.
 
     Returns:
-        Slack 본문 줄. 기간 안 실행이 없으면 "• Claude 사용 ticket Top3: -" 한 줄.
+        Slack 본문 줄. 기간 안 실행이 없으면 "◦ Claude 사용 ticket Top3: -" 한 줄(1단계 들여쓰기).
     """
     rows: list[tuple[Ticket, float, Counter]] = []
     for t in tickets:
@@ -166,22 +171,22 @@ def top_ticket_lines(tickets: Iterable[Ticket], sp: Span) -> list[str]:
         if runs:
             rows.append((t, sum(r.cost or 0.0 for r in runs), Counter(r.branch for r in runs)))
     if not rows:
-        return [f"• Claude 사용 ticket Top{TOP_TICKETS}: -"]
+        return [_sub(f"Claude 사용 ticket Top{TOP_TICKETS}: -")]
     rows.sort(key=lambda x: (-round(x[1], 6), len(x[0].key), x[0].key))
-    lines = [f"• Claude 사용 ticket Top{TOP_TICKETS}(API 환산 금액 순)"]
+    lines = [_sub(f"Claude 사용 ticket Top{TOP_TICKETS}")]
     for rank, (t, cost, branches) in enumerate(rows[:TOP_TICKETS], 1):
         who = _name(t.assignee_name) if t.assignee_name else "-"
-        lines.append(_sub(f"({rank}) {t.key} {t.itype or '-'} {who} {_usd(cost)}"))
+        lines.append(_sub2(f"({rank}) {t.key} {t.itype or '-'} {who} {_usd(cost)}"))
         # 사유만으로 LINE_MAX자를 넘으면 뒤 갈래부터 "외 n종"으로 줄인다
         reason = _capped_wrap([f"{ko} {branches[b]}회" for b, ko in BRANCHES.items() if branches[b]], 1)[0]
         room = LINE_MAX - len(reason) - len(" | ")
         title = _clip(t.title, room) if room >= 4 else ""
-        lines.append(_sub(f"{title} | {reason}" if title else reason, 2))
+        lines.append(_sub(f"{title} | {reason}" if title else reason, 3))
     return lines
 
 
 def _fit_members(head: str, groups: list[list[str]], budget: int) -> list[str]:
-    """팀원별 절 줄. 절이 budget 줄을 넘으면 앞 담당자부터 넣고 남은 담당자는 "• 외 n명"으로 줄인다.
+    """팀원별 절 줄. 절이 budget 줄을 넘으면 앞 담당자부터 넣고 남은 담당자는 "◦ 외 n명"으로 줄인다.
 
     budget이 3줄 미만이면 절 제목과 요약 한 줄(두 줄)만 적는다.
 
@@ -194,10 +199,10 @@ def _fit_members(head: str, groups: list[list[str]], budget: int) -> list[str]:
         Slack 본문 줄.
     """
     if budget < 3:
-        return ["*팀원별*", f"• 담당자 {len(groups)}명: 줄 수 상한으로 생략" if groups else "• 기록 없음"]
-    lines = ["*팀원별*", f"• 순서: {head}"]
+        return ["• *팀원별*", _sub(f"담당자 {len(groups)}명: 줄 수 상한으로 생략" if groups else "기록 없음")]
+    lines = ["• *팀원별*", _sub(f"순서: {head}")]
     if not groups:
-        return [*lines, "• 기록 없음"]
+        return [*lines, _sub("기록 없음")]
     if len(lines) + sum(map(len, groups)) <= budget:
         return lines + [x for g in groups for x in g]
     kept: list[str] = []
@@ -207,4 +212,4 @@ def _fit_members(head: str, groups: list[list[str]], budget: int) -> list[str]:
             break
         kept += g
         n += 1
-    return [*lines, *kept, f"• 외 {len(groups) - n}명"]
+    return [*lines, *kept, _sub(f"외 {len(groups) - n}명")]

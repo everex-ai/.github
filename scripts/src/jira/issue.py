@@ -14,6 +14,7 @@ from src.common.github import Summary
 from src.common.io import load_json
 from src.constant.check import (
     ALL_DOC_CHECKS,
+    CHECK_NAMES,
     DECISION_KO,
     DOC_CHECKS,
     NO_VERDICT_KO,
@@ -25,7 +26,14 @@ from src.constant.check import (
     VERDICT_KO,
 )
 from src.constant.jira import READY_STATUS, STOP_REASON_PREFIX
-from src.constant.slack import LEAD_WEBHOOK_ENV
+from src.constant.slack import (
+    LEAD_WEBHOOK_ENV,
+    SLACK_A2_CHANGED,
+    SLACK_CHECK_FIX,
+    SLACK_MISSED_HOLD,
+    SLACK_MISSED_REASONED,
+    SLACK_T3_CHANGED,
+)
 from src.constant.time import KST
 from src.jira import slack
 from src.jira.client import Jira, JiraError
@@ -40,6 +48,7 @@ from src.jira.comment import (
 from src.jira.runs import add_run, request_count, usage_total
 from src.jira.slack import (
     decision_slack_text,
+    lead_name,
     load_slack_users,
     review_slack_reasons,
     review_slack_text,
@@ -168,7 +177,8 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
 
     v = orig_v = verdict["verdict"]
     notes = []
-    changes: list[str] = []  # 검수 결과를 바꾼 이유. notes에도 같은 순서로 들어가고, Slack 알림의 이유 묶음에 다시 쓴다
+    changes: list[str] = []  # 검수 결과를 바꾼 이유. notes에도 같은 순서로 들어간다
+    slack_changes: list[str] = []  # 검수 결과를 바꾼 이유의 Slack용 짧은 꼴. Slack 알림의 요점에 쓴다
     checks = [c for c in verdict["checks"] if c["id"] != "T3"]  # T3는 Claude가 아니라 여기서 계산한다
     expected, items, extra = pre.get("expected", []), verdict["items"], verdict["extra"]
     # 스크립트가 계산한 검사(precheck.json)는 Claude가 옮겨 적은 값보다 우선한다. 판정도 그 규칙에 맞춘다
@@ -182,6 +192,7 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
                 f"{check_label('A2')} 결과에 따라 {VERDICT_KO[v]}에서 검토 요청으로 바꿈: 마지막 request 전환(담당자가 완료를 요청해 ticket을 ready-to-done 상태로 보내는 Jira 전환) 이후 완료 기준이 바뀜"
             )
             notes.append(changes[-1])
+            slack_changes.append(SLACK_A2_CHANGED)
             v = "escalate"
         elif v == "pass" and (
             fails := [
@@ -194,6 +205,7 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
                 f"스크립트 검사에 보완 필요 항목이 있어 통과에서 보류로 바꿈: {', '.join(check_label(cid) for cid in fails)}"
             )
             notes.append(changes[-1])
+            slack_changes += [SLACK_CHECK_FIX.format(name=CHECK_NAMES[cid]) for cid in fails]
             v = "fix"
     # T3: Claude가 낸 items의 번호가 예상 산출물 번호(1..n)와 1:1인지 (Task)
     # 검수에서는 어긋나면 검토 요청으로 바꾸고, F3 정리는 판정이 없으므로 결과 산출물을 갱신하지 않는다
@@ -224,6 +236,7 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
                     f"{check_label('T3')} 결과에 따라 {VERDICT_KO[v]}에서 검토 요청으로 바꿈: 예상 산출물과 결과 산출물의 번호가 맞지 않음"
                 )
                 notes.append(changes[-1])
+                slack_changes.append(SLACK_T3_CHANGED)
             v = "escalate"
 
     # 문서화 리뷰 (검수 모드, 문서화 리뷰 항목이 있는 work type): Claude가 그 work type의 항목(Task T4–T7과 T9, Bug B5–B7,
@@ -250,6 +263,7 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
                     f"문서화 리뷰에 보완 필요 항목이 있어 통과에서 보류로 바꿈: {', '.join(check_label(cid) for cid in doc_fails)}"
                 )
                 notes.append(changes[-1])
+                slack_changes += [SLACK_CHECK_FIX.format(name=CHECK_NAMES[cid]) for cid in doc_fails]
                 v = "fix"
     else:
         doc_checks = []
@@ -259,6 +273,8 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
         if reason:
             changes.append(reason)
             notes.append(reason)
+            missed = sum(1 for it in items if not it.get("done"))
+            slack_changes.append((SLACK_MISSED_REASONED if v == "escalate" else SLACK_MISSED_HOLD).format(n=missed))
         # 보류이고 R4가 보완 필요면 늦은 사유를 남기는 방법을 요청 끝에 넣는다. CI agent는 이 문장을 requests에 적지 않는다
         if v == "fix" and last_check(checks, "R4").get("result") == "fail":
             days = list(dict.fromkeys(s["at"][:10] for s in pre.get("stops") or [] if not s.get("hasReason")))
@@ -299,10 +315,9 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
         j.set_fields(key, fields)
 
     # 3) 상태 처리 문구와 comment (검수 모드만. Jira 상태는 바꾸지 않는다)
-    summary, state_line, comment_link = "", "", ""
+    summary, comment_link = "", ""
     if mode == "review":
-        state_note, state_line = STATE_NOTE
-        notes.append(state_note)  # 검수 comment의 검수 결과 줄 아래에 나간다
+        notes.append(STATE_NOTE)  # 검수 comment의 검수 결과 줄 아래에 나간다
         summary = strip_claude_header(
             (o / "comment.wiki").read_text(encoding="utf-8")
         )  # 검수 모드는 위에서 comment.wiki가 있음을 확인함
@@ -369,17 +384,11 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
         if warning:
             notes.append(warning)
         mention, who = (f"<@{users[lead]}>" if users.get(lead) else "팀장"), "팀장"
-        reasons = review_slack_reasons(v, itype, expected, items, extra, checks, changes, summary)
+        agent_points = verdict.get("slack")
+        agent_points = agent_points if isinstance(agent_points, list) else []
+        reasons = review_slack_reasons(v, itype, expected, items, extra, checks, slack_changes, agent_points)
         text = review_slack_text(
-            v,
-            key,
-            issue.get("summary") or "",
-            issue.get("url") or "",
-            mention,
-            state_line,
-            reasons,
-            requests,
-            comment_link,
+            v, key, issue.get("summary") or "", issue.get("url") or "", mention, reasons, comment_link
         )
         sent = slack.slack_post(text)
         notes.append(f"Slack 알림 전송({who})" if sent == "전송 완료" else f"Slack {VERDICT_KO[v]} 알림: {sent}")
@@ -416,6 +425,7 @@ def apply_decision(j: Jira, key: str, lead: str, summ: Summary) -> None:
     ready-to-done에서 나간 마지막 전환이 done 또는 In Progress이고, 지금 상태가 그 도착 상태이며, 전환한 사람이
     팀장일 때만 보낸다. 그 밖에는 보내지 않고 Summary 탭에 이유를 남긴다.
     같은 전환을 두 번 알리지 않도록 알린 전환 시각을 jira-doc 기록의 lastDecisionAt에 남기고, 같으면 건너뛴다.
+    메시지의 팀장 이름은 lead_name()으로 환경 변수 JIRA_LEAD_NAME에서 읽고, 비어 있으면 "팀장"을 적는다.
 
     Args:
         j: Jira 클라이언트.
@@ -454,6 +464,7 @@ def apply_decision(j: Jira, key: str, lead: str, summ: Summary) -> None:
         slack_mention(f.get("assignee"), users),
         decision,
         status,
+        lead_name(),
     )
     sent = slack.slack_post(text)
     note = f"팀장 확인 결과 {decision}, 담당자에게 Slack 알림"

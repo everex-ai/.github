@@ -75,6 +75,12 @@
       "description": "담당자에게 요청할 것. 검수 comment의 '요청' 번호 목록으로 들어간다.",
       "type": "array",
       "items": { "type": "string", "maxLength": 300 }
+    },
+    "slack": {
+      "description": "검수 모드에서만 채우는 Slack 검수 결과 메시지의 요점. 팀장이 검수 결과의 이유를 몇 초 안에 파악하는 짧은 줄",
+      "type": "array",
+      "maxItems": 3,
+      "items": { "type": "string", "maxLength": 60 }
     }
   }
 }

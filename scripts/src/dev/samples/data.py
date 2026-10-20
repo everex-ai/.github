@@ -100,6 +100,8 @@ TASK_SUMMARY = f"""* 재현 테스트 추가 항목은 [PR #42 export 오류 수
 * 오류율 1% 미만 항목은 모델 v2의 검증 데이터 오류율 0.7%라는 수치만 있고 계산 방법과 리포트 링크가 기록에 없어 미달성으로 둠([comment 2026-09-12|{comment_url("INNO-17", 10123)}])
 * 예상에 없던 오류율 대시보드([PR #45 오류율 대시보드|https://github.com/everex-ai/repo/pull/45])는 초과 달성으로 기록함"""
 TASK_TITLE = "export 오류 원인 확인과 재발 방지"
+# verdict.slack 샘플. prompts/review.md의 "Slack 요점(verdict.slack) 작성" 절의 예시 꼴(보류는 기록에서 빠진 것)
+TASK_SLACK = ["오류율 평가 리포트 링크 없음", "기기 사양 확정 기록 없음"]
 # 검토 요청 샘플(INNO-21): INNO-17과 같은 예상 산출물에서, 미달성 항목마다 담당자가 comment로 사유를 남긴 경우
 REQUEST_ITEMS = [
     TASK_ITEMS[0],
@@ -120,6 +122,8 @@ REQUEST_ITEMS = [
         "reason": "기기 사양 확정 뒤 후속 task 키 comment 필요",
     },
 ]
+# 검토 요청은 팀장이 판단할 쟁점. 통과는 팀장이 알아야 할 특이점이 없어 빈 목록(PASS_SLACK)
+REQUEST_SLACK = ["고객사 데이터 제공이 늦어 오류율을 측정하지 못함", "기기 사양 미확정으로 ONNX 변환 옵션 못 정함"]
 REQUEST_SUMMARY = f"""* 재현 테스트 추가 항목은 [PR #42 export 오류 수정|https://github.com/everex-ai/repo/pull/42]로 병합되어 달성함
 * 오류율 1% 미만 항목은 고객사 검증 데이터 제공이 10월로 밀렸다는 담당자 comment가 있어 미달성으로 둠([comment 2026-09-15|{comment_url("INNO-21", 10160)}])
 * ONNX 변환 항목은 배포 대상 기기 사양이 확정되지 않았다는 담당자 comment가 있어 미달성으로 둠([comment 2026-09-13|{comment_url("INNO-21", 10140)}])"""
@@ -143,6 +147,7 @@ PASS_ITEMS = [
 PASS_SUMMARY = f"""* 재현 테스트 추가 항목은 [PR #42 export 오류 수정|https://github.com/everex-ai/repo/pull/42]로 병합되어 달성함
 * 오류율 1% 미만 항목은 모델 v2의 검증 데이터(val set, export 요청 12,000건) 오류율 0.7%(오류 건수를 export 요청 건수로 나눔)가 {REPORT_LINK}에 있어 달성함
 * ONNX 변환 항목은 [PR #48 ONNX 변환|https://github.com/everex-ai/repo/pull/48]로 병합되어 달성함"""
+PASS_SLACK: list[str] = []
 # stop 이력: 2026-09-08에 stop하고 다음 상태 변경(2026-09-10 In Progress)까지 사람 comment가 없음
 # 보류 샘플(INNO-17)은 사유가 없어 R4가 보완 필요이고, 통과 샘플(INNO-22)은 늦게 남긴 사유(LATE_REASON)가 있음
 STOP_CHANGES = [

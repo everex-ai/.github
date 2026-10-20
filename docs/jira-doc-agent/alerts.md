@@ -4,8 +4,9 @@ jira-doc의 알림은 즉시, 주간, 월간, 분기, 연간의 다섯 주기로
 담당자도 받는 알림은 Jira comment와 연동 채널로 간다.
 팀장만 받는 알림은 팀장 채널로 간다.
 
-- 알림은 모두 스크립트가 만든다.
-  - CI agent는 알림 문장을 만들지 않는다.
+- 알림은 스크립트가 만든다.
+  - 예외: 검수 뒤 Slack 알림의 요점은 CI agent가 작성한다.
+    - 요점과 작성 주체: "Slack 알림 메시지 구조" 절
   - 만드는 곳: `scripts/src/jira/`, `scripts/src/jira/report/`
   - F2 stop 사유 요청 comment만 Jira Automation이 만든다.
 - 이 문서의 동작 흐름과 실행 모드는 `docs/jira-doc-agent/README.md`에 있다.
@@ -98,10 +99,96 @@ jira-doc의 알림은 즉시, 주간, 월간, 분기, 연간의 다섯 주기로
   - 정기 보고 메시지: 구두 피드백 대상 후보에게 구두 피드백을 한다.
     - 후보의 정의는 "구두 피드백 대상 후보와 개선 여부" 절에 있다.
 
+## Slack 알림 메시지 구조
+
+검수 뒤 Slack 알림, 팀장 확인 결과 알림, 주간 점검 메시지는 정해진 틀로 나간다.
+스크립트가 틀을 채우고, CI agent는 검수 뒤 Slack 알림의 요점만 작성한다.
+
+- 정기 보고 메시지의 틀은 "정기 보고 메시지" 절에 있다.
+- 실패 알림과 토큰(인증 키) 만료 알림은 이 절에서 다루지 않는다.
+- 스크립트는 위 세 메시지와 정기 보고 메시지에 아래 세 가지를 넣지 않는다.
+  - 용어 풀이
+  - 계산 방법
+  - 받는 사람이 이미 아는 할 일 안내
+- 용어의 뜻과 계산 방법은 이 문서에 둔다.
+- 팀장 이름: variable `JIRA_LEAD_NAME`의 값
+  - 스크립트가 실행할 때 환경 변수로 읽는다.
+  - Jira에서 사용자 이름을 읽으면 2026-10-20 시험에서 실패했다.
+    - 추정: `JIRA_API_TOKEN` 범위에 `read:jira-user`가 없기 때문이다.
+    - 토큰 범위: `docs/jira-doc-agent/README.md`의 secret 표
+  - 값이 비면 스크립트가 "팀장"으로 적는다.
+    - 근거: `scripts/src/constant/slack.py`의 `LEAD_NAME_DEFAULT`
+  - 스크립트는 팀장 이름 자리에 Slack 멘션을 넣지 않는다.
+    - 멘션하면 팀장에게 알림이 가기 때문이다.
+    - 근거: `scripts/src/jira/slack.py`의 `decision_slack_text`, `scripts/src/jira/report/message.py`의 `Report.lead_title`
+
+### 검수 뒤 Slack 알림
+
+```text
+{팀장 멘션} [{검수 결과}] <{ticket URL}|{키} {제목}>
+• {요점}
+<{검수 comment URL}|검수 comment>
+```
+
+- 요점: 검수 결과의 이유를 적는 글머리표 줄
+- 스크립트가 요점을 아래 순서로 4줄까지 적는다.
+  - 근거: `scripts/src/jira/slack.py`의 `review_slack_reasons`
+  1. 스크립트가 검수 결과를 바꾼 이유의 짧은 꼴
+     - 문구: `scripts/src/constant/slack.py`의 `SLACK_*` 상수
+  2. Task의 달성 요약 줄(예: "예상 산출물 2개 중 2개 달성")
+  3. CI agent가 작성한 `verdict.slack`(3개까지)
+     - `verdict.slack`: CI agent 구조화 출력(`schemas/agent-output.json`)의 요점 필드
+  4. stop 사유를 늦게 남겼으면 "stop 사유 뒤늦게 작성"
+- 스크립트는 요점을 아래처럼 다룬다(`review_slack_reasons`).
+  - `verdict.slack`이 비면 보류에만 보완이 필요한 검사 이름을 적는다.
+  - 같은 문구는 한 번만 적는다.
+- 스크립트는 요청 목록을 적지 않는다(`scripts/src/jira/slack.py`의 `review_slack_text`).
+  - 요청 목록: 담당자에게 보내는 보완 요청(CI agent의 `requests`)
+  - 요청 목록은 검수 comment에 있다.
+- CI agent의 요점 작성 지시는 `prompts/review.md`에 있다.
+  - 절 제목: "Slack 요점(verdict.slack) 작성"
+
+### 팀장 확인 결과 알림
+
+```text
+{담당자 멘션} [{팀장 이름} 확인: {통과|보류}] <{ticket URL}|{키} {제목}>
+• {Done|In Progress}로 이동
+```
+
+- 만드는 곳: `scripts/src/jira/slack.py`의 `decision_slack_text`
+
+### 주간 점검 메시지
+
+```text
+[{날짜} 전달사항] {멘션 목록}
+
+*{검사별 목록 제목}* {n}건 — {조치}
+    • <{ticket URL}|{키} {제목}> {담당자} · {경과}
+```
+
+- 만드는 곳: `scripts/src/jira/slack.py`의 `weekly_lines`
+- 검사별 목록: 같은 검사 ID의 알림을 모은 줄들
+- 검사별 목록의 제목, 조치, 경과는 아래와 같다.
+  - 근거: `scripts/src/constant/slack.py`의 `ALERT_SECTIONS`
+
+| 검사 ID | 검사별 목록 제목 | 조치 | 경과 |
+|---|---|---|---|
+| R4 | stop 사유 미기재 | 없음 | `stop 뒤 n일` |
+| A1 | 영업일 기준 5일 이상 활동 없음 | `업데이트 요망` | `활동 없이 n영업일` |
+| A3 | ready-to-done 영업일 기준 3일 이상 대기 | `팀장: done 또는 In Progress 전환` | `대기 n영업일` |
+
+- 스크립트는 검사별 목록을 아래처럼 적는다(`weekly_lines`).
+  - 조치가 없으면 검사별 목록 제목 뒤 " — "도 적지 않는다.
+  - A3의 담당자 자리에는 담당자 이름과 팀장 멘션을 함께 적는다.
+- 경과는 아래처럼 센다(`scripts/src/jira/precheck/run.py`의 `run_scan`).
+  - 영업일: 토요일과 일요일을 뺀 날(`scripts/src/jira/precheck/history.py`의 `business_days_since`)
+  - stop 뒤 n일: stop 전환부터 지난 시간을 24시간 단위로 세고 나머지는 버린다.
+
 ## 정기 보고 메시지
 
 정기 보고 메시지는 월간, 분기, 연간 묶음을 묶음마다 따로 보낸다.
-모든 묶음의 절 순서는 팀장 업무, 팀 전체, 팀원별, Claude 활용 요약이다.
+모든 묶음의 절은 아래 순서로 적는다.
+{팀장 이름} 검토 항목, 팀 전체, 팀원별, Claude 활용 요약이다.
 
 - 보고 대상 달은 지난달이다.
   - Actions 수동 실행(mode `report`)에 `month`(`YYYY-MM`)를 넣으면 그 달로 만든다.
@@ -119,23 +206,33 @@ jira-doc의 알림은 즉시, 주간, 월간, 분기, 연간의 다섯 주기로
 - 메시지에는 값 위주로 적고, 지표의 뜻은 이 문서에 둔다.
   - 메시지 끝 줄에 이 문서의 경로를 적는다.
 
-| 묶음 | 팀장 업무 | 팀 전체 | 팀원별 | Claude 활용 요약 |
+| 묶음 | {팀장 이름} 검토 항목 | 팀 전체 | 팀원별 | Claude 활용 요약 |
 |---|---|---|---|---|
-| 월간 | 판정 일치율, 팀장 확인 대기, 팀장 확인 시간 | ticket 현황, 첫 검수 통과율, 최대 검수 반복 횟수, stop 사유 기록률 | 팀 전체 지표와 업데이트 없는 기존 ticket 수, 구두 피드백 대상 후보, 지난달 후보의 개선 여부 | 자동 검수 소요 시간, API 환산 비용(전월 대비, 사용량 많음 표시), 토큰 종류별 수, Claude 사용 ticket Top3 |
-| 분기 | 판정 일치율, 검토 요청 비율, 팀장 확인 시간 | KR별 하위 Task의 done 수와 결과 산출물 달성률, 검사 ID별 ❌ 상위 5개, 첫 검수 통과율, 최대 검수 반복 횟수 | 첫 검수 통과율, 최대 검수 반복 횟수, stop 사유 기록률 | 월간과 같음(전 분기 대비, 사용량 많음 표시 없음) |
+| 월간 | 판정 일치율, ready-to-done ticket, request 전환 뒤 상태 변경까지 | ticket 현황, 첫 검수 통과율, 최대 검수 반복 횟수, stop 사유 기록률 | 팀 전체 지표와 업데이트 없는 기존 ticket 수, 구두 피드백 대상 후보, 지난달 후보의 개선 여부 | 자동 검수 소요 시간, API 환산 비용(전월 대비, 사용량 많음 표시), 토큰 종류별 수, Claude 사용 ticket Top3 |
+| 분기 | 판정 일치율, 검토 요청 비율, request 전환 뒤 상태 변경까지 | KR별 하위 Task의 done 수와 결과 산출물 달성률, 검사 ID별 ❌ 상위 5개, 첫 검수 통과율, 최대 검수 반복 횟수 | 첫 검수 통과율, 최대 검수 반복 횟수, stop 사유 기록률 | 월간과 같음(전 분기 대비, 사용량 많음 표시 없음) |
 | 연간 | 판정 일치율(분기별 값) | 첫 검수 통과율(분기별 값), ❌ 상위 3개 검사 ID의 분기별 만족률 | 첫 검수 통과율, 최대 검수 반복 횟수 | 월간과 같음(전년 대비, 분기별 합계 추가, 사용량 많음 표시 없음) |
 
 - 월간과 분기 묶음의 판정 일치율은 두 값을 함께 적는다.
   - 두 값: 기간 값, 최근 20건 값("판정 일치율" 절)
   - 연간 묶음은 연간 값과 분기별 값을 적는다.
 - 메시지 제목은 묶음마다 아래와 같다.
-  - 월간: `[YYYY-MM jira-doc 월간 보고]`
-  - 분기: `[YYYY Qn jira-doc 분기 보고]`
-  - 연간: `[YYYY jira-doc 연간 보고]`
+  - 월간: `*[YYYY-MM jira-doc 월간 보고]*`
+  - 분기: `*[YYYY Qn jira-doc 분기 보고]*`
+  - 연간: `*[YYYY jira-doc 연간 보고]*`
+  - 스크립트가 제목을 굵게 적는다.
+    - 근거: `scripts/src/jira/report/message.py`의 `Report.monthly_message`, `quarterly_message`, `yearly_message`
+- 스크립트가 대상 기간과 절 제목을 글머리표(•) 줄로 적는다.
+  - 근거: `scripts/src/jira/report/message.py`의 `Report.assemble`
+  - 스크립트가 절 제목을 굵게 적는다(`Report.assemble`).
+  - 절 안의 줄은 한 단계(◦), 그 하위 줄은 두 단계(‣) 들여쓴다.
+    - "▪"는 Slack이 이모지로 바꿔 보여 주어 쓰지 않는다.
+    - 근거: `scripts/src/jira/report/text.py`의 `_sub`
+- 스크립트가 메시지 끝 줄(지표 정의) 앞에 빈 줄을 하나 둔다.
+  - 40줄 상한에는 이 빈 줄도 센다(`Report.assemble`의 `MAX_LINES`).
 - 팀원별 절의 첫 줄에 값 순서를 적고, 담당자마다 값만 적는다.
 - 메시지의 표기는 아래와 같다.
   - 괄호 안의 "(n건)": 그 값을 구한 표본 수
-    - 예: 팀장 확인 시간의 "(5건)"은 팀장의 전환 5건
+    - 예: request 전환 뒤 상태 변경까지의 "(5건)"은 팀장의 전환 5건
   - `평균 390초(120–900초, 24건)`: 자동 검수 소요 시간의 평균
     - 괄호 안은 최소–최대와 request 전환 수다.
   - "전월 대비 +81%": 직전 기간 API 환산 비용 대비 증감
@@ -166,7 +263,7 @@ jira-doc의 알림은 즉시, 주간, 월간, 분기, 연간의 다섯 주기로
     - 줄 꼴: `예상 산출물 n개 중 m개 달성`(`scripts/src/jira/comment.py`의 `deliverables_wiki`가 만듦)
   - 아래 넷은 "ticket 현황과 팀장 확인 지표" 절에 있다.
     - ticket 현황, 최대 검수 반복 횟수
-    - 팀장 확인 대기, 팀장 확인 시간
+    - ready-to-done ticket, request 전환 뒤 상태 변경까지
   - Claude 활용 요약 절의 지표는 "Claude 활용 요약 지표" 절에 있다.
 - 상위 3개와 상위 5개는 메시지 길이를 줄이려는 값이다.
 - 메시지 길이를 줄이려고 아래처럼 적는다(`scripts/src/jira/report/message.py`의 `Report`).
@@ -210,11 +307,13 @@ jira-doc의 알림은 즉시, 주간, 월간, 분기, 연간의 다섯 주기로
 - 최대 검수 반복 횟수: ticket 하나의 대상 기간 request 전환 횟수 중 최댓값
   - 그 ticket 키를 함께 적는다.
   - 팀원별 값은 그 담당자 ticket 중 최댓값이다.
-- 팀장 확인 대기: 대상 기간 끝에 ready-to-done인 ticket 수
+- ready-to-done ticket: ready-to-done 상태인 ticket 수
+  - 대상 기간 끝의 상태로 센다.
   - 진입 뒤 가장 오래 머문 영업일 수를 함께 적는다.
   - 셈하는 끝은 대상 기간 끝과 실행 시각 중 이른 시각이다.
     - 달 중간에 수동 실행해도 아직 오지 않은 날을 세지 않는다.
-- 팀장 확인 시간: 팀장 계정이 ready-to-done에서 전환한 경우의 머문 시간 중앙값
+- request 전환 뒤 상태 변경까지: 머문 시간의 중앙값
+  - 대상: 팀장 계정이 ready-to-done에서 전환한 경우
   - 머문 시간: 마지막 ready-to-done 진입부터 그 전환까지
   - 자동 보류 전환은 뺀다.
     - 자동 보류 전환: 보류 검수 뒤 apply.py가 In Progress로 되돌린 전환
@@ -256,7 +355,7 @@ jira-doc의 알림은 즉시, 주간, 월간, 분기, 연간의 다섯 주기로
 - 자동 검수 소요 시간: request 전환부터 첫 검수 comment까지 걸린 시간
   - request 전환마다 재고, 평균과 최소–최대를 초로 적는다.
   - 다음 request 전환 전에 검수 comment가 없으면 뺀다.
-  - CI agent의 처리 시간이라 팀장 업무가 아니다.
+  - CI agent의 처리 시간이라 {팀장 이름} 검토 항목 절에 두지 않는다.
   - `metrics.md`의 J4(피드백 대기 시간)와 같은 계산이다.
 - API 환산 비용 줄: 대상 기간 실행의 API 환산 비용 합
   - 메시지에는 줄 이름을 `API 환산 금액`으로 적는다.
@@ -270,8 +369,8 @@ jira-doc의 알림은 즉시, 주간, 월간, 분기, 연간의 다섯 주기로
 |---|---|---|
 | input | input | cache에 저장하지도, cache에서 읽지도 않은 입력 토큰 |
 | output | output | CI agent가 만든 출력 토큰 |
-| cacheWrite | cache 쓰기(지시·기록 저장) | 이번 요청에서 cache에 새로 저장한 입력 토큰 |
-| cacheRead | cache 읽기(저장분 재사용) | 앞 요청이 저장한 cache에서 다시 읽은 입력 토큰 |
+| cacheWrite | cache 쓰기 | 이번 요청에서 cache에 새로 저장한 입력 토큰 |
+| cacheRead | cache 읽기 | 앞 요청이 저장한 cache에서 다시 읽은 입력 토큰 |
 
 - 표의 뜻은 API 응답 사용량 필드의 정의를 옮긴 것이다.
   - 근거: https://platform.claude.com/docs/en/build-with-claude/prompt-caching.md "Tracking cache performance"

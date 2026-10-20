@@ -23,6 +23,12 @@ if str(ROOT / "scripts") not in sys.path:
     sys.path.append(str(ROOT / "scripts"))  # scripts/src 패키지를 불러오기 위함
 
 
+@pytest.fixture(autouse=True)
+def lead_name_kai(monkeypatch):
+    """메시지의 팀장 이름(환경 변수 JIRA_LEAD_NAME)을 "Kai"로 둔다. 이름 테스트는 이 값을 바꾼다."""
+    monkeypatch.setenv("JIRA_LEAD_NAME", "Kai")
+
+
 @pytest.fixture(scope="module")
 def render():
     """scripts/src/dev/samples/render.py (모듈 이름 src.dev.samples.render)."""
@@ -142,18 +148,21 @@ def run_review(
     j=None,
     changelog=None,
     usage=None,
+    agent_slack=None,
+    checks=None,
 ):
     """INNO-17(Task)을 가짜 Jira로 실행하고 (FakeJira, Summary)를 돌려준다. 기본은 검수 모드.
 
     changelog를 주면 ctx/INNO-17/changelog.json에, usage를 주면 out/_usage.json에 쓴다.
+    agent_slack은 verdict.json의 slack이다. 주지 않으면 빈 목록이다. checks는 precheck.json의 checks다.
     """
     ctx, out = work / "ctx", work / "out"
-    render.write_issue(ctx, "INNO-17", "Task", EXPECTED, {}, status=status)
+    render.write_issue(ctx, "INNO-17", "Task", EXPECTED, checks or {}, status=status)
     if changelog is not None:
         render.write_json(ctx / "INNO-17" / "changelog.json", changelog)
     if usage is not None:
         render.write_json(out / "_usage.json", usage)
-    v = render.task_verdict("INNO-17", mode, verdict) | {"items": items, "extra": []}
+    v = render.task_verdict("INNO-17", mode, verdict) | {"items": items, "extra": [], "slack": agent_slack or []}
     render.write_out(out, "INNO-17", v, "* 요약")
     if tldr is not None:
         (out / "INNO-17" / "tldr.wiki").write_text(tldr, encoding="utf-8")
@@ -258,13 +267,10 @@ def test_recheck_verdict(jv, v, itype, items, checks, gate, doc_fails, want):
 def test_hold_does_not_transition_and_mentions_lead_only(render, ja, tmp_path, slack):
     j, summ = run_review(render, ja, tmp_path, "fix", ITEMS, status="Ready-to-Done")
     assert "검수 결과: *보류*\n* 상태를 바꾸지 않고 팀장 확인을 요청함\n" in j.comments[0][1]
-    assert slack[0].startswith(
-        "<@U-LEAD> [INNO-17] 검수 결과: 보류. 상태 변경 없음\n"
-        f'<{ISSUE_URL}|INNO-17>\n보류 이유\n    • 사유 없는 미달성: 예상 산출물 2번 "오류율 1% 미만"\n요청\n    1. '
-    )
-    assert slack[0].endswith(
-        "\n팀장이 ticket을 확인한 뒤 In Progress로 직접 전환 필요"
-        f"\n근거: <{ISSUE_URL}?focusedCommentId=10200|검수 comment>"
+    assert slack[0] == (
+        f"<@U-LEAD> [보류] <{ISSUE_URL}|INNO-17>\n"
+        "• 예상 산출물 2개 중 1개 달성\n"
+        f"<{ISSUE_URL}?focusedCommentId=10200|검수 comment>"
     )
     assert not any(e in slack[0] for e in FORMAL_ENDINGS)
     assert "Slack 알림 전송(팀장)" in summ.rows[0]
@@ -272,36 +278,36 @@ def test_hold_does_not_transition_and_mentions_lead_only(render, ja, tmp_path, s
 
 def test_hold_mentions_lead_by_name_when_not_in_slack_users(render, ja, tmp_path, slack):
     run_review(render, ja, tmp_path, "fix", ITEMS, lead="acc-unknown")
-    assert slack[0].startswith("팀장 [INNO-17] 검수 결과: 보류. 상태 변경 없음\n")
+    assert slack[0].startswith("팀장 [보류] ")
 
 
 def test_state_note_says_status_is_not_changed(ja, ji):
-    assert ji.STATE_NOTE == ("상태를 바꾸지 않고 팀장 확인을 요청함", "상태 변경 없음")
+    assert ji.STATE_NOTE == "상태를 바꾸지 않고 팀장 확인을 요청함"
     assert not hasattr(ja, "review_transition") and not hasattr(ja, "IN_PROGRESS")
 
 
 def test_request_keeps_status_and_mentions_lead(render, ja, tmp_path, slack):
     j, summ = run_review(render, ja, tmp_path, "fix", [ITEMS[0], REASONED])
     assert f"검수 결과: *검토 요청*\n* {HOLD_TO_REQUEST}\n* 상태를 바꾸지 않고 팀장 확인을 요청함\n" in j.comments[0][1]
-    assert slack[0].startswith("<@U-LEAD> [INNO-17] 검수 결과: 검토 요청. 상태 변경 없음\n")
-    assert (
-        '\n    • 예상 산출물 2번 "오류율 1% 미만": 라벨 재수집이 다음 분기로 밀림(<https://example.com/c/1|comment 2026-09-15>)\n'
-        f"    • {HOLD_TO_REQUEST}\n팀장이 ticket을 확인한 뒤 In Progress 또는 done으로 직접 전환 필요\n"
-    ) in slack[0]
-    assert "\n요청\n" not in slack[0]
+    assert slack[0] == (
+        f"<@U-LEAD> [검토 요청] <{ISSUE_URL}|INNO-17>\n"
+        "• 미달성 1건, 담당자 사유 있음\n"
+        "• 예상 산출물 2개 중 1개 달성\n"
+        f"<{ISSUE_URL}?focusedCommentId=10200|검수 comment>"
+    )
     assert not any(e in slack[0] for e in FORMAL_ENDINGS)
     assert "Slack 알림 전송(팀장)" in summ.rows[0]
     run_review(render, ja, tmp_path / "no-lead-id", "fix", [ITEMS[0], REASONED], lead="acc-unknown")
-    assert slack[1].startswith("팀장 [INNO-17] 검수 결과: 검토 요청. ")
+    assert slack[1].startswith("팀장 [검토 요청] ")
 
 
 def test_pass_asks_lead_to_move_done(render, ja, tmp_path, slack):
     j, _ = run_review(render, ja, tmp_path, "pass", [ITEMS[0], {**ITEMS[1], "done": True}])
     assert "검수 결과: *통과*\n* 상태를 바꾸지 않고 팀장 확인을 요청함\n" in j.comments[0][1]
-    assert slack[0].startswith(
-        "<@U-LEAD> [INNO-17] 검수 결과: 통과. 상태 변경 없음\n"
-        f"<{ISSUE_URL}|INNO-17>\n통과 이유\n    • 예상 산출물 2개 중 2개 달성\n    • 요약\n"
-        "팀장이 ticket을 확인한 뒤 done으로 직접 전환 필요\n"
+    assert slack[0] == (
+        f"<@U-LEAD> [통과] <{ISSUE_URL}|INNO-17>\n"
+        "• 예상 산출물 2개 중 2개 달성\n"
+        f"<{ISSUE_URL}?focusedCommentId=10200|검수 comment>"
     )
     assert not any(e in slack[0] for e in FORMAL_ENDINGS)
 
@@ -348,7 +354,7 @@ def test_slack_users_env_comes_before_file(render, ja, tmp_path, monkeypatch, sl
     monkeypatch.setenv("SLACK_USERS_JSON", json.dumps({"acc-assignee": "U-ENV", "acc-lead": "U-ENV-LEAD"}))
     assert ja.load_slack_users() == ({"acc-assignee": "U-ENV", "acc-lead": "U-ENV-LEAD"}, None)
     _, summ = run_review(render, ja, tmp_path, "fix", ITEMS)
-    assert slack[0].startswith("<@U-ENV-LEAD> [INNO-17] 검수 결과: 보류. ")
+    assert slack[0].startswith("<@U-ENV-LEAD> [보류] ")
     summ.flush()
     summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
     # secret의 Slack 멤버 ID는 Slack 본문에만 들어가고 print, Summary 행, Summary 파일에는 나가지 않음
@@ -363,7 +369,7 @@ def test_slack_users_empty_env_uses_file(render, ja, tmp_path, monkeypatch, slac
         monkeypatch.setenv("SLACK_USERS_JSON", value)
     assert ja.load_slack_users() == ({"acc-assignee": "U-ASSIGNEE", "acc-lead": "U-LEAD"}, None)
     run_review(render, ja, tmp_path, "fix", ITEMS)
-    assert slack[0].startswith("<@U-LEAD> [INNO-17] 검수 결과: 보류. ")
+    assert slack[0].startswith("<@U-LEAD> [보류] ")
 
 
 @pytest.mark.parametrize(
@@ -374,11 +380,11 @@ def test_slack_users_invalid_env_sends_names_and_warns(render, ja, tmp_path, mon
     assert ja.load_slack_users() == ({}, SLACK_USERS_FORMAT_WARNING)
     # 검수 모드: 파일에 담당자 ID가 있어도 사용하지 않고, 담당자 이름 자리(이름이 없으면 "담당자 미지정")로 보냄
     _, summ = run_review(render, ja, tmp_path / "review", "fix", ITEMS)
-    assert slack[0].startswith("팀장 [INNO-17] 검수 결과: 보류. ")
+    assert slack[0].startswith("팀장 [보류] ")
     assert SLACK_USERS_FORMAT_WARNING in summ.rows[0]
     # 주간 점검: Slack 본문에 멘션이 없고 담당자 이름이 있으며, 경고가 Summary에 남음
     summary = run_weekly(ja, tmp_path / "weekly")
-    assert "<@" not in slack[-1] and "담당 담당자A, " in slack[-1]
+    assert "<@" not in slack[-1] and "> 담당자A · " in slack[-1]
     assert SLACK_USERS_FORMAT_WARNING in summary
     assert "U-SECRET" not in summary + "".join(summ.rows) + capsys.readouterr().out  # secret 값을 출력하지 않음
 
@@ -388,10 +394,10 @@ def test_weekly_summary_copy_has_names_not_mentions(ja, tmp_path, monkeypatch, s
     summary = run_weekly(ja, tmp_path)
     head = slack[-1].splitlines()[0]
     assert head.endswith("전달사항] <@U-ASSIGNEE>")  # Slack 머리줄의 멘션 목록
-    assert "<@U" in slack[-1] and "담당 <@U-ASSIGNEE>, " in slack[-1]
+    assert "<@U" in slack[-1] and "> <@U-ASSIGNEE> · " in slack[-1]
     copy = summary.split("### 주간 점검 (Slack 전송 완료)\n\n```\n")[1].split("\n```")[0]
     assert copy.splitlines()[0] == head.split("] ")[0] + "]"  # Summary 사본의 머리줄에는 멘션 목록이 없음
-    assert "<@" not in summary and "담당 담당자A, " in copy
+    assert "<@" not in summary and "> 담당자A · " in copy
     # 파일 대응표의 Slack 멤버 ID는 print와 Summary 파일(행과 사본)에 나가지 않음
     assert "U-ASSIGNEE" not in capsys.readouterr().out + summary
 
@@ -405,12 +411,12 @@ STALE_ALERTS = {
         {
             "check": "A1",
             "code": "STALE:2026-09-15",
-            "detail": "마지막 활동 2026-09-15 뒤 영업일 기준 10일 경과",
+            "detail": "활동 없이 10영업일",
             "message": "진행 상황 comment 필요",
         }
     ],
 }
-READY_WAIT_DETAIL = "ready-to-done 진입 2026-09-23 뒤 영업일 기준 4일 경과(토요일과 일요일 제외)"
+READY_WAIT_DETAIL = "대기 4영업일"
 READY_WAIT_ALERTS = {
     "key": "INNO-42",
     "summary": "추론 지연 개선",
@@ -430,20 +436,19 @@ def test_weekly_message_sections_have_actions_and_a3_mentions_lead(ja, tmp_path,
     assert (
         "아래 task마다" not in slack[-1] and "아래 ticket마다" not in slack[-1]
     )  # 전체 조치 문구 줄 대신 절 제목마다 조치 문구를 붙임
-    assert "*stop 사유 미기재* (1건) — 담당자: stop 사유 comment 필요" in lines
-    assert (
-        "*영업일 기준 5일 이상 활동 없음* (1건) — 담당자: 진행 상황 comment, 또는 멈춘 ticket이면 stop 전환 필요"
-        in lines
-    )
-    assert (
-        "*ready-to-done 영업일 기준 3일 이상 대기* (1건) — 팀장: done 전환, 또는 보완이 필요하면 In Progress 전환 필요"
-        in lines
-    )
-    # A3 항목: 담당자는 Jira 표시 이름(멘션 아님), 팀장은 멘션
-    assert f"    • INNO-42 추론 지연 개선 — 담당 담당자A, 팀장 <@U-LEAD>, {READY_WAIT_DETAIL}" in lines
-    assert "    • INNO-41 모델 경량화 — 담당 <@U-ASSIGNEE>, " + STALE_ALERTS["alerts"][0]["detail"] in lines
+    assert "*stop 사유 미기재* 1건" in lines  # R4는 절 제목이 할 일을 알려 주므로 조치 문구가 없음
+    assert not any(line.startswith("*stop 사유 미기재*") and " — " in line for line in lines)
+    assert "*영업일 기준 5일 이상 활동 없음* 1건 — 업데이트 요망" in lines
+    assert "*ready-to-done 영업일 기준 3일 이상 대기* 1건 — 팀장: done 또는 In Progress 전환" in lines
+    # ticket 줄: 제목에 링크, URL 줄과 "담당" 머리말 없음. A3 항목은 담당자가 Jira 표시 이름(멘션 아님), 팀장은 멘션
+    link42 = "<https://example.atlassian.net/browse/INNO-42|INNO-42 추론 지연 개선>"
+    link41 = "<https://example.atlassian.net/browse/INNO-41|INNO-41 모델 경량화>"
+    assert f"    • {link42} 담당자A, 팀장 <@U-LEAD> · {READY_WAIT_DETAIL}" in lines
+    assert f"    • {link41} <@U-ASSIGNEE> · " + STALE_ALERTS["alerts"][0]["detail"] in lines
+    assert not any(line.lstrip().startswith("https://") for line in lines)  # URL 줄 없음
+    assert "담당 " not in slack[-1]
     assert "U-LEAD" not in summary  # Actions Summary 사본에는 팀장의 Slack 멤버 ID도 나가지 않음
-    assert f"    • INNO-42 추론 지연 개선 — 담당 담당자A, 팀장(Slack 멘션 없음), {READY_WAIT_DETAIL}" in summary
+    assert f"    • {link42} 담당자A, 팀장(Slack 멘션 없음) · {READY_WAIT_DETAIL}" in summary
 
 
 @pytest.mark.parametrize(
@@ -458,7 +463,8 @@ def test_weekly_message_sections_have_actions_and_a3_mentions_lead(ja, tmp_path,
 def test_weekly_a3_lead_display(jsl, tmp_path, lead, want_text, want_mentions):
     (tmp_path / "INNO-42.alerts.json").write_text(json.dumps(READY_WAIT_ALERTS, ensure_ascii=False), "utf-8")
     lines, mentions = jsl.weekly_lines(tmp_path, {"acc-assignee": "U-ASSIGNEE", "acc-lead": "U-LEAD"}, lead)
-    assert f"    • INNO-42 추론 지연 개선 — 담당 담당자A, {want_text}, {READY_WAIT_DETAIL}" in lines
+    link = "<https://example.atlassian.net/browse/INNO-42|INNO-42 추론 지연 개선>"
+    assert f"    • {link} 담당자A, {want_text} · {READY_WAIT_DETAIL}" in lines
     assert mentions == want_mentions  # A3 항목만 있으면 담당자는 멘션 목록에 들어가지 않음
 
 
@@ -479,10 +485,10 @@ def test_slack_users_empty_table_warns(render, ja, jsl, tmp_path, monkeypatch, s
         monkeypatch.setattr(jsl, "SLACK_USERS", users)
     assert ja.load_slack_users() == ({}, SLACK_USERS_EMPTY_WARNING)
     _, summ = run_review(render, ja, tmp_path / "review", "fix", ITEMS)
-    assert slack[0].startswith("팀장 [INNO-17] 검수 결과: 보류. ")
+    assert slack[0].startswith("팀장 [보류] ")
     assert SLACK_USERS_EMPTY_WARNING in summ.rows[0]
     summary = run_weekly(ja, tmp_path / "weekly")
-    assert "<@" not in slack[-1] and "담당 담당자A, " in slack[-1]
+    assert "<@" not in slack[-1] and "> 담당자A · " in slack[-1]
     assert SLACK_USERS_EMPTY_WARNING in summary
 
 
@@ -518,12 +524,9 @@ def test_wiki_to_slack(jsl):
     )
 
 
-def test_slack_text_escapes_title_and_requests(jsl):
-    text = jsl.review_slack_text(
-        "fix", "INNO-1", "지연 <50ms & 경량화", "https://e.com/INNO-1", "담당자", "", [], ["a > b 확인 필요"], ""
-    )
-    assert "<https://e.com/INNO-1|INNO-1 지연 &lt;50ms &amp; 경량화>" in text
-    assert "\n    1. a &gt; b 확인 필요" in text
+def test_slack_text_escapes_title(jsl):
+    text = jsl.review_slack_text("fix", "INNO-1", "지연 <50ms & 경량화", "https://e.com/INNO-1", "담당자", [], "")
+    assert text == "담당자 [보류] <https://e.com/INNO-1|INNO-1 지연 &lt;50ms &amp; 경량화>"
 
 
 def test_slack_post_reports_timeout(jsl, monkeypatch):
@@ -555,15 +558,15 @@ def test_comment_failure_keeps_state_note_and_slack(render, ja, tmp_path, slack)
     _, summ = run_review(render, ja, tmp_path, "fix", ITEMS, j=j)
     assert "상태를 바꾸지 않고 팀장 확인을 요청함" in summ.rows[0]
     assert "검수 comment 등록 실패: POST /issue/INNO-17/comment -> 500: boom" in summ.rows[0]
-    assert slack[0].startswith("<@U-LEAD> [INNO-17] 검수 결과: 보류. 상태 변경 없음\n")
-    assert "근거:" not in slack[0]
+    assert slack[0].startswith("<@U-LEAD> [보류] ")
+    assert "검수 comment" not in slack[0]
 
 
 def test_no_comment_id_means_no_evidence_line(render, ja, tmp_path, slack):
     j = render.FakeJira({"INNO-17": ""})
     j.add_comment = lambda key, body: j.comments.append((key, body))  # 반환값 없음
     run_review(render, ja, tmp_path, "fix", ITEMS, j=j)
-    assert "근거:" not in slack[0]
+    assert "검수 comment" not in slack[0]
 
 
 def test_digest_mode_has_no_transition_or_slack(render, ja, tmp_path, slack):
@@ -812,13 +815,54 @@ def test_stale_alert_message_and_stop_detail(jp, tmp_path):
         p.write_text(json.dumps(scan), encoding="utf-8")
         jp.run_scan(p, now)
         alerts[key] = json.loads((tmp_path / f"{key}.alerts.json").read_text(encoding="utf-8"))["alerts"]
-    assert alerts["INNO-40"][0]["detail"] == "2026-09-22 stop 뒤 6일 경과(지난 시간을 24시간 단위로 셈, 나머지 버림)"
+    assert alerts["INNO-40"][0]["detail"] == "stop 뒤 6일"
     stale = alerts["INNO-41"][0]
-    assert (
-        stale["check"] == "A1"
-        and stale["detail"] == "마지막 활동 2026-09-02 뒤 영업일 기준 19일 경과(토요일과 일요일 제외)"
-    )
+    assert stale["check"] == "A1" and stale["detail"] == "활동 없이 19영업일"
     assert stale["message"].count(". ") == 1 and stale["message"].endswith("필요")
+
+
+def test_weekly_message_elapsed_phrases_and_no_url_link(jp, jsl, tmp_path):
+    """run_scan이 만든 알림으로 만든 주간 점검 메시지의 경과 문구 3종. URL이 없으면 링크 없이 "키 제목"을 적는다."""
+    now = dt.datetime(2026, 9, 29, 9, 0, tzinfo=dt.timezone(dt.timedelta(hours=9)))
+    scans = {
+        "INNO-40": (
+            "Backlog",
+            [("2026-09-22T10:00:00.000+0900", "Backlog")],
+            "https://example.atlassian.net/browse/INNO-40",
+        ),
+        "INNO-41": ("In Progress", [("2026-09-02T10:00:00.000+0900", "In Progress")], None),
+        "INNO-42": (
+            "ready-to-done",
+            [("2026-09-24T15:00:00.000+0900", "ready-to-done")],
+            "https://example.atlassian.net/browse/INNO-42",
+        ),
+    }
+    for key, (status, changes, url) in scans.items():
+        scan = {
+            "key": key,
+            "type": "Task",
+            "status": status,
+            "summary": "제목",
+            "url": url,
+            "created": "2026-09-01T10:00:00.000+0900",
+            "assignee": {"accountId": "acc-assignee", "displayName": "담당자A"},
+            "humanComments": [],
+            "statusChanges": [{"created": c, "field": "status", "to": to} for c, to in changes],
+        }
+        (tmp_path / f"{key}.json").write_text(json.dumps(scan), encoding="utf-8")
+        jp.run_scan(tmp_path / f"{key}.json", now)
+    lines, _ = jsl.weekly_lines(tmp_path, {})
+    assert lines == [
+        "",
+        "*stop 사유 미기재* 1건",
+        "    • <https://example.atlassian.net/browse/INNO-40|INNO-40 제목> 담당자A · stop 뒤 6일",
+        "",
+        "*영업일 기준 5일 이상 활동 없음* 1건 — 업데이트 요망",
+        "    • INNO-41 제목 담당자A · 활동 없이 19영업일",
+        "",
+        "*ready-to-done 영업일 기준 3일 이상 대기* 1건 — 팀장: done 또는 In Progress 전환",
+        "    • <https://example.atlassian.net/browse/INNO-42|INNO-42 제목> 담당자A, 팀장 미지정 · 대기 3영업일",
+    ]
 
 
 def scan_ready_wait(jp, tmp_path, status, changes):
@@ -847,7 +891,7 @@ def test_ready_wait_alert_after_3_business_days(jp, tmp_path):
     ]
     alerts = scan_ready_wait(jp, tmp_path, "ready-to-done", changes)
     assert [(a["code"], a["check"]) for a in alerts] == [("READY_WAIT:2026-09-24", "A3")]
-    assert alerts[0]["detail"] == "ready-to-done 진입 2026-09-24 뒤 영업일 기준 3일 경과(토요일과 일요일 제외)"
+    assert alerts[0]["detail"] == "대기 3영업일"
     assert alerts[0]["message"].endswith("팀장의 done 전환 또는 In Progress 전환 필요")
 
 
@@ -871,7 +915,7 @@ def test_ready_wait_no_alert_outside_ready_to_done(jp, tmp_path):
     assert scan_ready_wait(jp, tmp_path, "Done", changes) == []
 
 
-def test_t3_mismatch_detail(render, ja, tmp_path):
+def test_t3_mismatch_detail(render, ja, tmp_path, slack):
     ctx, out = tmp_path / "ctx", tmp_path / "out"
     render.write_issue(ctx, "INNO-17", "Task", EXPECTED, {})
     v = render.task_verdict("INNO-17", "review", "pass")
@@ -886,6 +930,7 @@ def test_t3_mismatch_detail(render, ja, tmp_path):
         "* 예상 산출물과 결과 산출물의 1:1 대응 (T3) 결과에 따라 통과에서 검토 요청으로 바꿈: "
         "예상 산출물과 결과 산출물의 번호가 맞지 않음"
     ) in body
+    assert "\n• 예상 산출물 번호가 CI agent 출력과 다름\n" in slack[0]  # Slack 요점에는 짧은 꼴
 
 
 def test_check_table_uses_same_labels_for_all_checks(jcm):
@@ -920,7 +965,7 @@ def test_verdict_change_notes_start_with_check_name(render, tmp_path):
     assert "(T3)" not in files["review-comment-task-observe.wiki"].split("*검사 항목*")[0]
 
 
-def test_gate_note_names_doc_review_checks(render, ja, tmp_path):
+def test_gate_note_names_doc_review_checks(render, ja, tmp_path, slack):
     ctx, out = tmp_path / "ctx", tmp_path / "out"
     render.write_issue(ctx, "INNO-17", "Task", EXPECTED, {})
     v = render.task_verdict("INNO-17", "review", "pass")
@@ -935,6 +980,7 @@ def test_gate_note_names_doc_review_checks(render, ja, tmp_path):
         in body
     )
     assert body.index("(T5)") < body.index("*검사 항목*")
+    assert "\n• 예상 산출물 분할 단위 보완 필요\n• 진행 기록 comment 보완 필요\n" in slack[0]
 
 
 def run_without_output(render, ja, work, mode, missing, verdict="fix", blank=False):
@@ -1216,13 +1262,6 @@ R4_REQUEST = (
 LATE_URL = f"{ISSUE_URL}?focusedCommentId=1"  # 늦은 사유 comment(2026-09-25)의 링크
 LATE_NOTE = "늦게 기록: stop 2026-09-08 뒤 다음 상태 변경 이후에 남긴"
 R4_LATE_DETAIL = f"stop 1회 모두 사유 comment 있음. {LATE_NOTE} [stop 사유 comment 2026-09-25|{LATE_URL}]"
-# Slack 알림의 이유 묶음에 들어가는 줄. wiki 링크는 Slack 링크로 바뀜
-R4_LATE_LINE = (
-    f"stop 사유 comment (R4): stop 1회 모두 사유 comment 있음. {LATE_NOTE} <{LATE_URL}|stop 사유 comment 2026-09-25>"
-)
-ESCALATE_REASON = (
-    '예상 산출물 2번 "오류율 1% 미만": 라벨 재수집이 다음 분기로 밀림(<https://example.com/c/1|comment 2026-09-15>)'
-)
 
 
 def human_comment(created, body, cid):
@@ -1372,7 +1411,7 @@ def run_r4_fail(render, ja, jp, work, verdict, requests, mode="review", a2=None)
     checks = {"R4": jp.check_r4(stops)} | ({"A2": a2} if a2 else {})
     render.write_issue(ctx, "INNO-17", "Task", EXPECTED, checks, stops=stops)
     v = render.task_verdict("INNO-17", mode, verdict)
-    v |= {"items": [ITEMS[0], {**ITEMS[1], "done": True}], "extra": [], "requests": requests}
+    v |= {"items": [ITEMS[0], {**ITEMS[1], "done": True}], "extra": [], "requests": requests, "slack": []}
     render.write_out(out, "INNO-17", v, "* 요약")
     j = render.FakeJira({"INNO-17": ""})
     summ = ja.Summary(str(work / "summary.md"))
@@ -1385,16 +1424,17 @@ def run_r4_fail(render, ja, jp, work, verdict, requests, mode="review", a2=None)
     [["평가 리포트 링크 comment 필요"], [R4_REQUEST, "평가 리포트 링크 comment 필요"]],
     ids=["CI agent가 적지 않으면 끝에 넣음", "CI agent가 이미 적었으면 넣지 않음"],
 )
-def test_r4_fail_adds_request_once_to_hold_slack(render, ja, jp, tmp_path, slack, given):
+def test_r4_fail_adds_request_once_to_hold_comment_not_slack(render, ja, jp, tmp_path, slack, given):
     j, _ = run_r4_fail(render, ja, jp, tmp_path, "pass", given)
-    assert slack[0].startswith("<@U-LEAD> [INNO-17] 검수 결과: 보류. ")
-    assert slack[0].count(R4_REQUEST) == 1
-    requests = slack[0].split("\n요청\n")[1].split("\n팀장이 ticket을 확인한 뒤")[0].splitlines()
-    want = given if R4_REQUEST in given else [*given, R4_REQUEST]
-    assert requests == [f"    {i}. {r}" for i, r in enumerate(want, 1)]
-    assert j.comments[0][1].count(R4_REQUEST) == 1  # 검수 comment의 요청에도 한 번만 들어감
-    r4_reason = "stop 전환(In Progress → Backlog)에 대한 사유를 담당자가 comment에 남기지 않음(stop 시점: 2026-09-08)"
-    assert "\n보류 이유\n" in slack[0] and f"\n    • {r4_reason}\n" in slack[0]
+    assert j.comments[0][1].count(R4_REQUEST) == 1  # 검수 comment의 요청에는 한 번만 들어감
+    # Slack 메시지에는 요청 목록이 없고, R4 실패는 "stop 사유 comment 보완 필요" 한 줄로만 나옴
+    assert slack[0] == (
+        f"<@U-LEAD> [보류] <{ISSUE_URL}|INNO-17>\n"
+        "• stop 사유 comment 보완 필요\n"
+        "• 예상 산출물 2개 중 2개 달성\n"
+        f"<{ISSUE_URL}?focusedCommentId=10200|검수 comment>"
+    )
+    assert R4_REQUEST not in slack[0] and "(R4)" not in slack[0]
 
 
 def test_r4_request_not_added_when_a2_makes_review_request(render, ja, jp, tmp_path, slack):
@@ -1406,6 +1446,7 @@ def test_r4_request_not_added_when_a2_makes_review_request(render, ja, jp, tmp_p
     assert "requests" not in summ.rows[0]  # requests가 비어 있음
     assert "| stop 사유 comment (R4) | ❌ 보완 필요 |" in body
     assert R4_REQUEST not in slack[0]
+    assert slack[0].splitlines()[1] == "• request 전환 뒤 완료 기준 바뀜"
 
 
 def test_r4_request_not_added_in_digest_mode(render, ja, jp, tmp_path, slack):
@@ -1418,28 +1459,78 @@ def test_r4_request_not_added_in_digest_mode(render, ja, jp, tmp_path, slack):
 @pytest.mark.parametrize(
     ("v", "itype", "items", "changes", "want"),
     [
-        ("pass", "Task", [ITEMS[0], {**ITEMS[1], "done": True}], [], ["예상 산출물 2개 중 2개 달성", "요약"]),
-        ("escalate", "Task", [ITEMS[0], REASONED], [HOLD_TO_REQUEST], [ESCALATE_REASON, HOLD_TO_REQUEST]),
-        ("escalate", "Bug", [], [], ["요약"]),
+        ("pass", "Task", [ITEMS[0], {**ITEMS[1], "done": True}], [], ["예상 산출물 2개 중 2개 달성"]),
+        ("escalate", "Task", [ITEMS[0], REASONED], ["미달성 1건, 담당자 사유 있음"], None),
+        ("escalate", "Bug", [], [], []),
     ],
-    ids=["통과", "검토 요청", "이유가 비면 결과 요약 줄 뒤에 붙임"],
+    ids=["통과", "검토 요청", "예상 산출물이 없는 work type"],
 )
-def test_slack_reasons_show_late_r4(jsl, v, itype, items, changes, want):
+def test_slack_reasons_show_late_r4_once(jsl, v, itype, items, changes, want):
     late = [{"id": "R4", "result": "pass", "detail": R4_LATE_DETAIL, "late": True}]
-    base = jsl.review_slack_reasons(v, itype, EXPECTED, items, [], [], changes, "* 요약")
-    got = jsl.review_slack_reasons(v, itype, EXPECTED, items, [], late, changes, "* 요약")
-    assert base == want and got == [*want, R4_LATE_LINE]
+    base = jsl.review_slack_reasons(v, itype, EXPECTED, items, [], [], changes, [])
+    got = jsl.review_slack_reasons(v, itype, EXPECTED, items, [], late, changes, [])
+    if want is not None:
+        assert base == want
+    assert got == [*base, "stop 사유 뒤늦게 작성"] and got.count("stop 사유 뒤늦게 작성") == 1
+    assert "(R4)" not in "".join(got) and "늦게 기록" not in "".join(got)
     on_time = [{"id": "R4", "result": "pass", "detail": "stop 1회 모두 사유 comment 있음"}]
-    assert jsl.review_slack_reasons(v, itype, EXPECTED, items, [], on_time, changes, "* 요약") == base
+    assert jsl.review_slack_reasons(v, itype, EXPECTED, items, [], on_time, changes, []) == base
 
 
-def test_slack_reasons_hold_omits_late_r4(jsl):
+def test_slack_reasons_order_dedupe_and_limit(jsl):
     late = [{"id": "R4", "result": "pass", "detail": R4_LATE_DETAIL, "late": True}]
-    got = jsl.review_slack_reasons("fix", "Task", EXPECTED, ITEMS, [], late, [], "* 요약")
-    assert got == ['사유 없는 미달성: 예상 산출물 2번 "오류율 1% 미만"']
+    changes = ["request 전환 뒤 완료 기준 바뀜", "예상 산출물 작성 보완 필요"]
+    agent = ["원인 기록 없음", "예상 산출물 작성 보완 필요", "첨부 로그 파일 없음", "해결 확인 없음"]
+    # 변경 이유, 달성 요약, verdict.slack(같은 문구는 한 번만), 늦은 stop 사유 순서이고 모두 4줄 이내
+    # 늦은 stop 사유는 CI agent가 적지 않으므로 자리를 남긴다
+    got = jsl.review_slack_reasons("fix", "Task", EXPECTED, ITEMS, [], late, changes, agent)
+    assert got == [
+        "request 전환 뒤 완료 기준 바뀜",
+        "예상 산출물 작성 보완 필요",
+        "예상 산출물 2개 중 1개 달성",
+        "stop 사유 뒤늦게 작성",
+    ]
+    got = jsl.review_slack_reasons("pass", "Task", EXPECTED, ITEMS, [], late, [], agent)
+    assert got == [
+        "예상 산출물 2개 중 1개 달성",
+        "원인 기록 없음",
+        "예상 산출물 작성 보완 필요",
+        "stop 사유 뒤늦게 작성",
+    ]
+    got = jsl.review_slack_reasons("pass", "Task", EXPECTED, ITEMS, [], [], [], agent)
+    assert got == ["예상 산출물 2개 중 1개 달성", "원인 기록 없음", "예상 산출물 작성 보완 필요", "첨부 로그 파일 없음"]
+    # CI agent가 지시를 어기고 늦은 stop 사유를 적어도 한 번만 나옴
+    got = jsl.review_slack_reasons("pass", "Bug", [], [], [], late, [], ["stop 사유 뒤늦게 작성", "x"])
+    assert got == ["x", "stop 사유 뒤늦게 작성"]
 
 
-def test_hold_reason_for_r4_is_a_sentence(jv, jsl, jp):
+def test_slack_reasons_keep_only_link_title_and_escape(jsl):
+    agent = [
+        "원인은 [PR #42 해상도 검사|https://e.com/pull/42?a=1&b=2]에 있음",
+        "{color:#6b778c}지연 < 50ms & 낮음{color}",
+        "  ",
+        7,
+    ]
+    got = jsl.review_slack_reasons("fix", "Bug", [], [], [], [], [], agent)
+    assert got == ["원인은 PR #42 해상도 검사에 있음", "지연 &lt; 50ms &amp; 낮음"]
+
+
+def test_slack_reasons_hold_without_agent_points_names_failed_owner_checks(jsl):
+    t1 = {"id": "T1", "result": "fail", "detail": "예상 산출물 구역에 항목 없음"}
+    r3 = {"id": "R3", "result": "fail", "detail": "서술형"}  # 담당자가 고칠 수 있는 검사가 아님
+    ok = {"id": "T2", "result": "pass", "detail": "있음"}
+    assert jsl.review_slack_reasons("fix", "Bug", [], [], [], [t1, r3, ok], [], []) == ["예상 산출물 작성 보완 필요"]
+    assert jsl.review_slack_reasons("fix", "Bug", [], [], [], [t1], [], ["첨부 로그 파일 없음"]) == [
+        "첨부 로그 파일 없음"
+    ]
+    for v in ("pass", "escalate"):  # 통과와 검토 요청에는 대체 줄이 없음
+        assert jsl.review_slack_reasons(v, "Bug", [], [], [], [t1], [], []) == []
+    # 검수 결과를 바꾼 이유와 같은 문구는 한 번만
+    got = jsl.review_slack_reasons("fix", "Bug", [], [], [], [t1], ["예상 산출물 작성 보완 필요"], [])
+    assert got == ["예상 산출물 작성 보완 필요"]
+
+
+def test_hold_reason_for_r4_is_a_sentence(jp, jsl):
     stops = jp.stop_events(
         [
             {"created": "2026-10-02T09:00:00.000+0900", "field": "status", "to": "Backlog"},
@@ -1452,8 +1543,53 @@ def test_hold_reason_for_r4_is_a_sentence(jv, jsl, jp):
     want = "stop 전환(In Progress → Backlog)에 대한 사유를 담당자가 comment에 남기지 않음(stop 시점: 2026-10-02)"
     assert r4["result"] == "fail" and r4["detail"] == want
     t1 = {"id": "T1", "result": "fail", "detail": "예상 산출물 구역에 항목 없음"}
-    got = jsl.review_slack_reasons("fix", "Task", EXPECTED, ITEMS[:1], [], [t1, r4], [], "* 요약")
-    assert got == [f"{jv.check_label('T1')}: 예상 산출물 구역에 항목 없음", want]
+    got = jsl.review_slack_reasons("fix", "Task", EXPECTED, ITEMS[:1], [], [t1, r4], [], [])
+    assert got == ["예상 산출물 2개 중 1개 달성", "예상 산출물 작성 보완 필요", "stop 사유 comment 보완 필요"]
+
+
+def test_slack_text_shape(jsl):
+    url, comment = "https://e.com/INNO-1", "https://e.com/INNO-1?focusedCommentId=1"
+    assert jsl.review_slack_text("escalate", "INNO-1", "제목", url, "<@U1>", ["가 없음", "나 함"], comment) == (
+        f"<@U1> [검토 요청] <{url}|INNO-1 제목>\n• 가 없음\n• 나 함\n<{comment}|검수 comment>"
+    )
+    assert jsl.review_slack_text("pass", "INNO-1", "제목", "", "팀장", [], "") == "팀장 [통과] INNO-1 제목"  # 링크 없음
+
+
+@pytest.mark.parametrize(
+    ("verdict", "items"),
+    [("fix", ITEMS), ("pass", [ITEMS[0], {**ITEMS[1], "done": True}]), ("fix", [ITEMS[0], REASONED])],
+    ids=["보류", "통과", "검토 요청"],
+)
+def test_slack_review_has_no_removed_parts(render, ja, tmp_path, slack, verdict, items):
+    run_review(render, ja, tmp_path, verdict, items, agent_slack=["첨부 로그 파일 없음"])
+    text = slack[0]
+    for removed in ("검수 결과:", "상태 변경 없음", "직접 전환 필요", "\n요청\n", "근거:", " 이유\n", "    •"):
+        assert removed not in text
+    assert text.splitlines()[0].startswith("<@U-LEAD> [") and text.splitlines()[1].startswith("• ")
+    assert "• 첨부 로그 파일 없음" in text and text.endswith("|검수 comment>")
+    assert len(text.splitlines()) <= 6  # 첫 줄, 요점 4줄, 검수 comment 줄
+
+
+def test_slack_review_hold_without_agent_points_names_failed_check(render, ja, tmp_path, slack):
+    checks = {"T1": {"result": "fail", "detail": "예상 산출물 구역에 항목 없음"}}
+    run_review(render, ja, tmp_path, "fix", ITEMS, checks=checks)
+    assert slack[0].splitlines()[1:3] == ["• 예상 산출물 2개 중 1개 달성", "• 예상 산출물 작성 보완 필요"]
+
+
+def test_slack_review_after_script_check_hold_names_checks(render, ja, tmp_path, slack):
+    checks = {"T1": {"result": "fail", "detail": "a"}, "T2": {"result": "fail", "detail": "b"}}
+    run_review(render, ja, tmp_path, "pass", [ITEMS[0], {**ITEMS[1], "done": True}], checks=checks)
+    assert slack[0].splitlines()[1:4] == [
+        "• 예상 산출물 작성 보완 필요",
+        "• 진행 배경 작성 보완 필요",
+        "• 예상 산출물 2개 중 2개 달성",
+    ]
+
+
+def test_slack_review_unreasoned_miss_after_pass_says_count(render, ja, tmp_path, slack):
+    run_review(render, ja, tmp_path, "pass", ITEMS)
+    assert slack[0].startswith("<@U-LEAD> [보류] ")
+    assert slack[0].splitlines()[1] == "• 예상 산출물 미달성 1건"
 
 
 # Bug, Issue 문서화 리뷰(Bug B5–B7, Issue I4–I5)
@@ -2037,9 +2173,7 @@ def test_decision_hold_notifies_assignee(ja, tmp_path, slack):
     )
     summ = run_decision(ja, tmp_path, fake)
     assert slack == [
-        "<@U-ASSIGNEE> [INNO-17] 팀장 확인 결과: 보류\n"
-        "상태 변경: ready-to-done → In Progress\n"
-        "<https://example.atlassian.net/browse/INNO-17|INNO-17 제목>"
+        "<@U-ASSIGNEE> [Kai 확인: 보류] <https://example.atlassian.net/browse/INNO-17|INNO-17 제목>\n• In Progress로 이동"
     ]
     assert "팀장 확인 결과 보류, 담당자에게 Slack 알림" in summ.rows[0]
 
@@ -2048,10 +2182,36 @@ def test_decision_pass_notifies_assignee(ja, tmp_path, slack):
     fake = DecisionJira("Done", [("2026-10-15T10:00:00.000+0900", "ready-to-done", "Done", "acc-lead")])
     run_decision(ja, tmp_path, fake)
     assert slack == [
-        "<@U-ASSIGNEE> [INNO-17] 팀장 확인 결과: 통과\n"
-        "상태 변경: ready-to-done → Done\n"
-        "<https://example.atlassian.net/browse/INNO-17|INNO-17 제목>"
+        "<@U-ASSIGNEE> [Kai 확인: 통과] <https://example.atlassian.net/browse/INNO-17|INNO-17 제목>\n• Done으로 이동"
     ]
+
+
+def test_decision_message_uses_lead_name_from_env(ja, tmp_path, slack, monkeypatch):
+    """대괄호 안의 팀장 이름은 환경 변수 JIRA_LEAD_NAME이고, 앞뒤 공백은 뗀다."""
+    monkeypatch.setenv("JIRA_LEAD_NAME", "  Liam ")
+    fake = DecisionJira("Done", [("2026-10-15T10:00:00.000+0900", "ready-to-done", "Done", "acc-lead")])
+    run_decision(ja, tmp_path, fake)
+    assert slack[0].splitlines()[0].startswith("<@U-ASSIGNEE> [Liam 확인: 통과] ")
+
+
+@pytest.mark.parametrize("value", [None, "", "   "])
+def test_decision_message_without_lead_name_uses_default(ja, tmp_path, slack, monkeypatch, value):
+    """JIRA_LEAD_NAME이 없거나 비었거나 공백뿐이면 대괄호 안에 "팀장"을 적는다."""
+    if value is None:
+        monkeypatch.delenv("JIRA_LEAD_NAME")
+    else:
+        monkeypatch.setenv("JIRA_LEAD_NAME", value)
+    fake = DecisionJira("In Progress", [("2026-10-15T10:00:00.000+0900", "ready-to-done", "In Progress", "acc-lead")])
+    run_decision(ja, tmp_path, fake)
+    assert slack[0].splitlines()[0].startswith("<@U-ASSIGNEE> [팀장 확인: 보류] ")
+
+
+def test_decision_message_without_url_has_no_link(jsl):
+    """URL이 없으면 링크 없이 "키 제목"을 적는다. 제목의 &, <, >는 escape한다."""
+    text = jsl.decision_slack_text("INNO-17", "a <b> & c", "", "담당자A", "통과", "Done", "Kai")
+    assert text == "담당자A [Kai 확인: 통과] INNO-17 a &lt;b&gt; &amp; c\n• Done으로 이동"
+    text = jsl.decision_slack_text("INNO-17", "t", "", "담당자A", "보류", "In Progress", "A&B <C>")
+    assert text == "담당자A [A&amp;B &lt;C&gt; 확인: 보류] INNO-17 t\n• In Progress로 이동"
 
 
 @pytest.mark.parametrize(
@@ -2295,7 +2455,7 @@ def test_task_pass_with_failed_t1_or_t2_turns_into_hold(render, ja, jv, tmp_path
     body = j.comments[0][1]
     assert "검수 결과: *보류*" in body
     assert f"* 스크립트 검사에 보완 필요 항목이 있어 통과에서 보류로 바꿈: {jv.check_label(cid)}\n" in body
-    assert slack[0].startswith("<@U-LEAD> [INNO-17] 검수 결과: 보류. ")
+    assert slack[0].startswith("<@U-LEAD> [보류] ")
 
 
 @pytest.mark.parametrize(
@@ -2434,8 +2594,8 @@ def test_weekly_lines_limit_items_per_section_to_15(ja, tmp_path, slack):
     ]
     run_weekly(ja, tmp_path, "acc-lead", extra)
     lines = slack[-1].splitlines()
-    assert any("(16건)" in line for line in lines)
-    assert sum(" — 담당 " in line for line in lines) == 15
+    assert any("16건" in line for line in lines)
+    assert sum(" · stop 사유 comment 필요" in line for line in lines) == 15
     assert lines[-1] == "    • 외 1건" and sum("외 1건" in line for line in lines) == 1
 
 

@@ -164,7 +164,7 @@ def test_missing_task_gets_no_verdict_defaults_and_apply_fails(render, so, ja, t
     default = json.loads((out / "INNO-17" / "verdict.json").read_text(encoding="utf-8"))
     assert default["issueKey"] == "INNO-17" and default["mode"] == "review" and default["verdict"] == "no_verdict"
     assert default["items"] == [{"id": "1", "done": None, "result": ""}, {"id": "2", "done": None, "result": ""}]
-    assert default["extra"] == default["requests"] == default["feedback"] == []
+    assert default["extra"] == default["requests"] == default["feedback"] == default["slack"] == []
     assert [c["id"] for c in default["checks"]] == ["T1", "A2"]  # result가 pass, fail, n/a가 아닌 T2는 뺌
     assert not (out / "INNO-17" / "tldr.wiki").exists() and not (out / "INNO-17" / "comment.wiki").exists()
     assert (out / "INNO-17" / "_agent_error.txt").read_text(
@@ -207,6 +207,24 @@ def test_missing_requests_extra_feedback_become_empty_and_pass(render, so, ja, t
     assert saved["checks"] == []  # 구조화 출력의 checks가 기본값을 덮어씀
     j, _, failure = apply_one(ja, render, tmp_path, out)
     assert failure is None and j.comments  # 통과하면 검수 comment를 남김
+
+
+def test_missing_slack_becomes_empty_list(render, so, tmp_path):
+    make_ctx(render, tmp_path)
+    v = agent_verdict(render)
+    v.pop("slack", None)
+    out = run_save(so, tmp_path, exec_file=write_exec(tmp_path, {"tasks": [task("INNO-17", v)], "failed": []}))
+    saved = json.loads((out / "INNO-17" / "verdict.json").read_text(encoding="utf-8"))
+    assert "slack" not in v and saved["slack"] == []
+
+
+def test_slack_points_are_saved_as_given(render, so, tmp_path):
+    make_ctx(render, tmp_path)
+    points = ["첨부 로그 파일 없음", "재현 불가로 종료하려 함"]
+    v = agent_verdict(render, slack=points)
+    out = run_save(so, tmp_path, exec_file=write_exec(tmp_path, {"tasks": [task("INNO-17", v)], "failed": []}))
+    saved = json.loads((out / "INNO-17" / "verdict.json").read_text(encoding="utf-8"))
+    assert saved["slack"] == points
 
 
 def test_structured_issue_key_and_mode_are_ignored(render, so, tmp_path):

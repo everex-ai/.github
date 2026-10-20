@@ -230,6 +230,9 @@ request 전환부터 ticket 갱신까지 아래 단계가 차례로 실행된다
   - 4단계: `scripts/src/jira/issue.py`의 `apply_issue`
 - 판정 객체는 CI agent의 판정을 담는다(`schemas/agent-output.json`).
   - 내용: 검수 결과, 검사 결과, 예상 산출물별 달성 여부
+  - 검수 모드에서는 Slack 요점(`slack`)도 담는다.
+    - 요점: 검수 결과의 이유를 적는 글머리표 줄
+    - 메시지 틀: `docs/jira-doc-agent/alerts.md`의 "Slack 알림 메시지 구조" 절
 - 3-R 단계는 검수 모드에서 3-2 단계가 `retry=true`를 출력했을 때만 실행된다.
   - 빠진 부분은 아래 넷 중 하나다(`scripts/src/jira/output/save.py`의 `missing_parts`).
     - 판정 없음, items의 `done` null, 빈 `tldr`, 빈 `comment`
@@ -798,6 +801,7 @@ precheck.py는 스크립트 검사 10개와 docFacts를 계산한다(`scripts/sr
 | `JIRA_DOC_GATE` | variable | `false`(관찰 모드). 게이트 모드에서는 `true` |
 | `JIRA_PROJECT_KEY` | variable | `INNO` |
 | `JIRA_LEAD_ACCOUNT_ID` | variable | 팀장의 Jira accountId |
+| `JIRA_LEAD_NAME` | variable | Slack 메시지에 적는 팀장 이름(예: `Kai`). 비면 "팀장"으로 적음(`docs/jira-doc-agent/alerts.md`의 "Slack 알림 메시지 구조" 절) |
 | `JIRA_TLDR_FIELD_ID` | variable | `customfield_10650` |
 | `JIRA_SITE_URL` | variable (선택) | `https://<site>.atlassian.net`. 비우면 Jira serverInfo API로 알아냄(`scripts/src/jira/client.py`의 `site_url`) |
 | `TOKEN_EXPIRY` | variable | 토큰(인증 키)별 만료일 JSON. 예: `{"JIRA_API_TOKEN":"2027-09-15"}`. 등록과 갱신은 `docs/jira-doc-agent/alerts.md`의 "토큰(인증 키) 만료 알림" 절 |
