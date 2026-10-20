@@ -522,6 +522,7 @@ CM-1–CM-3은 같은 ticket에서 차례로 실행한다.
 - 세부: `docs/jira-doc-agent/README.md`의 "실행 실패 알림(5단계)" 절
 - L1: `test_main_failure_sends_one_slack_and_exits_one`(`tests/jira/test_render.py:1170`)
 - L1: `test_failure_mode_sends_run_error_to_integration_channel`(`:2323`)
+- L1: `test_failure_mode_sends_report_failure_to_lead_channel`(보고 모드의 실패만 팀장 채널로 보냄)
 - L1: `test_failure_mode_skips_when_ticket_failure_already_notified`(`:2343`)
 - L1: `test_main_ticket_failure_not_marked_when_slack_send_fails`(`:2396`)
 - L1: `test_failure_slack_text_marks_unassigned_lead_in_first_line`(`:2524`)

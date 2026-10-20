@@ -8,9 +8,9 @@ Jira ticket의 결과 문서를 작성하고 검수한다.
   - Jira에 남기는 것
     - TL;DR, 결과 산출물 구역
     - 검수 comment, 문서화 리뷰 comment
-  - 연동 채널: 검수 뒤 Slack 알림, 실패 알림, 주간 점검 메시지
+  - 연동 채널: 검수 뒤 Slack 알림, 실패 알림(보고 모드 제외), 주간 점검 메시지
     - secret `SLACK_WEBHOOK_URL`의 Slack 채널
-  - 팀장 채널: 토큰(인증 키) 만료 알림, 정기 보고 메시지
+  - 팀장 채널: 토큰(인증 키) 만료 알림, 정기 보고 메시지, 보고 모드의 실패 알림
     - secret `SLACK_LEAD_WEBHOOK_URL`의 Slack 채널
 - ticket의 기록: 사람이 남긴 기록
   - comment, sub-task, PR(pull request)
@@ -220,7 +220,7 @@ request 전환부터 ticket 갱신까지 아래 단계가 차례로 실행된다
 | 3-2. 출력 저장 | `scripts/save_output.py` | 구조화 출력, precheck.json, CI agent 실행 결과 파일 | `out/<ticket 키>/`의 verdict.json, tldr.wiki, comment.wiki, `_agent_error.txt`, `out/_usage.json`(Claude 사용량). 빠진 부분이 있으면 `retry=true` |
 | 3-R. 다시 실행 | CI agent, `scripts/save_output.py` | 3단계, 3-2 단계와 같음 | `out/` 파일을 덮어씀 |
 | 4. 반영 | `scripts/apply.py` | `ctx/` 파일, `out/` 파일 | Jira 반영, Slack 알림, Summary 탭 |
-| 5. 실패 알림 | `scripts/apply.py --mode failure` | `out/_run_error.json`, `out/_failure_notified` | 앞 단계가 실패했을 때만 연동 채널로 실패 알림 |
+| 5. 실패 알림 | `scripts/apply.py --mode failure` | `out/_run_error.json`, `out/_failure_notified` | 앞 단계가 실패했을 때만 연동 채널로 실패 알림(보고 모드는 팀장 채널) |
 
 - 이 표의 근거는 아래와 같다.
   - 1단계: `scripts/src/jira/collect.py`의 `collect_issue`, `prompts/rules.md`의 "입력 파일" 절
@@ -795,9 +795,9 @@ precheck.py는 스크립트 검사 10개와 docFacts를 계산한다(`scripts/sr
 | `JIRA_API_TOKEN` | secret | Jira scoped API 토큰(`read:jira-work`, `write:jira-work`) |
 | `ORG_READ_TOKEN` | secret | Organization 전체 repo의 Pull requests 읽기 권한이 있는 GitHub fine-grained PAT(권한과 대상 repo를 골라 발급하는 personal access token). 없으면 PR 수집을 건너뜀(`scripts/src/jira/collect.py`의 `gh`) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | secret | `claude setup-token`으로 발급한 Claude Team plan 토큰. 발급한 사람의 좌석(Team plan에서 구성원 한 명에게 배정된 사용 권한) 사용량 한도를 소모함(https://support.claude.com/en/articles/9266767-what-is-the-team-plan: "Usage limits on Team plans are per-member") |
-| `SLACK_WEBHOOK_URL` | secret | 주간 점검 메시지, 검수 뒤 Slack 알림, 팀장 확인 결과 알림, 실패 알림을 받을 Slack 채널의 Incoming Webhook URL |
+| `SLACK_WEBHOOK_URL` | secret | 주간 점검 메시지, 검수 뒤 Slack 알림, 팀장 확인 결과 알림, 실패 알림(보고 모드 제외)을 받을 Slack 채널의 Incoming Webhook URL |
 | `SLACK_USERS_JSON` | secret | Jira accountId를 키로, Slack 멤버 ID를 값으로 둔 JSON 문자열. 주간 점검 메시지, 검수 뒤 Slack 알림, 팀장 확인 결과 알림, 실패 알림의 멘션에 사용(`scripts/src/jira/slack.py`의 `load_slack_users`) |
-| `SLACK_LEAD_WEBHOOK_URL` | secret | 팀장 채널의 Incoming Webhook URL. 정기 보고 메시지와 토큰(인증 키) 만료 알림을 받음. 없으면 두 알림을 보내지 않고 Summary 탭에 전송 결과 행만 남김(본문은 남기지 않음) |
+| `SLACK_LEAD_WEBHOOK_URL` | secret | 팀장 채널의 Incoming Webhook URL. 정기 보고 메시지, 토큰(인증 키) 만료 알림, 보고 모드의 실패 알림을 받음. 없으면 세 알림을 보내지 않고 Summary 탭에 전송 결과 행을 남김. 본문은 보고 모드의 실패 알림만 남김 |
 | `JIRA_DOC_GATE` | variable | `false`(관찰 모드). 게이트 모드에서는 `true` |
 | `JIRA_PROJECT_KEY` | variable | `INNO` |
 | `JIRA_LEAD_ACCOUNT_ID` | variable | 팀장의 Jira accountId |
@@ -896,6 +896,8 @@ Jira에는 기록하지 않고 Slack 실패 알림으로 팀장에게 알린다.
 ### 실행 실패 알림(5단계)
 
 - 앞 단계가 실패하면 5단계가 연동 채널로 실패 알림을 보낸다(`.github/workflows/jira-doc.yml`의 `5. 실패 알림`).
+  - 보고 모드의 실패는 팀장 채널로 보낸다(`scripts/apply.py`의 `failure_notice`).
+    - 보고 모드는 정기 보고 메시지를 팀장 채널로만 보내기 때문이다.
   - 실행 조건은 `if: failure()`다.
   - 모든 실행 모드에 적용된다.
   - 3단계와 3-R 단계의 실패는 이 알림을 일으키지 않는다.

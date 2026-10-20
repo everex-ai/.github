@@ -2335,13 +2335,29 @@ def test_failure_mode_sends_run_error_to_integration_channel(ja, monkeypatch, tm
     out.mkdir()
     error = {"step": "4. 반영", "error": "JiraError: boom"}
     (out / "_run_error.json").write_text(json.dumps(error, ensure_ascii=False), encoding="utf-8")
-    summary = run_failure_main(ja, monkeypatch, tmp_path)
+    summary = run_failure_main(ja, monkeypatch, tmp_path, failed_mode="alerts")
     [text] = slack
-    assert text.startswith("[jira-doc 실패] 보고 모드 실행 실패 <@U-LEAD>\n")
+    assert text.startswith("[jira-doc 실패] 주간 점검 모드 실행 실패 <@U-LEAD>\n")
     assert "• 단계: 4. 반영" in text and "• 원인: JiraError: boom" in text
     assert "| - | - | failure | 전송 완료 |" in summary
     assert "<@" not in summary and "U-LEAD" not in summary  # Summary 사본에는 Slack 멤버 ID가 나가지 않음
     assert "팀장(Slack 멘션 없음)" in summary and "JiraError: boom" in summary
+
+
+@pytest.mark.parametrize(
+    ("failed_mode", "webhook_env"),
+    [("report", "SLACK_LEAD_WEBHOOK_URL"), ("alerts", "SLACK_WEBHOOK_URL"), ("review", "SLACK_WEBHOOK_URL")],
+)
+def test_failure_mode_sends_report_failure_to_lead_channel(ja, jsl, monkeypatch, tmp_path, failed_mode, webhook_env):
+    """보고 모드의 실패만 정기 보고 메시지와 같은 팀장 채널로 보내고, 다른 모드의 실패는 연동 채널로 보낸다."""
+    posted = []
+    monkeypatch.setattr(
+        jsl, "slack_post", lambda text, env="SLACK_WEBHOOK_URL": posted.append((text, env)) or "전송 완료"
+    )
+    summary = run_failure_main(ja, monkeypatch, tmp_path, failed_mode=failed_mode)
+    [(text, env)] = posted
+    assert env == webhook_env and text.startswith("[jira-doc 실패] ")
+    assert "| - | - | failure | 전송 완료 |" in summary
 
 
 def test_failure_mode_without_run_error_says_no_record(ja, monkeypatch, tmp_path, slack):
