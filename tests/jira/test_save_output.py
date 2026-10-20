@@ -398,11 +398,11 @@ def test_workflow_has_structured_output_steps():
 
 
 def test_workflow_has_failure_notification_step():
-    """5단계는 앞 스텝이 실패하면 apply.py failure 모드로 연동 채널에 알린다."""
+    """5단계는 앞 스텝이 실패하면 apply.py failure 모드로 연동 채널(보고 모드는 팀장 채널)에 알린다."""
     step = workflow_steps()["notify_failure"]
     assert step["name"].startswith("5.") and step["if"] == "failure()"
     assert "--mode failure" in step["run"] and '--failed-mode "$MODE"' in step["run"]
-    assert set(step["env"]) == {"SLACK_WEBHOOK_URL", "SLACK_USERS_JSON"}
+    assert set(step["env"]) == {"SLACK_WEBHOOK_URL", "SLACK_USERS_JSON", "SLACK_LEAD_WEBHOOK_URL"}
 
 
 @pytest.mark.parametrize("step_id", ["save", "save_retry"])

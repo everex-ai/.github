@@ -21,6 +21,7 @@ jira-doc의 알림은 즉시, 주간, 월간, 분기, 연간의 다섯 주기로
   - 팀장만 받는 알림이 간다.
   - secret이 없으면 팀장 채널 알림을 보내지 않는다.
     - Summary 탭에는 전송 결과 행만 남긴다.
+    - 예외: 보고 모드의 실패 알림은 Summary 탭에 본문도 남긴다(`scripts/apply.py`의 `failure_notice`).
     - 알림 본문은 남기지 않는다(`scripts/apply.py`의 `main`, `scripts/src/jira/issue.py`의 `slack_token_expiry`).
 - 반려: ticket이 ready-to-done에서 In Progress로 전환된 일
 - 반려 cycle: 반려 뒤 다시 request 전환되어 검수를 받는 한 번의 순환
@@ -45,7 +46,7 @@ jira-doc의 알림은 즉시, 주간, 월간, 분기, 연간의 다섯 주기로
 | 즉시 | 문서화 리뷰 comment(관찰 모드) | Jira comment | 팀장 | `doc_review_comment` |
 | 즉시 | 검수 뒤 Slack 알림 | 연동 채널 | 팀장 | `review_slack_text` |
 | 즉시 | 팀장 확인 결과 알림 | 연동 채널 | 담당자 | `apply_decision`, `decision_slack_text` |
-| 즉시 | 실패 알림 | 연동 채널 | 팀장 | `failure_slack_text`, `run_failure_slack_text` |
+| 즉시 | 실패 알림 | 연동 채널(보고 모드의 실패는 팀장 채널) | 팀장 | `failure_slack_text`, `run_failure_slack_text` |
 | 주간 | 주간 점검 메시지(R4, A1, A3) | 연동 채널 | R4, A1은 담당자, A3는 팀장 | `slack_weekly`, `weekly_lines` |
 | 주간 | 토큰(인증 키) 만료 알림 | 팀장 채널 | 팀장 | `slack_token_expiry`, `token_expiry_text` |
 | 월간 | 정기 보고 메시지의 월간 묶음 | 팀장 채널 | 팀장 | `scripts/src/jira/report/run.py`의 `run_report` |

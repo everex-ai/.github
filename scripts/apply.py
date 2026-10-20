@@ -6,6 +6,7 @@ alerts 모드(주간 점검)는 Jira에 쓰지 않고 ctx/_scan/*.alerts.json을
 report 모드는 scripts/src/jira/report/run.py의 run_report가 만든 정기 보고 메시지를 팀장 채널로 보낸다.
 decision 모드는 팀장이 ready-to-done ticket을 done(통과) 또는 In Progress(보류)로 전환했을 때 담당자에게 Slack 한 건을 보낸다.
 failure 모드(5단계)는 앞 스텝이 실패했을 때만 실행하며, out/_run_error.json의 실패 원인을 연동 채널 Slack 한 건으로 알린다.
+report 모드의 실패는 정기 보고 메시지와 같은 팀장 채널로 알린다.
 검수·정리 모드에서 ticket 실패 알림을 이미 보냈으면(out/_failure_notified) 다시 보내지 않는다.
 
 반영 순서: 구역 교체(결과 산출물) -> TL;DR -> comment(검수 모드) -> property -> Slack 알림(검수 모드)
@@ -58,10 +59,11 @@ from src.jira.slack import failure_slack_text, load_slack_users, run_failure_sla
 
 
 def failure_notice(out: Path, failed_mode: str, issue: str, lead: str, summ: Summary) -> None:
-    """앞 스텝이 실패했을 때 연동 채널로 실패 알림을 보낸다(failure 모드). Jira에 접근하지 않는다.
+    """앞 스텝이 실패했을 때 실패 알림을 보낸다(failure 모드). Jira에 접근하지 않는다.
 
     out/_failure_notified가 있으면 ticket 실패 알림을 이미 보낸 것이라 보내지 않고 Summary 탭에 "건너뜀"을 남긴다.
     없으면 out/_run_error.json(없으면 기록 없음)으로 본문을 만들어 연동 채널(SLACK_WEBHOOK_URL)로 보낸다.
+    보고 모드의 실패는 정기 보고 메시지와 같은 팀장 채널(SLACK_LEAD_WEBHOOK_URL)로 보낸다.
     Summary에는 빈 대응표로 다시 만든 본문을 남겨 Slack 멤버 ID가 public repo에 보이지 않게 한다.
 
     Args:
@@ -77,7 +79,8 @@ def failure_notice(out: Path, failed_mode: str, issue: str, lead: str, summ: Sum
     error = load_json(out / RUN_ERROR_FILE, None)
     error = error if isinstance(error, dict) else None
     users, warning = load_slack_users()
-    result = slack.slack_post(run_failure_slack_text(failed_mode, issue, error, users, lead))
+    text = run_failure_slack_text(failed_mode, issue, error, users, lead)
+    result = slack.slack_post(text, LEAD_WEBHOOK_ENV) if failed_mode == "report" else slack.slack_post(text)
     note = f"{failed_mode or '?'} 실행 실패 알림"
     summ.row("-", "-", "failure", result, f"{note}; {warning}" if warning else note)
     summ.extra += [
