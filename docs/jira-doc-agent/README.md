@@ -107,7 +107,7 @@ Jira ticket의 결과 문서를 작성하고 검수한다.
   - 앞 글자 T, B, I는 검사 대상 work type(Task, Bug, Issue)이다.
   - R과 A는 여러 work type에 적용하는 검사다.
   - 이름과 검사 내용은 아래 두 곳의 검사 항목 표에 있다.
-    - 공통 검사(R2, R3, R4): `prompts/review.md`의 "공통 검사 항목" 표
+    - 공통 검사(R2, R3, R4, R5): `prompts/review.md`의 "공통 검사 항목" 표
     - work type별 검사: `prompts/types/<work type>/review.md`(work type 폴더는 task, bug, issue)
   - A1, A3는 누락 알림에만 사용하는 검사다.
     - A1: In Progress ticket에 영업일 기준 5일 이상 사람의 활동이 없음
@@ -212,7 +212,8 @@ request 전환부터 ticket 갱신까지 아래 단계가 차례로 실행된다
 | 단계 | 실행 주체 | 입력 | 출력 |
 |---|---|---|---|
 | 시작 | F1(Jira Automation) | request 전환 | repository_dispatch(종류 `jira-doc-review`) |
-| 1. 입력 수집 | `scripts/collect.py` | Jira ticket, GitHub PR | `ctx/<ticket 키>/`의 issue.json, description.wiki, tldr.txt, comments.json, changelog.json, subtasks/*.json, prs.json, meta.json |
+| 0. 첨부 처리 도구 설치 | Actions 워크플로 | 없음 | runner(워크플로를 실행하는 GitHub 가상 머신)에 ffmpeg(영상에서 정지 이미지를 뽑는 도구), poppler-utils(PDF 쪽을 이미지로 바꾸는 도구) 설치 |
+| 1. 입력 수집 | `scripts/collect.py` | Jira ticket, GitHub PR, Jira 첨부 | `ctx/<ticket 키>/`의 issue.json, description.wiki, tldr.txt, comments.json, changelog.json, subtasks/*.json, prs.json, attachments.json, attachments/, meta.json |
 | 2. 결정론적 검사 (precheck) | `scripts/precheck.py` | 1단계의 `ctx/` 파일 | `ctx/<ticket 키>/precheck.json`(스크립트 검사 결과 `checks`, stop 이력 `stops`, docFacts, Task의 예상 산출물 목록 `expected`) |
 | 3-0. 스키마 준비 | Actions 워크플로 | `schemas/agent-output.json` | 3단계에 넘기는 한 줄 JSON |
 | 3. Claude 문서화 | CI agent | `ctx/` 파일, 지시 파일(`prompts/`) | 구조화 출력: ticket별 판정 객체(`verdict`), TL;DR 본문(`tldr`), 검수 comment의 결과 요약(`comment`), 처리하지 못한 ticket(`failed`) |
@@ -223,6 +224,7 @@ request 전환부터 ticket 갱신까지 아래 단계가 차례로 실행된다
 | 5. 실패 알림 | `scripts/apply.py --mode failure` | `out/_run_error.json`, `out/_failure_notified` | 앞 단계가 실패했을 때만 연동 채널로 실패 알림(보고 모드는 팀장 채널) |
 
 - 이 표의 근거는 아래와 같다.
+  - 0단계: Actions 워크플로 0단계의 `if`, `run`
   - 1단계: `scripts/src/jira/collect.py`의 `collect_issue`, `prompts/rules.md`의 "입력 파일" 절
   - 2단계: `scripts/src/jira/precheck/run.py`의 `run_issue_dir`
   - 3단계: Actions 워크플로 3단계의 `prompt`, `claude_args`, `prompts/rules.md`의 "출력" 절
@@ -238,7 +240,7 @@ request 전환부터 ticket 갱신까지 아래 단계가 차례로 실행된다
     - 판정 없음, items의 `done` null, 빈 `tldr`, 빈 `comment`
     - items: 판정 객체 안의 예상 산출물별 결과 목록
   - 정리 모드는 다시 실행하지 않는다.
-  - 3-R 실행에는 3-1 단계 같은 실행 결과 요약 단계가 없다(`.github/workflows/jira-doc.yml:131-155`).
+  - 3-R 실행에는 3-1 단계 같은 실행 결과 요약 단계가 없다(`.github/workflows/jira-doc.yml:138-162`).
 - 4단계의 apply.py는 ticket마다 아래 순서로 처리한다(`scripts/src/jira/issue.py`의 `apply_issue`).
   1. verdict.json, tldr.wiki, comment.wiki, `_agent_error.txt`를 검사한다.
      - 문제가 있으면 실패로 처리하고 Jira에 반영하지 않는다("실패 처리" 절).
@@ -265,6 +267,97 @@ request 전환부터 ticket 갱신까지 아래 단계가 차례로 실행된다
   - 보고 모드: 1–3-R 단계를 모두 건너뛴다.
     - 4단계가 Jira를 읽어 정기 보고 메시지를 만들고 팀장 채널로 보낸다(`scripts/src/jira/report/run.py`의 `run_report`).
   - 단계별 분기는 "실행 모드별 흐름도" 절에 있다.
+
+### 첨부 처리 과정
+
+0단계가 도구를 설치하고, 1단계의 Python 함수가 첨부를 받아 둔다.
+3단계의 CI agent는 그 파일을 읽어 분석한다.
+
+- CI agent는 첨부를 직접 받지 않는다.
+  - CI agent에는 Read 외의 도구가 없다("CI agent의 권한" 절).
+  - Actions 워크플로는 Jira 인증 정보를 1단계와 4단계에만 준다.
+    - 근거: `.github/workflows/jira-doc.yml:72`
+- 1단계가 하는 일은 아래와 같다(`scripts/src/jira/collect.py`의 `collect_attachments`).
+  - 부모 ticket과 sub-task의 첨부를 Jira API로 받는다.
+    - API: `GET /rest/api/2/attachment/content/{id}?redirect=false`
+    - 근거: `scripts/src/jira/client.py`의 `attachment_content`
+  - 영상은 ffmpeg로 프레임을 뽑고 원본은 남기지 않는다(`extract_frames`).
+    - 프레임: 영상을 균등 간격으로 나눈 시점의 정지 이미지
+  - 첨부마다 처리 결과를 `ctx/<ticket 키>/attachments.json`에 적는다.
+  - 받은 파일과 프레임은 `ctx/<ticket 키>/attachments/`에 둔다.
+- 첨부 형식별 처리는 아래 표와 같다.
+  - 형식 판정: `attachment_kind`
+  - 크기 상한: `ATT_MAX_BYTES`
+  - 프레임 수와 크기: `FRAME_COUNT`, `FRAME_MAX_SIDE`
+
+| 형식 | 크기 상한 | 처리 |
+|---|---|---|
+| 텍스트(md, txt, csv, json, log, yaml) | 200KiB | 그대로 저장. CI agent가 Read로 읽음 |
+| 이미지(PNG, JPEG, GIF, WebP) | 20MiB | 그대로 저장. CI agent가 Read로 읽음 |
+| PDF | 32MiB | 그대로 저장. CI agent가 Read로 읽음 |
+| 영상 | 200MiB | 프레임 8장만 저장. 긴 변은 1280px 이하로 줄임 |
+| 그 밖(xlsx, zip, heic 등) | - | 받지 않음 |
+
+- 10쪽이 넘는 PDF는 Read가 poppler-utils로 쪽을 나눠 읽는다.
+  - 근거: https://code.claude.com/docs/en/tools-reference.md "Read tool behavior" 절
+- 저장하는 첨부는 ticket당 20개까지다(`ATT_MAX_FILES`).
+  - 1단계가 부모 ticket과 sub-task 첨부를 합쳐 생성 시각 최신순으로 고른다.
+  - 저장에 성공한 첨부(status가 saved, frames)만 센다.
+- 영상 처리에는 시간 상한이 있다.
+  - ticket 하나의 영상 받기와 프레임 추출 전체: 600초(`VIDEO_TIME_BUDGET`)
+  - 프레임 1장의 ffmpeg 실행: 60초(`FRAME_TIMEOUT`)
+  - 1단계는 전체 상한을 넘은 뒤의 영상을 받지 않는다.
+  - 추정: 영상이 많은 ticket에서 job 상한 45분을 넘지 않게 하는 값이다.
+    - job 상한: `.github/workflows/jira-doc.yml`의 `timeout-minutes`
+- 받는 중 크기 상한을 넘으면 1단계가 그 첨부를 저장하지 않는다.
+  - Jira가 알려 준 크기가 없거나 틀려도 상한 + 1 bytes까지만 받는다.
+  - 근거: `scripts/src/jira/client.py`의 `attachment_content`의 `max_bytes`
+- 1단계는 기준을 넘거나 처리에 실패한 첨부를 받지 않고 이유를 적는다.
+  - 예: 크기 상한 초과, ffmpeg 없음, 시간 상한 초과, 받기 실패
+  - 일부 프레임만 뽑았으면 status는 frames이고 reason에 실패한 장수를 적는다.
+  - 첨부 하나가 실패해도 1단계는 멈추지 않는다.
+  - 근거: `collect_attachments`, `_save_attachment`
+- 1단계는 첨부마다 그 첨부를 올린 comment를 짝짓는다(`match_comments`).
+  - comment 본문이 파일 이름으로 첨부를 가리키면 그 comment다.
+    - 표기: `!파일이름`, `[^파일이름]`
+    - 같은 이름의 첨부가 여럿이면 생성 시각이 가장 가까운 comment 하나만 짝짓는다.
+  - 가리키는 comment가 없으면 같은 작성자의 comment 중에서 고른다.
+    - 첨부와 생성 시각 차이가 10초 이내인 comment다(`MATCH_SECONDS`).
+- CI agent가 첨부를 다루는 규칙은 `prompts/rules.md`의 "입력 파일" 절에 있다.
+  - 첨부의 설명: 그 첨부가 무엇을 보여 주는지와 결과를 적은 문장
+    - 위치 1: 짝지은 comment의 본문
+    - 위치 2: description에서 첨부 이름을 가리키는 문장
+  - 읽은 첨부는 그 첨부의 설명과 함께 근거로 사용한다.
+  - 영상은 장면만 판단하고, 소리와 움직임은 판단하지 않는다.
+- 검수 모드의 CI agent는 공통 검사 R5로 첨부의 설명을 검사한다.
+  - R5의 이름: 첨부 파일에 대한 설명
+  - 설명 기준: 첨부마다 설명이 있다.
+  - 내용 기준: 설명이 CI agent가 읽은 첨부 내용과 맞는다.
+  - CI agent는 첨부마다 두 기준의 결과를 판정 객체의 `attachments`에 적는다.
+  - 검수 comment 검사 표의 R5 칸에는 첨부마다 한 줄씩 두 기준의 결과가 나온다.
+    - 조립 코드: `scripts/src/jira/comment.py`의 `check_table`
+  - 검사 내용: `prompts/review.md`의 "공통 검사 항목" 표
+- R5의 검수 결과는 아래와 같다.
+  - 설명 기준이 보완 필요인 첨부가 하나라도 있으면 보류다.
+    - CI agent가 검수 comment의 요청에 설명을 추가할 첨부를 적는다.
+    - 내용 기준이 보완 필요인 첨부가 함께 있으면 그 차이도 요청과 결과 요약에 적는다.
+    - 첨부만 올린 기록은 동료가 이해할 수 없기 때문이다(`prompts/rules.md`의 팀 문서화 규칙 4).
+  - 설명 기준 보완 필요가 없고 내용 기준 보완 필요가 있으면 검토 요청이다.
+    - R5 밖의 보류 조건이 함께 있어도 검토 요청이다.
+    - CI agent는 R5 밖 보류 조건의 내용도 검수 comment의 요청에 적는다.
+- 0단계가 ffmpeg와 poppler-utils를 설치한다.
+  - runner 이미지에 두 도구가 없기 때문이다.
+    - 근거: https://raw.githubusercontent.com/actions/runner-images/main/images/ubuntu/Ubuntu2404-Readme.md 에서 두 이름 검색 0건(2026-11-04)
+  - 설치가 실패해도 1단계 이후는 실행된다.
+    - 근거: 0단계의 `continue-on-error: true`(`.github/workflows/jira-doc.yml:66`)
+  - 그때 1단계는 영상만 받지 않고 이유를 적는다.
+    - 근거: `collect_attachments`의 `shutil.which` 분기
+- 프레임은 CI agent의 토큰 수를 늘린다.
+  - 이미지 1장의 토큰 수: ⌈가로 px/28⌉ × ⌈세로 px/28⌉
+  - 근거: https://platform.claude.com/docs/en/build-with-claude/vision.md "Resolution and token cost"
+  - 16:9 영상의 프레임(1280×720px) 1장: 46 × 26 = 1,196 토큰
+  - 16:9 영상 1건(프레임 8장): 1,196 × 8 = 9,568 토큰
+  - 대상 모델은 3단계의 `claude-sonnet-5-5`다("CI agent의 권한" 절).
 
 ## 검수 결과와 ticket 상태 전환
 
@@ -453,7 +546,7 @@ apply.py는 CI agent가 정한 검수 결과를 다시 정한다.
 flowchart TD
     A["request 전환"] --> B["F1: repository_dispatch"]
     M["Actions 수동 실행<br>(ticket 키, review)"] --> C
-    B --> C["1. 입력 수집<br>collect.py"]
+    B --> C["1. 입력 수집<br>collect.py<br>(첨부 받기, 영상 프레임 추출)"]
     C --> D["2. 결정론적 검사<br>precheck.py"]
     D --> E["3. Claude 문서화<br>CI agent"]
     E --> F["3-2. 출력 저장<br>save_output.py"]
@@ -591,13 +684,13 @@ Bug는 원인과 해결로, Issue는 대응 결과로 판단한다.
 | 사람 구역 | 진행 배경, 예상 산출물(담당자) | 기본 정보, 문제(As-Is), 개선(To-Be), 첨부 자료(필수)(제보자) | 이슈 유형, 이슈 내용(제기자) |
 | 완료 판단 기준 | 예상 산출물마다 결과가 있고 모두 달성 | 원인과 해결에 근거 링크가 있고, 해결 뒤 사람이 남긴 To-Be 동작 확인 comment가 있음 | 대응 결과(수용, 반려, 이관 중 하나)와 이유, 근거가 있음 |
 | 스크립트 검사 | T1 예상 산출물 작성, T2 진행 배경 작성, A2(대상: 예상 산출물), R4 | B1 기본 정보와 문제(As-Is) 작성, 첨부 파일, B2 개선(To-Be) 작성, A2(대상: 개선(To-Be)), R4 | I1 이슈 유형 선택, I2 이슈 내용 작성, R4. A2 없음 |
-| CI agent 검사 | R2, R3 | B3 원인과 해결의 근거 링크, B4 To-Be 동작 확인 comment, R2, R3 | I3 대응 결과의 근거, R2, R3. I1은 스크립트가 판단하지 못할 때만 |
+| CI agent 검사 | R2, R3, R5 | B3 원인과 해결의 근거 링크, B4 To-Be 동작 확인 comment, R2, R3, R5 | I3 대응 결과의 근거, R2, R3, R5. I1은 스크립트가 판단하지 못할 때만 |
 | apply.py가 계산하는 검사 | T3 예상 산출물과 결과 산출물의 1:1 대응, T8 초과 달성·미달성 사유 | 없음 | 없음 |
 | 문서화 리뷰 항목 | T4 진행 배경 충실도, T5 예상 산출물 분할 단위, T6 진행 기록 comment, T7 sub-task 기록, T8 초과 달성·미달성 사유, T9 진행 배경부터 결과 산출물까지의 연결 | B5 문제(As-Is) 재현 정보, B6 원인 분석 기록, B7 해결 확인 기록 | I4 이슈 내용 충실도, I5 논의와 결정 기록 |
 | 결과 산출물 구역 | 있음 | 없음 | 없음 |
 | TL;DR | 결과 목록 | `h3. 원인`, `h3. 해결` | 대응 결과 목록 |
-| 보완 필요이면 보류인 검사 | T1, T2, R2의 링크 기준, R4 | B1, B2, B3, B4, R2의 링크 기준, R4 | I1, I2, I3, R2의 링크 기준, R4 |
-| 검토 요청이 되는 경우 | 미달성 항목마다 사유가 있음, 예상 산출물이 모호함, A2 보완 필요, T3 불일치 | 원인과 해결이 맞지 않음, 재현 불가로 종료하려 함, A2 보완 필요 | 대응 결과가 comment마다 달라 최종을 알 수 없음 |
+| 보완 필요이면 보류인 검사 | T1, T2, R2의 링크 기준, R4, R5의 설명 기준 | B1, B2, B3, B4, R2의 링크 기준, R4, R5의 설명 기준 | I1, I2, I3, R2의 링크 기준, R4, R5의 설명 기준 |
+| 검토 요청이 되는 경우 | 미달성 항목마다 사유가 있음, 예상 산출물이 모호함, A2 보완 필요, T3 불일치, R5 내용 기준 보완 필요(설명 기준 보완 필요가 없을 때) | 원인과 해결이 맞지 않음, 재현 불가로 종료하려 함, A2 보완 필요, R5 내용 기준 보완 필요(설명 기준 보완 필요가 없을 때) | 대응 결과가 comment마다 달라 최종을 알 수 없음, R5 내용 기준 보완 필요(설명 기준 보완 필요가 없을 때) |
 | 지시 파일 | `prompts/types/task/`의 common.md, review.md, digest.md, deliverables.md | `prompts/types/bug/`의 common.md, review.md, digest.md | `prompts/types/issue/`의 common.md, review.md, digest.md |
 
 - 이 표의 근거는 아래와 같다.
@@ -611,6 +704,7 @@ Bug는 원인과 해결로, Issue는 대응 결과로 판단한다.
 - R2(1년 뒤에도 이해 가능한 기록)의 링크 기준은 근거 링크를 확인한다.
   - agent 구역의 결과마다 확인 가능한 링크가 있어야 한다.
 - R3는 개조식 작성을 검사한다(`prompts/review.md`의 "공통 검사 항목").
+- R5(첨부 파일에 대한 설명)는 "첨부 처리 과정" 절에서 설명한다.
 
 ### Task
 
@@ -673,10 +767,10 @@ Actions 워크플로에서 Jira에 기록하는 스크립트는 apply.py 하나�
 
 | 경로 | 역할 |
 |---|---|
-| `.github/workflows/jira-doc.yml` | Actions 워크플로. 단계(1, 2, 3-0, 3, 3-1, 3-2, 3-R, 4)와 실행 모드(검수, 정리, 주간 점검, 보고, 확인 결과 알림) |
+| `.github/workflows/jira-doc.yml` | Actions 워크플로. 단계(0, 1, 2, 3-0, 3, 3-1, 3-2, 3-R, 4)와 실행 모드(검수, 정리, 주간 점검, 보고, 확인 결과 알림) |
 | `scripts/src/jira/client.py` | Jira REST API v2 클라이언트(`Jira`) |
 | `scripts/src/jira/wiki.py` | description 구역 처리 함수(`find_section`, `set_section`) |
-| `scripts/collect.py` | 1단계. Jira와 GitHub에서 입력을 모아 `ctx/`에 저장. 정리 모드에 ticket 키가 없으면 종료 코드 1 |
+| `scripts/collect.py` | 1단계. Jira와 GitHub에서 입력을 모아 `ctx/`에 저장. 첨부를 받고 영상은 프레임으로 바꿈("첨부 처리 과정" 절). 정리 모드에 ticket 키가 없으면 종료 코드 1 |
 | `scripts/precheck.py` | 2단계. 스크립트 검사(T1, T2, B1, B2, I1, I2, R4, A2, A1, A3)와 docFacts 계산 |
 | `scripts/save_output.py` | 3-1, 3-2, 3-R 단계. CI agent의 구조화 출력을 `out/<ticket 키>/` 파일(verdict.json, tldr.wiki, comment.wiki, 원인을 적은 `_agent_error.txt`)과 `out/_failed.txt`로 저장하고, 검수 모드에서 판정이 없으면 `retry=true`를 출력. 실행 결과 파일의 Claude 사용량을 `out/_usage.json`에 저장하고, `--exec-summary`로 3-1 단계 로그 줄을 출력. 표준 라이브러리만 사용 |
 | `scripts/apply.py` | 4단계. verdict.json 검증, 결과 산출물 구역과 comment 조립, Jira 반영, jira-doc 기록의 `runs` 추가, Slack 알림. 상태 전환은 하지 않음. 반영하지 못한 ticket은 Slack 실패 알림 한 건으로 알리고 종료 코드 1로 끝남. 주간 점검 모드에서는 Jira에 기록하지 않고 주간 점검 메시지와 토큰(인증 키) 만료 알림만 전송. 보고 모드에서는 report.py의 정기 보고 메시지를 팀장 채널로 전송 |
@@ -717,14 +811,14 @@ flowchart LR
 
 | 화살표 | 가리키는 문장 |
 |---|---|
-| 워크플로 prompt → rules.md, 실행 모드 파일 | `.github/workflows/jira-doc.yml:103`("먼저 prompts/rules.md와 prompts/${{ env.MODE }}.md를 읽고"). 3-R 단계도 같음(`:140`) |
-| rules.md → common.md, work type 실행 모드 파일 | `prompts/rules.md:72-74`(공통 처리 순서 1단계) |
+| 워크플로 prompt → rules.md, 실행 모드 파일 | `.github/workflows/jira-doc.yml:110`("먼저 prompts/rules.md와 prompts/${{ env.MODE }}.md를 읽고"). 3-R 단계도 같음(`:147`) |
+| rules.md → common.md, work type 실행 모드 파일 | `prompts/rules.md:116-118`(공통 처리 순서 1단계) |
 | 실행 모드 파일 → rules.md의 공통 처리 순서 | `prompts/review.md:10`, `prompts/digest.md:12` |
 | common.md → deliverables.md(Task만) | `prompts/types/task/common.md:4`. `prompts/types/task/review.md:9`, `prompts/types/task/digest.md:10`도 가리킴 |
 | work type 실행 모드 파일 → common.md의 절 | 예: `prompts/types/task/review.md:12-13`("tldr 형식", "링크 추가 요청 문장") |
 | work type 검수 파일 → `prompts/review.md`의 절 | 예: `prompts/types/task/review.md:14`, `:17-19` |
 | work type 정리 파일 → `prompts/digest.md`의 "정리 모드 규칙" | 예: `prompts/types/task/digest.md:16` |
-| 스키마 → 3단계 | `.github/workflows/jira-doc.yml:77-90`, `:110`(`--json-schema`). 지시 파일에는 스키마를 읽으라는 문장이 없고 형식으로만 언급함(`prompts/rules.md:82`) |
+| 스키마 → 3단계 | `.github/workflows/jira-doc.yml:84-97`, `:118`(`--json-schema`). 지시 파일에는 스키마를 읽으라는 문장이 없고 형식으로만 언급함(`prompts/rules.md:126`) |
 
 - 이 그림은 지시 파일이 가리키는 순서다.
   - CI agent가 실제로 그 순서대로 읽었는지는 이 그림으로 알 수 없다.
@@ -734,7 +828,7 @@ flowchart LR
 ### CI agent의 권한
 
 - CI agent는 `ctx/`, `prompts/`, `schemas/`를 읽기만 한다.
-  - 3단계의 `--allowedTools`에는 읽기 규칙 `Read(ctx/**)`, `Read(prompts/**)`, `Read(schemas/**)`만 있다(`.github/workflows/jira-doc.yml:109`).
+  - 3단계의 `--allowedTools`에는 읽기 규칙 `Read(ctx/**)`, `Read(prompts/**)`, `Read(schemas/**)`만 있다(`.github/workflows/jira-doc.yml:117`).
   - `out/<ticket 키>/`의 파일은 3-2 단계의 save_output.py가 구조화 출력으로 만든다.
   - 구조화 출력에 없는 부분은 판정 없음 기본값으로 채운다(`scripts/src/jira/output/save.py`의 `build_verdict`).
 - 허용 규칙에 없는 도구 호출은 모두 자동으로 거부된다.
@@ -889,7 +983,7 @@ Jira에는 기록하지 않고 Slack 실패 알림으로 팀장에게 알린다.
 - 실패가 하나라도 있으면 apply.py가 종료 코드 1로 끝난다(`scripts/apply.py`의 `main`).
   - 그래서 Actions 실행 상태가 failure가 된다.
 - Actions 워크플로 실행을 취소해도 3-2 단계와 4단계는 실행된다.
-  - 두 단계의 실행 조건에 `always()`가 있기 때문이다(`.github/workflows/jira-doc.yml:124`, 4단계의 `if`).
+  - 두 단계의 실행 조건에 `always()`가 있기 때문이다(`.github/workflows/jira-doc.yml:132`, 4단계의 `if`).
   - 검수 모드에서 3단계가 끝나기 전에 취소하면 구조화 출력이 없다.
     - 4단계가 "CI agent 판정 없음"으로 실패 처리하고 Slack 실패 알림을 보낸다.
 
@@ -901,7 +995,7 @@ Jira에는 기록하지 않고 Slack 실패 알림으로 팀장에게 알린다.
   - 실행 조건은 `if: failure()`다.
   - 모든 실행 모드에 적용된다.
   - 3단계와 3-R 단계의 실패는 이 알림을 일으키지 않는다.
-    - 두 단계에는 `continue-on-error: true`가 있다(`.github/workflows/jira-doc.yml:97`, `:134`).
+    - 두 단계에는 `continue-on-error: true`가 있다(`.github/workflows/jira-doc.yml:105`, `:142`).
     - `continue-on-error`: 스텝이 실패해도 워크플로를 실패로 치지 않는 설정
     - 그 실패는 4단계의 ticket 실패 알림이 맡는다.
 - 실패 알림은 두 가지다.

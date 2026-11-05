@@ -9,6 +9,9 @@ OWNER_FIXABLE_CHECKS = (
     "T2",
     "R2",
     "R4",
+    # R5: 설명 기준 실패가 있으면 보류다. 설명 기준 실패 없이 내용 기준만 실패하면 CI agent가 검토 요청으로 정하고,
+    # recheck_verdict는 검토 요청을 바꾸지 않는다
+    "R5",
     "B1",
     "B2",
     "B3",
@@ -56,6 +59,7 @@ CHECK_NAMES = {
     "R2": "1년 뒤에도 이해 가능한 기록",
     "R3": "개조식 작성",
     "R4": "stop 사유 comment",
+    "R5": "첨부 파일에 대한 설명",
     "A1": "영업일 기준 5일 이상 활동 없음",
     "A2": "완료 기준의 사후 변경",
     "A3": "ready-to-done 영업일 기준 3일 이상 대기",
@@ -66,6 +70,11 @@ RESULT_KO = {
     "fail": "❌ 보완 필요",
     "n/a": "➖ 해당 없음",
 }  # 검사 표 결과 칸. 모든 검사 항목에 같은 표시
+# 검사 표 R5 칸의 첨부별 줄(scripts/src/jira/comment.py의 attachment_lines). verdict.json attachments 항목 하나가 한 줄이다
+ATTACHMENT_DESCRIPTION_KO = {"pass": "✅ 만족", "fail": "❌ 보완 필요"}  # 설명 기준 결과
+ATTACHMENT_CONTENT_KO = {"pass": "✅ 만족", "fail": "❌ 다름", "n/a": "➖ 해당 없음"}  # 내용 기준 결과
+ATTACHMENT_LINE = "{file}{where}: 설명 {description}, 내용 {content}"  # where: "(comment 날짜)" 또는 빈 문자열
+ATTACHMENT_NOTE = " – {note}"  # note가 있을 때 줄 끝에 붙인다
 # 문서화 리뷰(검수 모드)의 work type별 항목. 관찰 모드에서는 검수 결과를 바꾸지 않고 팀장용 comment로, 게이트 모드에서는 보류로 이어진다
 DOC_CHECKS = {"Task": ("T4", "T5", "T6", "T7", "T8", "T9"), "Bug": ("B5", "B6", "B7"), "Issue": ("I4", "I5")}
 ALL_DOC_CHECKS = tuple(cid for ids in DOC_CHECKS.values() for cid in ids)  # 세 work type의 문서화 리뷰 항목 전체

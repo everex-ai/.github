@@ -20,7 +20,7 @@
         "required": ["id", "result"],
         "additionalProperties": false,
         "properties": {
-          "id": { "type": "string", "pattern": "^(T[124-79]|B[1-7]|I[1-5]|R[2-4]|A[12])$" },
+          "id": { "type": "string", "pattern": "^(T[124-79]|B[1-7]|I[1-5]|R[2-5]|A[12])$" },
           "result": { "enum": ["pass", "fail", "n/a"] },
           "detail": { "type": "string", "maxLength": 300 }
         }
@@ -81,6 +81,22 @@
       "type": "array",
       "maxItems": 3,
       "items": { "type": "string", "maxLength": 60 }
+    },
+    "attachments": {
+      "description": "R5(첨부 파일에 대한 설명)의 첨부별 결과. 검수 모드에서 첨부가 있으면 attachments.json의 첨부마다 한 항목을 채운다. 정리 모드와 첨부가 없을 때는 빼거나 빈 배열. apply.py가 이 목록으로 검수 comment 검사 표의 R5 칸을 만든다.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["file", "comment", "description", "content"],
+        "additionalProperties": false,
+        "properties": {
+          "file": { "type": "string", "maxLength": 200, "description": "첨부 파일 이름" },
+          "comment": { "type": "string", "maxLength": 40, "description": "짝지은 comment 날짜(예: 2026-11-03). 설명이 description에 있으면 \"description\", 짝이 없으면 빈 문자열" },
+          "description": { "enum": ["pass", "fail"], "description": "설명 기준 결과" },
+          "content": { "enum": ["pass", "fail", "n/a"], "description": "내용 기준 결과. status가 skipped인 첨부와 설명이 없는 첨부는 n/a" },
+          "note": { "type": "string", "maxLength": 150, "description": "fail일 때 무엇이 없거나 다른지 짧게" }
+        }
+      }
     }
   }
 }

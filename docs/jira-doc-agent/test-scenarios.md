@@ -161,7 +161,7 @@ L2는 Jira와 Slack에 게시하고 비용이 들어 실행자가 실행한다.
   - 검수 모드는 TL;DR, description, comment를 갱신한다.
     - 근거: `docs/jira-doc-agent/README.md:238-241`
   - Slack은 연동 채널과 팀장 채널로 실제 전송된다.
-    - 근거: `.github/workflows/jira-doc.yml:163`, `:166`
+    - 근거: `.github/workflows/jira-doc.yml:170`, `:173`
   - 실행마다 좌석 사용량 한도를 소모한다(`docs/jira-doc-agent/alerts.md:26-27`).
 - 추정: 검수 모드 실행 1회의 API 환산 비용은 0.1–0.4 USD다.
   - 근거: 아래 두 실행의 3-1단계 로그 `total_cost_usd`
@@ -560,7 +560,7 @@ CM-1–CM-3은 같은 ticket에서 차례로 실행한다.
 - 의도: 만료 30일 전부터 매주 팀장 채널로 알린다.
   - 근거: `docs/jira-doc-agent/alerts.md`의 "토큰(인증 키) 만료 알림" 절
 - 이 알림은 주간 점검 모드의 1단계(Jira 수집)가 성공해야 나간다.
-  - 1단계가 실패하면 4단계가 실행되지 않는다(`.github/workflows/jira-doc.yml:158`).
+  - 1단계가 실패하면 4단계가 실행되지 않는다(`.github/workflows/jira-doc.yml:165`).
   - 그래서 `JIRA_API_TOKEN`이 이미 만료됐으면 만료 알림 대신 실행 실패 알림(AL-5)이 나간다.
 - 결정: 만료 알림 경로는 바꾸지 않는다.
   - 팀장이 만료 30일 전 알림을 받고 갱신한다.
