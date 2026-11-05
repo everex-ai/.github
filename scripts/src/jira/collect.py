@@ -256,6 +256,10 @@ MATCH_SECONDS = 10  # 본문 표기가 없을 때 같은 작성자의 comment와
 FRAME_TIMEOUT = 60  # 프레임 1장을 뽑는 ffmpeg 실행의 시간 상한(초)
 # ticket 하나의 영상 처리(받기와 프레임 추출) 전체 시간 상한(초). 넘으면 남은 영상은 받지 않는다
 VIDEO_TIME_BUDGET = 600
+# GitHub Actions runner에 없는 첨부 처리 도구(apt 패키지 이름: 확인할 실행 파일). 영상은 ffmpeg로 프레임을 뽑고,
+# 3단계 CI agent는 10쪽이 넘는 PDF를 poppler-utils(pdftoppm)로 읽는다
+TOOL_PACKAGES = {"video": ("ffmpeg", ("ffmpeg", "ffprobe")), "pdf": ("poppler-utils", ("pdftoppm",))}
+TOOL_INSTALL_TIMEOUT = 300  # apt-get update와 install 각각의 시간 상한(초)
 
 
 def attachment_kind(mime: str | None, filename: str | None) -> str:
@@ -369,6 +373,33 @@ def _run_tool(args: list[str], timeout: int) -> tuple[bool, str]:
     return True, res.stdout or ""
 
 
+def ensure_tools(kinds: set[str]) -> None:
+    """GitHub Actions에서 첨부 처리에 필요한 도구가 없으면 apt-get으로 설치한다. 실패해도 예외를 올리지 않는다.
+
+    워크플로 파일에 설치 스텝을 두지 않는 이유: claude-code-action은 워크플로 파일이 main과 같아야 3단계를
+    실행하므로, 워크플로를 바꾸면 브랜치에서 시험할 수 없다(docs/jira-doc-agent/README.md의 "시험 실행" 절).
+    GitHub Actions가 아니면(GITHUB_ACTIONS가 "true"가 아니면) 아무것도 하지 않는다.
+
+    Args:
+        kinds: 이 ticket 첨부의 형식(attachment_kind 결과) 집합. video, pdf가 있을 때만 해당 도구를 설치한다.
+    """
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    packages = [
+        pkg for kind, (pkg, exes) in TOOL_PACKAGES.items() if kind in kinds and not all(shutil.which(e) for e in exes)
+    ]
+    if not packages:
+        return
+    apt = ["sudo", "apt-get", "-o", "Acquire::Retries=3"]
+    ok, msg = _run_tool([*apt, "update"], TOOL_INSTALL_TIMEOUT)
+    if ok:
+        ok, msg = _run_tool([*apt, "install", "-y", "--no-install-recommends", *packages], TOOL_INSTALL_TIMEOUT)
+    if ok:
+        print(f"[collect] 첨부 처리 도구 설치: {', '.join(packages)}")
+    else:
+        print(f"[collect] 첨부 처리 도구 설치 실패({', '.join(packages)}): {msg}", file=sys.stderr)
+
+
 def extract_frames(src: Path, out_dir: Path) -> tuple[list[dict], str]:
     """영상에서 균등 간격 FRAME_COUNT개 시점의 프레임을 jpg로 뽑는다. 긴 변은 FRAME_MAX_SIDE 이하로 줄인다.
 
@@ -444,7 +475,8 @@ def collect_attachments(j: Jira, key: str, sources: list[tuple[str, list[dict], 
 
     생성 시각 최신순으로 형식(attachment_kind)과 크기 기준(ATT_MAX_BYTES)을 통과한 첨부를 받는다.
     저장에 성공한 첨부(saved, frames)가 ATT_MAX_FILES개가 되면 나머지는 받지 않는다.
-    영상은 받은 뒤 프레임만 저장한다. ffmpeg나 ffprobe가 없으면 영상을 받지 않는다.
+    영상은 받은 뒤 프레임만 저장한다. GitHub Actions에서는 먼저 필요한 도구를 설치하고(ensure_tools),
+    그래도 ffmpeg나 ffprobe가 없으면 영상을 받지 않는다.
     영상 처리에 쓴 시간이 VIDEO_TIME_BUDGET초를 넘으면 남은 영상은 받지 않는다.
     어떤 첨부의 오류도 수집 단계 전체를 멈추지 않는다.
 
@@ -464,6 +496,7 @@ def collect_attachments(j: Jira, key: str, sources: list[tuple[str, list[dict], 
     names: dict[tuple, int] = {}
     for src, att, _ in items:
         names[(src, att.get("filename"))] = names.get((src, att.get("filename")), 0) + 1
+    ensure_tools({attachment_kind(a.get("mimeType"), a.get("filename")) for _, a, _ in items})
     has_ffmpeg = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
     att_dir = CTX / key / "attachments"
     records, stored, video_spent = [], 0, 0.0

@@ -23,6 +23,12 @@ def jci():
     return importlib.import_module("src.jira.collect")
 
 
+@pytest.fixture(autouse=True)
+def not_actions(monkeypatch):
+    """CI에서 테스트를 실행해도 ensure_tools가 apt-get을 부르지 않게 GitHub Actions 표시를 지운다."""
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+
+
 @pytest.fixture
 def ctx(jci, monkeypatch, tmp_path):
     """CTX를 임시 폴더로 바꾸고 ticket 폴더의 첨부 폴더 경로를 돌려준다."""
@@ -493,3 +499,53 @@ def test_collect_issue_continues_when_attachment_processing_fails(jci, ctx, monk
     out = capsys.readouterr()
     assert "첨부 처리 실패" in out.err and "예상하지 못한 오류" in out.err
     assert "첨부 저장 0, 프레임 0, 건너뜀 0" in out.out
+
+
+@pytest.fixture
+def apt_calls(jci, monkeypatch):
+    """subprocess.run을 가짜로 바꿔 호출 인자를 모은다. GitHub Actions 환경으로 둔다."""
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    calls: list[list[str]] = []
+
+    def fake(args, **kwargs):
+        calls.append(args)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(jci.subprocess, "run", fake)
+    return calls
+
+
+def test_ensure_tools_installs_only_missing_packages(jci, monkeypatch, apt_calls):
+    """영상과 PDF가 있고 도구가 없으면 ffmpeg와 poppler-utils를 함께 설치한다."""
+    monkeypatch.setattr(jci.shutil, "which", lambda name: None)
+    jci.ensure_tools({"video", "pdf", "image"})
+    assert apt_calls[0][-1] == "update"
+    assert apt_calls[1][-2:] == ["ffmpeg", "poppler-utils"]
+
+
+def test_ensure_tools_skips_when_tools_exist_or_not_needed(jci, monkeypatch, apt_calls):
+    """도구가 이미 있거나 영상, PDF가 없으면 apt-get을 부르지 않는다."""
+    monkeypatch.setattr(jci.shutil, "which", lambda name: f"/usr/bin/{name}")
+    jci.ensure_tools({"video", "pdf"})
+    monkeypatch.setattr(jci.shutil, "which", lambda name: None)
+    jci.ensure_tools({"image", "text"})
+    assert apt_calls == []
+
+
+def test_ensure_tools_does_nothing_outside_actions(jci, monkeypatch, apt_calls):
+    """GitHub Actions가 아니면 도구가 없어도 설치하지 않는다(로컬 실행에서 sudo를 부르지 않음)."""
+    monkeypatch.delenv("GITHUB_ACTIONS")
+    monkeypatch.setattr(jci.shutil, "which", lambda name: None)
+    jci.ensure_tools({"video"})
+    assert apt_calls == []
+
+
+def test_ensure_tools_failure_does_not_raise(jci, monkeypatch, capsys):
+    """apt-get이 실패해도 예외 없이 경고만 남기고, 수집은 ffmpeg 없음으로 이어진다."""
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setattr(jci.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        jci.subprocess, "run", lambda args, **kw: SimpleNamespace(returncode=100, stdout="", stderr="E: no network")
+    )
+    jci.ensure_tools({"video"})
+    assert "첨부 처리 도구 설치 실패(ffmpeg)" in capsys.readouterr().err

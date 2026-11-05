@@ -212,7 +212,6 @@ request 전환부터 ticket 갱신까지 아래 단계가 차례로 실행된다
 | 단계 | 실행 주체 | 입력 | 출력 |
 |---|---|---|---|
 | 시작 | F1(Jira Automation) | request 전환 | repository_dispatch(종류 `jira-doc-review`) |
-| 0. 첨부 처리 도구 설치 | Actions 워크플로 | 없음 | runner(워크플로를 실행하는 GitHub 가상 머신)에 ffmpeg(영상에서 정지 이미지를 뽑는 도구), poppler-utils(PDF 쪽을 이미지로 바꾸는 도구) 설치 |
 | 1. 입력 수집 | `scripts/collect.py` | Jira ticket, GitHub PR, Jira 첨부 | `ctx/<ticket 키>/`의 issue.json, description.wiki, tldr.txt, comments.json, changelog.json, subtasks/*.json, prs.json, attachments.json, attachments/, meta.json |
 | 2. 결정론적 검사 (precheck) | `scripts/precheck.py` | 1단계의 `ctx/` 파일 | `ctx/<ticket 키>/precheck.json`(스크립트 검사 결과 `checks`, stop 이력 `stops`, docFacts, Task의 예상 산출물 목록 `expected`) |
 | 3-0. 스키마 준비 | Actions 워크플로 | `schemas/agent-output.json` | 3단계에 넘기는 한 줄 JSON |
@@ -224,7 +223,6 @@ request 전환부터 ticket 갱신까지 아래 단계가 차례로 실행된다
 | 5. 실패 알림 | `scripts/apply.py --mode failure` | `out/_run_error.json`, `out/_failure_notified` | 앞 단계가 실패했을 때만 연동 채널로 실패 알림(보고 모드는 팀장 채널) |
 
 - 이 표의 근거는 아래와 같다.
-  - 0단계: Actions 워크플로 0단계의 `if`, `run`
   - 1단계: `scripts/src/jira/collect.py`의 `collect_issue`, `prompts/rules.md`의 "입력 파일" 절
   - 2단계: `scripts/src/jira/precheck/run.py`의 `run_issue_dir`
   - 3단계: Actions 워크플로 3단계의 `prompt`, `claude_args`, `prompts/rules.md`의 "출력" 절
@@ -240,7 +238,7 @@ request 전환부터 ticket 갱신까지 아래 단계가 차례로 실행된다
     - 판정 없음, items의 `done` null, 빈 `tldr`, 빈 `comment`
     - items: 판정 객체 안의 예상 산출물별 결과 목록
   - 정리 모드는 다시 실행하지 않는다.
-  - 3-R 실행에는 3-1 단계 같은 실행 결과 요약 단계가 없다(`.github/workflows/jira-doc.yml:138-162`).
+  - 3-R 실행에는 3-1 단계 같은 실행 결과 요약 단계가 없다(`.github/workflows/jira-doc.yml:131-155`).
 - 4단계의 apply.py는 ticket마다 아래 순서로 처리한다(`scripts/src/jira/issue.py`의 `apply_issue`).
   1. verdict.json, tldr.wiki, comment.wiki, `_agent_error.txt`를 검사한다.
      - 문제가 있으면 실패로 처리하고 Jira에 반영하지 않는다("실패 처리" 절).
@@ -270,13 +268,13 @@ request 전환부터 ticket 갱신까지 아래 단계가 차례로 실행된다
 
 ### 첨부 처리 과정
 
-0단계가 도구를 설치하고, 1단계의 Python 함수가 첨부를 받아 둔다.
+1단계의 Python 함수가 첨부 처리 도구를 설치하고 첨부를 받아 둔다.
 3단계의 CI agent는 그 파일을 읽어 분석한다.
 
 - CI agent는 첨부를 직접 받지 않는다.
   - CI agent에는 Read 외의 도구가 없다("CI agent의 권한" 절).
   - Actions 워크플로는 Jira 인증 정보를 1단계와 4단계에만 준다.
-    - 근거: `.github/workflows/jira-doc.yml:72`
+    - 근거: `.github/workflows/jira-doc.yml:65`
 - 1단계가 하는 일은 아래와 같다(`scripts/src/jira/collect.py`의 `collect_attachments`).
   - 부모 ticket과 sub-task의 첨부를 Jira API로 받는다.
     - API: `GET /rest/api/2/attachment/content/{id}?redirect=false`
@@ -345,12 +343,17 @@ request 전환부터 ticket 갱신까지 아래 단계가 차례로 실행된다
   - 설명 기준 보완 필요가 없고 내용 기준 보완 필요가 있으면 검토 요청이다.
     - R5 밖의 보류 조건이 함께 있어도 검토 요청이다.
     - CI agent는 R5 밖 보류 조건의 내용도 검수 comment의 요청에 적는다.
-- 0단계가 ffmpeg와 poppler-utils를 설치한다.
+- 1단계는 GitHub Actions에서 첨부 처리 도구를 apt-get으로 설치한다(`ensure_tools`).
+  - ffmpeg: 영상에서 프레임을 뽑는 도구. 영상 첨부가 있을 때만 설치한다.
+  - poppler-utils: PDF 쪽을 이미지로 바꾸는 도구. PDF 첨부가 있을 때만 설치한다.
   - runner 이미지에 두 도구가 없기 때문이다.
+    - runner: 워크플로를 실행하는 GitHub 가상 머신
     - 근거: https://raw.githubusercontent.com/actions/runner-images/main/images/ubuntu/Ubuntu2404-Readme.md 에서 두 이름 검색 0건(2026-11-04)
-  - 설치가 실패해도 1단계 이후는 실행된다.
-    - 근거: 0단계의 `continue-on-error: true`(`.github/workflows/jira-doc.yml:66`)
-  - 그때 1단계는 영상만 받지 않고 이유를 적는다.
+  - 설치 스텝을 워크플로 파일에 두지 않는다.
+    - 워크플로 파일이 main과 다르면 3단계가 건너뛰어지기 때문이다.
+    - 근거: "시험 실행" 절의 브랜치 수동 실행 항목
+  - 설치가 실패해도 1단계는 멈추지 않는다.
+    - 그때 1단계는 영상만 받지 않고 이유를 적는다.
     - 근거: `collect_attachments`의 `shutil.which` 분기
 - 프레임은 CI agent의 토큰 수를 늘린다.
   - 이미지 1장의 토큰 수: ⌈가로 px/28⌉ × ⌈세로 px/28⌉
@@ -767,7 +770,7 @@ Actions 워크플로에서 Jira에 기록하는 스크립트는 apply.py 하나�
 
 | 경로 | 역할 |
 |---|---|
-| `.github/workflows/jira-doc.yml` | Actions 워크플로. 단계(0, 1, 2, 3-0, 3, 3-1, 3-2, 3-R, 4)와 실행 모드(검수, 정리, 주간 점검, 보고, 확인 결과 알림) |
+| `.github/workflows/jira-doc.yml` | Actions 워크플로. 단계(1, 2, 3-0, 3, 3-1, 3-2, 3-R, 4)와 실행 모드(검수, 정리, 주간 점검, 보고, 확인 결과 알림) |
 | `scripts/src/jira/client.py` | Jira REST API v2 클라이언트(`Jira`) |
 | `scripts/src/jira/wiki.py` | description 구역 처리 함수(`find_section`, `set_section`) |
 | `scripts/collect.py` | 1단계. Jira와 GitHub에서 입력을 모아 `ctx/`에 저장. 첨부를 받고 영상은 프레임으로 바꿈("첨부 처리 과정" 절). 정리 모드에 ticket 키가 없으면 종료 코드 1 |
@@ -811,14 +814,14 @@ flowchart LR
 
 | 화살표 | 가리키는 문장 |
 |---|---|
-| 워크플로 prompt → rules.md, 실행 모드 파일 | `.github/workflows/jira-doc.yml:110`("먼저 prompts/rules.md와 prompts/${{ env.MODE }}.md를 읽고"). 3-R 단계도 같음(`:147`) |
+| 워크플로 prompt → rules.md, 실행 모드 파일 | `.github/workflows/jira-doc.yml:103`("먼저 prompts/rules.md와 prompts/${{ env.MODE }}.md를 읽고"). 3-R 단계도 같음(`:140`) |
 | rules.md → common.md, work type 실행 모드 파일 | `prompts/rules.md:116-118`(공통 처리 순서 1단계) |
 | 실행 모드 파일 → rules.md의 공통 처리 순서 | `prompts/review.md:10`, `prompts/digest.md:12` |
 | common.md → deliverables.md(Task만) | `prompts/types/task/common.md:4`. `prompts/types/task/review.md:9`, `prompts/types/task/digest.md:10`도 가리킴 |
 | work type 실행 모드 파일 → common.md의 절 | 예: `prompts/types/task/review.md:12-13`("tldr 형식", "링크 추가 요청 문장") |
 | work type 검수 파일 → `prompts/review.md`의 절 | 예: `prompts/types/task/review.md:14`, `:17-19` |
 | work type 정리 파일 → `prompts/digest.md`의 "정리 모드 규칙" | 예: `prompts/types/task/digest.md:16` |
-| 스키마 → 3단계 | `.github/workflows/jira-doc.yml:84-97`, `:118`(`--json-schema`). 지시 파일에는 스키마를 읽으라는 문장이 없고 형식으로만 언급함(`prompts/rules.md:126`) |
+| 스키마 → 3단계 | `.github/workflows/jira-doc.yml:77-90`, `:111`(`--json-schema`). 지시 파일에는 스키마를 읽으라는 문장이 없고 형식으로만 언급함(`prompts/rules.md:126`) |
 
 - 이 그림은 지시 파일이 가리키는 순서다.
   - CI agent가 실제로 그 순서대로 읽었는지는 이 그림으로 알 수 없다.
@@ -828,7 +831,7 @@ flowchart LR
 ### CI agent의 권한
 
 - CI agent는 `ctx/`, `prompts/`, `schemas/`를 읽기만 한다.
-  - 3단계의 `--allowedTools`에는 읽기 규칙 `Read(ctx/**)`, `Read(prompts/**)`, `Read(schemas/**)`만 있다(`.github/workflows/jira-doc.yml:117`).
+  - 3단계의 `--allowedTools`에는 읽기 규칙 `Read(ctx/**)`, `Read(prompts/**)`, `Read(schemas/**)`만 있다(`.github/workflows/jira-doc.yml:110`).
   - `out/<ticket 키>/`의 파일은 3-2 단계의 save_output.py가 구조화 출력으로 만든다.
   - 구조화 출력에 없는 부분은 판정 없음 기본값으로 채운다(`scripts/src/jira/output/save.py`의 `build_verdict`).
 - 허용 규칙에 없는 도구 호출은 모두 자동으로 거부된다.
@@ -983,7 +986,7 @@ Jira에는 기록하지 않고 Slack 실패 알림으로 팀장에게 알린다.
 - 실패가 하나라도 있으면 apply.py가 종료 코드 1로 끝난다(`scripts/apply.py`의 `main`).
   - 그래서 Actions 실행 상태가 failure가 된다.
 - Actions 워크플로 실행을 취소해도 3-2 단계와 4단계는 실행된다.
-  - 두 단계의 실행 조건에 `always()`가 있기 때문이다(`.github/workflows/jira-doc.yml:132`, 4단계의 `if`).
+  - 두 단계의 실행 조건에 `always()`가 있기 때문이다(`.github/workflows/jira-doc.yml:125`, 4단계의 `if`).
   - 검수 모드에서 3단계가 끝나기 전에 취소하면 구조화 출력이 없다.
     - 4단계가 "CI agent 판정 없음"으로 실패 처리하고 Slack 실패 알림을 보낸다.
 
@@ -995,7 +998,7 @@ Jira에는 기록하지 않고 Slack 실패 알림으로 팀장에게 알린다.
   - 실행 조건은 `if: failure()`다.
   - 모든 실행 모드에 적용된다.
   - 3단계와 3-R 단계의 실패는 이 알림을 일으키지 않는다.
-    - 두 단계에는 `continue-on-error: true`가 있다(`.github/workflows/jira-doc.yml:105`, `:142`).
+    - 두 단계에는 `continue-on-error: true`가 있다(`.github/workflows/jira-doc.yml:98`, `:135`).
     - `continue-on-error`: 스텝이 실패해도 워크플로를 실패로 치지 않는 설정
     - 그 실패는 4단계의 ticket 실패 알림이 맡는다.
 - 실패 알림은 두 가지다.
