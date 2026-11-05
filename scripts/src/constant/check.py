@@ -71,9 +71,11 @@ RESULT_KO = {
     "n/a": "➖ 해당 없음",
 }  # 검사 표 결과 칸. 모든 검사 항목에 같은 표시
 # 검사 표 R5 칸의 첨부별 줄(scripts/src/jira/comment.py의 attachment_lines). verdict.json attachments 항목 하나가 한 줄이다
-ATTACHMENT_DESCRIPTION_KO = {"pass": "✅ 만족", "fail": "❌ 보완 필요"}  # 설명 기준 결과
-ATTACHMENT_CONTENT_KO = {"pass": "✅ 만족", "fail": "❌ 다름", "n/a": "➖ 해당 없음"}  # 내용 기준 결과
-ATTACHMENT_LINE = "{file}{where}: 설명 {description}, 내용 {content}"  # where: "(comment 날짜)" 또는 빈 문자열
+ATTACHMENT_DESCRIPTION_KO = {"pass": "✅", "fail": "❌"}  # 설명 기준 결과
+ATTACHMENT_CONTENT_KO = {"pass": "✅", "fail": "❌", "n/a": "➖"}  # 내용 기준 결과
+ATTACHMENT_LINE = "{file}: 설명 존재 {description}, 내용 일치 {content}"
+# Jira가 같은 이름의 첨부를 다시 올릴 때 파일 이름 끝(확장자 앞)에 붙이는 media id. R5 칸에서는 지운다
+ATTACHMENT_MEDIA_ID_RE = r" \([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\)(?=\.[^.]*$|$)"
 ATTACHMENT_NOTE = " – {note}"  # note가 있을 때 줄 끝에 붙인다
 # 문서화 리뷰(검수 모드)의 work type별 항목. 관찰 모드에서는 검수 결과를 바꾸지 않고 팀장용 comment로, 게이트 모드에서는 보류로 이어진다
 DOC_CHECKS = {"Task": ("T4", "T5", "T6", "T7", "T8", "T9"), "Bug": ("B5", "B6", "B7"), "Issue": ("I4", "I5")}

@@ -8,6 +8,7 @@ from src.constant.check import (
     ATTACHMENT_CONTENT_KO,
     ATTACHMENT_DESCRIPTION_KO,
     ATTACHMENT_LINE,
+    ATTACHMENT_MEDIA_ID_RE,
     ATTACHMENT_NOTE,
     CHECK_ORDER,
     NO_REASON,
@@ -27,8 +28,8 @@ def result_label(result: str) -> str:
 def attachment_lines(attachments: list[dict] | None) -> list[str]:
     """verdict.json의 attachments(R5 첨부별 결과)를 검사 표 R5 칸의 줄 목록으로 만든다.
 
-    줄 꼴은 "{file}({comment}): 설명 {설명 기준}, 내용 {내용 기준} – {note}"다(ATTACHMENT_LINE, ATTACHMENT_NOTE).
-    comment가 비면 괄호를, note가 비면 " – " 뒤를 뺀다. 목록이 아니면 빈 목록을 돌려주고,
+    줄 꼴은 "{file}: 설명 존재 {설명 기준}, 내용 일치 {내용 기준} – {note}"다(ATTACHMENT_LINE, ATTACHMENT_NOTE).
+    note가 비면 " – " 뒤를 뺀다. 파일 이름 끝의 Jira media id(ATTACHMENT_MEDIA_ID_RE)는 지운다. 목록이 아니면 빈 목록을 돌려주고,
     file이 문자열이 아니거나 설명 기준, 내용 기준 값이 정해진 값이 아닌 항목은 건너뛴다.
 
     Args:
@@ -45,10 +46,8 @@ def attachment_lines(attachments: list[dict] | None) -> list[str]:
             continue
         if a.get("description") not in ATTACHMENT_DESCRIPTION_KO or a.get("content") not in ATTACHMENT_CONTENT_KO:
             continue
-        comment = str(a.get("comment") or "").strip()
         line = ATTACHMENT_LINE.format(
-            file=a["file"].strip(),
-            where=f"({comment})" if comment else "",
+            file=re.sub(ATTACHMENT_MEDIA_ID_RE, "", a["file"].strip()),
             description=ATTACHMENT_DESCRIPTION_KO[a["description"]],
             content=ATTACHMENT_CONTENT_KO[a["content"]],
         )

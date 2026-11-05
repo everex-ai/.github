@@ -27,9 +27,9 @@ ATTACHMENTS = [
     },
 ]
 R5_CELL = (
-    "결과.png(2026-11-03): 설명 ❌ 보완 필요, 내용 ➖ 해당 없음 – 파일 이름만 있음"
+    "결과.png: 설명 존재 ❌, 내용 일치 ➖ – 파일 이름만 있음"
     " \\\\ "
-    "정량평가셋 확장 계획.pdf(2026-11-04): 설명 ✅ 만족, 내용 ❌ 다름 – 설명은 정확도 92%, PDF 표는 89%"
+    "정량평가셋 확장 계획.pdf: 설명 존재 ✅, 내용 일치 ❌ – 설명은 정확도 92%, PDF 표는 89%"
 )
 DONE = {"id": "1", "done": True, "result": "재현 테스트 3건 추가"}
 REASONED = {"id": "2", "done": False, "result": "수치만 있음", "why": "라벨 재수집이 다음 분기로 밀림"}
@@ -134,11 +134,11 @@ def test_check_table_r5_falls_back_to_detail(jcm, attachments):
 
 def test_attachment_lines_omit_empty_comment_and_note(jcm):
     got = jcm.attachment_lines([{"file": "a.mp4", "comment": "", "description": "pass", "content": "pass"}])
-    assert got == ["a.mp4: 설명 ✅ 만족, 내용 ✅ 만족"]
+    assert got == ["a.mp4: 설명 존재 ✅, 내용 일치 ✅"]
     got = jcm.attachment_lines([{"file": "a|b.md", "comment": "description", "description": "pass", "content": "n/a"}])
-    assert got == ["a|b.md(description): 설명 ✅ 만족, 내용 ➖ 해당 없음"]
+    assert got == ["a|b.md: 설명 존재 ✅, 내용 일치 ➖"]
     assert jcm.check_table([R5_FAIL], None, [{"file": "a|b.md", "description": "pass", "content": "n/a"}]).endswith(
-        "| a/b.md: 설명 ✅ 만족, 내용 ➖ 해당 없음 |"
+        "| a/b.md: 설명 존재 ✅, 내용 일치 ➖ |"
     )  # 링크 밖의 "|"는 표가 깨지지 않게 "/"로 바뀜
 
 
@@ -264,4 +264,19 @@ def test_attachment_lines_skips_item_without_valid_results(jcm):
         {"file": "b.png", "comment": "", "description": "pass", "content": "maybe"},
         {"file": "c.png", "comment": "", "description": "pass", "content": "pass"},
     ]
-    assert jcm.attachment_lines(items) == ["c.png: 설명 ✅ 만족, 내용 ✅ 만족"]
+    assert jcm.attachment_lines(items) == ["c.png: 설명 존재 ✅, 내용 일치 ✅"]
+
+
+@pytest.mark.parametrize(
+    ("name", "shown"),
+    [
+        ("smpl_to_skel (5a5e8928-3218-4da6-8a1c-807272e4fd6c).md", "smpl_to_skel.md"),
+        ("README (5a5e8928-3218-4da6-8a1c-807272e4fd6c)", "README"),
+        ("plan (v2).pdf", "plan (v2).pdf"),
+    ],
+    ids=["확장자 앞 media id", "확장자 없음", "media id 아님"],
+)
+def test_attachment_lines_strip_jira_media_id(jcm, name, shown):
+    """Jira가 같은 이름의 첨부에 붙인 media id는 R5 칸에서 지우고, 사람이 붙인 괄호는 둔다."""
+    got = jcm.attachment_lines([{"file": name, "comment": "2026-11-05", "description": "pass", "content": "pass"}])
+    assert got == [f"{shown}: 설명 존재 ✅, 내용 일치 ✅"]
