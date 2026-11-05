@@ -331,6 +331,7 @@ def apply_issue(j: Jira, d: Path, out_dir: Path, mode: str, gate: bool, lead: st
             requests,
             notes,
             feedback if gate else None,
+            verdict.get("attachments"),
         )  # 게이트 모드에서만 검수 표에 문서화 리뷰 항목이 들어간다
         if v == "escalate" and lead and f"[~accountid:{lead}]" not in text:
             text += f"\n\n팀장 확인 필요: [~accountid:{lead}]"

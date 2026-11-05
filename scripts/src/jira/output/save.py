@@ -16,6 +16,7 @@ VERDICT_KEYS = (
     "requests",
     "feedback",
     "slack",
+    "attachments",
 )  # 구조화 출력의 verdict 객체에서 덮어쓰는 키
 CHECK_RESULTS = ("pass", "fail", "n/a")
 FAILURE_TEXT_LIMIT = 300  # 실패한 실행의 result 문구를 옮기는 길이

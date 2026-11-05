@@ -38,10 +38,67 @@ class Jira:
         self._site = os.environ.get("JIRA_SITE_URL", "").rstrip("/")
 
     # ------------------------------------------------------------------ 기본 호출
+    def _send(
+        self,
+        method: str,
+        path: str,
+        params: dict | None = None,
+        body: dict | None = None,
+        ok404: bool = False,
+        accept: str = "application/json",
+        max_bytes: int | None = None,
+    ) -> bytes | None:
+        """API를 호출해 응답 본문을 bytes로 돌려준다. 일시 오류(429, 5xx, 연결 실패)는 최대 4번까지 다시 시도한다.
+
+        Args:
+            method: HTTP 메서드.
+            path: base 뒤에 붙는 경로.
+            params: 쿼리 문자열 인자.
+            body: JSON 요청 본문.
+            ok404: True이면 404를 오류로 보지 않고 None을 돌려준다.
+            accept: Accept 헤더 값.
+            max_bytes: 읽을 응답 본문 크기 상한. 주면 max_bytes + 1 bytes까지만 읽는다.
+                돌려준 길이가 max_bytes보다 크면 상한을 넘은 응답이다.
+
+        Returns:
+            응답 본문 bytes. ok404이고 404이면 None.
+
+        Raises:
+            JiraError: 재시도 뒤에도 실패했거나 재시도할 수 없는 HTTP 오류일 때.
+        """
+        url = self.base + path
+        if params:
+            url += "?" + urllib.parse.urlencode(params)
+        data = json.dumps(body).encode() if body is not None else None
+        headers = {
+            "Authorization": "Basic " + self._auth,
+            "Accept": accept,
+            "Content-Type": "application/json",
+        }
+        last = None
+        for attempt in range(4):
+            req = urllib.request.Request(url, data=data, method=method, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    return r.read() if max_bytes is None else r.read(max_bytes + 1)
+            except urllib.error.HTTPError as e:
+                detail = e.read().decode("utf-8", "replace")[:600]
+                if e.code == 404 and ok404:
+                    return None
+                if e.code in (429, 500, 502, 503, 504) and attempt < 3:
+                    time.sleep(2 * (attempt + 1))
+                    last = f"{e.code}: {detail}"
+                    continue
+                raise JiraError(f"{method} {path} -> {e.code}: {detail}")
+            except urllib.error.URLError as e:
+                last = str(e)
+                time.sleep(2 * (attempt + 1))
+        raise JiraError(f"{method} {path} failed after retries: {last}")
+
     def _req(
         self, method: str, path: str, params: dict | None = None, body: dict | None = None, ok404: bool = False
     ) -> Any:
-        """API를 호출한다. 일시 오류(429, 5xx, 연결 실패)는 최대 4번까지 다시 시도한다.
+        """API를 호출하고 응답을 JSON으로 읽는다. 재시도는 _send가 한다.
 
         Args:
             method: HTTP 메서드.
@@ -56,35 +113,11 @@ class Jira:
         Raises:
             JiraError: 재시도 뒤에도 실패했거나 재시도할 수 없는 HTTP 오류일 때.
         """
-        url = self.base + path
-        if params:
-            url += "?" + urllib.parse.urlencode(params)
-        data = json.dumps(body).encode() if body is not None else None
-        headers = {
-            "Authorization": "Basic " + self._auth,
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        }
-        last = None
-        for attempt in range(4):
-            req = urllib.request.Request(url, data=data, method=method, headers=headers)
-            try:
-                with urllib.request.urlopen(req, timeout=60) as r:
-                    txt = r.read().decode("utf-8")
-                    return json.loads(txt) if txt.strip() else None
-            except urllib.error.HTTPError as e:
-                detail = e.read().decode("utf-8", "replace")[:600]
-                if e.code == 404 and ok404:
-                    return None
-                if e.code in (429, 500, 502, 503, 504) and attempt < 3:
-                    time.sleep(2 * (attempt + 1))
-                    last = f"{e.code}: {detail}"
-                    continue
-                raise JiraError(f"{method} {path} -> {e.code}: {detail}")
-            except urllib.error.URLError as e:
-                last = str(e)
-                time.sleep(2 * (attempt + 1))
-        raise JiraError(f"{method} {path} failed after retries: {last}")
+        raw = self._send(method, path, params, body, ok404)
+        if raw is None:
+            return None
+        txt = raw.decode("utf-8")
+        return json.loads(txt) if txt.strip() else None
 
     # ------------------------------------------------------------------ 읽기
     def site_url(self) -> str:
@@ -181,6 +214,23 @@ class Jira:
         """
         res = self._req("GET", f"/issue/{key}/properties/{PROPERTY_KEY}", ok404=True)
         return (res or {}).get("value", {}) or {}
+
+    def attachment_content(self, att_id: str, max_bytes: int | None = None) -> bytes:
+        """첨부 하나의 내용을 bytes로 받는다. redirect=false로 Jira가 내용을 직접 돌려주게 한다.
+
+        Args:
+            att_id: 첨부 id. URL 경로에 넣기 전에 인코딩한다.
+            max_bytes: 받을 크기 상한. 주면 max_bytes + 1 bytes까지만 읽으므로,
+                돌려준 길이가 max_bytes보다 크면 상한을 넘은 첨부다.
+
+        Returns:
+            첨부 파일의 내용.
+
+        Raises:
+            JiraError: 재시도 뒤에도 실패했거나 재시도할 수 없는 HTTP 오류일 때.
+        """
+        path = f"/attachment/content/{urllib.parse.quote(str(att_id), safe='')}"
+        return self._send("GET", path, {"redirect": "false"}, accept="*/*", max_bytes=max_bytes) or b""
 
     # ------------------------------------------------------------------ 쓰기 (apply.py만 사용)
     def prop_set(self, key: str, value: dict) -> None:

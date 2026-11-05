@@ -59,7 +59,7 @@ CI agent는 그 ticket의 TL;DR, 판정 객체, 검수 comment의 결과 요약�
 
 ---
 
-## 공통 검사 항목 (R2, R3, R4)
+## 공통 검사 항목 (R2, R3, R4, R5)
 
 "계산 주체"가 스크립트인 항목은 precheck.json에 결과가 이미 들어 있다. 다시 계산하지 말고 그대로 인용한다.
 CI agent가 계산하는 항목만 직접 판단한다. "검수 모드 영향"은 검수에서 실패(검사 결과 fail)했을 때 검수 결과가 어떻게 되는지다.
@@ -70,6 +70,33 @@ CI agent가 계산하는 항목만 직접 판단한다. "검수 모드 영향"�
 | R2 | 1년 뒤에도 이해 가능한 기록 | 배경(Bug는 문제(As-Is), Issue는 이슈 내용. Task의 진행 배경은 T4에서 확인한다)에 "왜"가 있고, agent 구역의 결과마다 확인 가능한 링크가 있으며, 결정 사항의 이유가 comment에 남아 있음 | CI agent | 링크 부재는 보류, 나머지는 검수 comment로 권고 |
 | R3 | 개조식 작성 | agent 구역은 개조식으로 적음. 사람 구역이 서술형이면 검수 comment로 권고만 함 | CI agent | 검수 comment로 권고 |
 | R4 | stop 사유 comment | `stop`으로 Backlog에 들어간 뒤 사람이 작성한 사유 comment가 있음(rules.md의 팀 문서화 규칙 3). Jira Automation의 안내 comment는 제외 | 스크립트 | stop 이력이 있는데 실패면 보류 |
+| R5 | 첨부 파일에 대한 설명 | attachments.json의 첨부마다 설명이 있고(설명 기준), status가 saved나 frames인 첨부는 CI agent가 읽은 내용과 설명이 맞음(내용 기준). 두 기준은 표 아래에 있다. 첨부가 없으면 n/a | CI agent | 설명 기준 실패는 보류, 설명 기준 실패 없이 내용 기준만 실패하면 검토 요청 |
+
+- R5의 두 기준은 아래와 같다.
+  - 설명 기준: 첨부마다 설명이 있다.
+    - 설명의 뜻과 위치는 rules.md의 "입력 파일" 절에 있다.
+    - status가 skipped인 첨부는 설명 기준만 확인한다.
+  - 내용 기준: CI agent가 읽은 첨부 내용과 설명이 맞는다.
+    - 대상은 status가 saved나 frames인 첨부다.
+    - 다른지 판단하는 기준은 rules.md의 "입력 파일" 절에 있다.
+- R5의 result는 fail인 첨부가 하나라도 있으면 fail이다.
+  - 설명 기준과 내용 기준 중 어느 쪽이 fail이어도 같다.
+- 첨부가 있으면 판정 객체(verdict)의 `attachments`에 첨부별 결과를 적는다.
+  - attachments.json의 첨부마다 한 항목이다.
+  - `attachments[].file`: 첨부 파일 이름
+  - `attachments[].comment`: 설명이 있는 위치
+    - 짝지은 comment에 있으면 그 comment 날짜
+    - ticket description에 있으면 "description"
+    - 짝지은 comment가 없으면 빈 문자열
+  - `attachments[].description`: 설명 기준 결과(pass, fail)
+  - `attachments[].content`: 내용 기준 결과(pass, fail, n/a)
+    - status가 skipped인 첨부와 설명이 없는 첨부는 n/a
+  - `attachments[].note`: fail일 때 무엇이 없거나 다른지 150자 이내로 적는다.
+  - 첨부가 없으면 R5는 n/a이고 `attachments`는 빈 배열로 둔다.
+- apply.py가 `attachments`로 검수 comment 검사 표의 R5 칸을 만든다.
+  - 첨부마다 한 줄이다(`scripts/src/jira/comment.py`의 `check_table`).
+  - 그래서 R5의 detail에는 첨부별 내용을 반복하지 않고 한 줄 요약만 적는다. 예: "첨부 3건 중 설명 없음 1건, 내용 다름 1건"
+  - detail은 `attachments`가 비었을 때만 R5 칸에 나간다.
 
 work type별 검사 항목은 work type 검수 파일의 "검사 항목" 절에 있다.
 
@@ -103,3 +130,19 @@ CI agent는 문서화 리뷰 항목을 판단하고, 항목마다 판정 객체(
 - escalate(검토 요청): 팀장 판단이 필요한 경우다. 근거가 서로 모순되면 work type과 관계없이 escalate로 정한다.
 - 세 코드값의 work type별 조건은 work type 검수 파일의 "검수 결과" 절에 있다.
 - R4가 fail이고 검수 결과가 보류이면 apply.py가 R4 요청 문장(stop의 사유를 "stop 사유:"로 시작하는 comment로 남긴 뒤 다시 request 전환을 하라는 문장)을 requests에 넣으므로(`scripts/src/jira/issue.py`의 `apply_issue`), R4 요청 문장은 requests에 적지 않는다
+- R5가 fail이면 아래 순서로 검수 결과를 정하고 적는다.
+  - 설명 기준 fail인 첨부가 하나라도 있으면 보류로 정한다.
+    - 내용 기준 fail이 함께 있어도 같다.
+    - 담당자가 설명을 추가하면 고칠 수 있기 때문이다.
+    - requests에 설명을 추가할 곳을 적는다.
+      - 어느 comment(날짜)의 어느 첨부(파일 이름)인지 적는다.
+    - 설명에 담을 것(무엇을 보여 주는지와 그 결과)도 함께 적는다.
+    - 내용 기준 fail인 첨부가 있으면 설명과 첨부 내용의 차이도 적는다.
+      - 적는 곳은 requests와 결과 요약(tasks[].comment)이다.
+  - 설명 기준 fail이 없고 내용 기준 fail이 있으면 검토 요청으로 정한다.
+    - R5 밖의 보류 조건이 있어도 같다.
+    - 설명과 첨부 내용이 다른 것은 근거가 서로 모순되는 경우이기 때문이다.
+    - 보류 조건의 요청은 requests에 함께 적는다.
+    - 설명과 첨부 내용의 차이를 쟁점으로 적는다.
+      - 결과 요약(tasks[].comment)에 적는다.
+      - Slack 요점(verdict.slack)에도 적는다.

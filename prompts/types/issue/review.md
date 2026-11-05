@@ -37,7 +37,7 @@ work type이 Issue인 ticket을 검수 모드에서 처리하는 단계를 정�
 | I4 | 이슈 내용 충실도 | 아래 "문서화 리뷰" 참고 | CI agent | 문서화 리뷰 정책 |
 | I5 | 논의와 결정 기록 | 아래 "문서화 리뷰" 참고 | CI agent | 문서화 리뷰 정책 |
 
-- 이 표 외에 `prompts/review.md`의 공통 검사 항목(R2, R3, R4)도 checks에 넣는다.
+- 이 표 외에 `prompts/review.md`의 공통 검사 항목(R2, R3, R4, R5)도 checks에 넣는다.
 
 - precheck.json(`scripts/precheck.py`가 계산한 검사 결과 파일)의 이슈 유형 선택 (I1) 결과가 unknown이면, description.wiki의 이슈 유형 구역을 직접 읽어 선택된 항목이 있는지 판단한다.
   - unknown은 스크립트가 체크박스 상태를 텍스트로 확인할 수 없을 때의 결과다(`scripts/src/jira/precheck/template.py`의 `check_issue_template`).
@@ -74,16 +74,21 @@ work type이 Issue인 ticket을 검수 모드에서 처리하는 단계를 정�
 ## 검수 결과
 
 - R3은 검수 결과에 영향이 없어 아래 조건에 넣지 않는다.
+- R5의 두 기준(설명 기준, 내용 기준)의 우선순위는 `prompts/review.md`의 "검수 결과 코드값의 공통 기준" 절을 따른다.
 - pass(통과): 아래 검사가 모두 pass 또는 n/a다.
   - I1
   - I2
   - I3
   - R2의 링크 기준(agent 구역의 결과마다 확인 가능한 링크가 있음)
   - R4
+  - R5
 - fix(보류): 아래 검사 중 fail이 있다.
   - I1
   - I2
   - I3
   - R2의 링크 기준
   - R4
-- escalate(검토 요청): 대응 결과가 comment마다 다르게 적혀 있어 무엇이 최종인지 알 수 없다.
+  - R5의 설명 기준
+- escalate(검토 요청): 아래 중 하나에 해당한다.
+  - 대응 결과가 comment마다 다르게 적혀 있어 무엇이 최종인지 알 수 없다.
+  - R5의 설명 기준에 fail이 없고 내용 기준이 fail(설명과 첨부 내용이 다름)
