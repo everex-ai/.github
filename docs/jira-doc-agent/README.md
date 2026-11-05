@@ -842,6 +842,15 @@ flowchart LR
     - 예: 실행 38223698527은 Write 거부가 3회 있었다.
       - 그래도 3-1 단계 결과가 `is_error=False`, `num_turns=13`이었다.
       - 근거: `gh run view 38223698527 --log`의 3-1 단계 줄
+- 쓰지 않는 도구는 CI agent의 도구 목록에서 뺀다.
+  - 3단계와 3-R 단계의 `--disallowedTools`에 아래 도구를 적었다.
+    - `Bash`, `Edit`, `Write`, `NotebookEdit`, `WebFetch`, `WebSearch`
+    - 위치: `.github/workflows/jira-doc.yml:110`, `:147`
+  - `--allowedTools`만 두면 다른 도구도 목록에 남아 CI agent가 시도한 뒤 거부된다.
+    - 예: 실행 41955865957(INNO-177)의 3-1 단계 로그 `permission_denials=Bash`
+  - `--disallowedTools`에 적은 도구는 목록에서 빠져 시도 자체가 생기지 않는다.
+    - 근거: https://code.claude.com/docs/en/cli-reference.md 77줄
+    - 원문: `A bare tool name removes the matching tools from Claude's context`
 - 모델과 턴 상한은 3단계의 `claude_args`에 있다.
   - 모델: `claude-sonnet-5-5`
   - 턴 상한(`--max-turns`): 검수 모드 40, 정리 모드 200
